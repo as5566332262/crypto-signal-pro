@@ -1,0 +1,13 @@
+:root{color-scheme:light;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+*{box-sizing:border-box} body{margin:0;background:#f8fafc;color:#0f172a}
+button,select{font:inherit} .app{max-width:1280px;margin:0 auto;padding:20px}
+.grid{display:grid;gap:16px} .card{background:#fff;border-radius:24px;box-shadow:0 8px 24px rgba(15,23,42,.08);padding:18px}
+.row{display:flex;gap:12px;flex-wrap:wrap} .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.label{font-size:12px;color:#64748b;margin-bottom:6px} .select,.button{width:100%;padding:12px 14px;border-radius:16px;border:1px solid #cbd5e1;background:#fff}
+.button{background:#0f172a;color:#fff;border:none;cursor:pointer} .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.kpi{background:#fff;border-radius:20px;padding:14px;box-shadow:0 6px 18px rgba(15,23,42,.06)} .kpi .title{font-size:12px;color:#64748b} .kpi .value{font-size:24px;font-weight:700;margin-top:6px}
+.badge{display:inline-block;padding:8px 12px;border-radius:999px;font-size:14px;font-weight:700} .badge.bull{background:#dcfce7;color:#166534} .badge.bear{background:#fee2e2;color:#991b1b} .badge.flat{background:#e2e8f0;color:#334155}
+.muted{color:#64748b;font-size:14px} .note{background:#f1f5f9;border-radius:16px;padding:14px;font-size:14px;color:#475569}
+.ai{background:#0f172a;color:#fff;border-radius:16px;padding:14px;line-height:1.7} .twocol{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}
+.subgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px} .zone{background:#f8fafc;border-radius:16px;padding:14px}
+small{color:#64748b} @media (max-width:900px){.twocol{grid-template-columns:1fr}.app{padding:14px}}
