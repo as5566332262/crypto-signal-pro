@@ -599,7 +599,7 @@ export default function CryptoSignalWebApp() {
   }, []);
 
   const [symbol, setSymbol] = useState("SOLUSDT");
-  const [interval, setInterval] = useState("15m");
+  const [interval, setTimeframe] = useState("15m");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [analysis, setAnalysis] = useState(null);
