@@ -634,10 +634,10 @@ export default function CryptoSignalWebApp() {
   }, [symbol, interval]);
 
   useEffect(() => {
-    if (!autoRefresh) return;
-    const timer = setInterval(() => loadData(symbol, interval), 30000);
-    return () => clearInterval(timer);
-  }, [autoRefresh, symbol, interval]);
+  if (!autoRefresh) return;
+  const timer = window.setInterval(() => loadData(symbol, interval), 30000);
+  return () => window.clearInterval(timer);
+}, [autoRefresh, symbol, interval]);
 
   const currentCandle = candles[candles.length - 1];
   const chartData = useMemo(() => {
