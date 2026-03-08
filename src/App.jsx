@@ -711,7 +711,7 @@ export default function CryptoSignalWebApp() {
                 </div>
                 <div>
                   <div className="mb-2 text-sm text-slate-600">週期</div>
-                  <Select value={interval} onValueChange={(v) => setInterval(v)}>
+                  <Select value={interval} onValueChange={(v) => setTimeframe(v)}>
                     <SelectTrigger className="rounded-2xl bg-white"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {INTERVAL_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
