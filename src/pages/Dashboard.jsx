@@ -1,18 +1,38 @@
 import { useEffect, useState } from "react"
 
+async function getPrice(symbol){
+
+  const res = await fetch(
+    `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`
+  )
+
+  const data = await res.json()
+
+  return parseFloat(data.price)
+
+}
+
 export default function Dashboard() {
 
   const [coins,setCoins] = useState([])
 
   useEffect(()=>{
 
-    const mock = [
-      {symbol:"BTC",trend:"Bullish",prob:72,signal:"Breakout Long"},
-      {symbol:"ETH",trend:"Neutral",prob:55,signal:"Wait"},
-      {symbol:"SOL",trend:"Bearish",prob:63,signal:"Resistance Short"}
-    ]
+    async function load(){
 
-    setCoins(mock)
+      const btc = await getPrice("BTCUSDT")
+      const eth = await getPrice("ETHUSDT")
+      const sol = await getPrice("SOLUSDT")
+
+      setCoins([
+        {symbol:"BTC",price:btc},
+        {symbol:"ETH",price:eth},
+        {symbol:"SOL",price:sol}
+      ])
+
+    }
+
+    load()
 
   },[])
 
@@ -30,25 +50,25 @@ export default function Dashboard() {
         marginTop:20
       }}>
 
-        {coins.map(c=>(
-          <div key={c.symbol}
-          style={{
-            border:"1px solid #ddd",
-            padding:20,
-            borderRadius:10
-          }}>
+      {coins.map(c=>(
+        <div key={c.symbol}
+        style={{
+          border:"1px solid #ddd",
+          padding:20,
+          borderRadius:10
+        }}
+        >
 
-            <h2>{c.symbol}</h2>
-            <p>Trend: {c.trend}</p>
-            <p>Win Probability: {c.prob}%</p>
-            <p>Signal: {c.signal}</p>
+        <h2>{c.symbol}</h2>
+        <p>Price: ${c.price}</p>
 
-          </div>
-        ))}
+        </div>
+      ))}
 
       </div>
 
     </div>
 
   )
+
 }
