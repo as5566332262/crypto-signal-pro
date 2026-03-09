@@ -14,6 +14,14 @@ const INTERVAL_OPTIONS = [
   { label: "1d", value: "1d" },
 ]
 
+const CARD_STYLE = {
+  background: "white",
+  border: "1px solid #e2e8f0",
+  borderRadius: 18,
+  padding: 20,
+  boxShadow: "0 1px 3px rgba(15,23,42,0.06)",
+}
+
 function sma(values, period) {
   return values.map((_, index) => {
     if (index + 1 < period) return null
@@ -93,51 +101,51 @@ function analyzeCoin(klines) {
   const rsi = calculateRSI(closes, 14)
   const sr = detectSupportResistance(klines)
 
-  let trend = "Neutral"
-  let signal = "Wait"
+  let trend = "中性"
+  let signal = "等待確認"
   let longProb = 50
   let shortProb = 50
 
   if (ma20 && ma50 && currentPrice > ma20 && ma20 > ma50 && rsi > 50 && rsi < 70) {
-    trend = "Bullish"
-    signal = "Support Long"
+    trend = "偏多"
+    signal = "支撐做多"
     longProb = 68
     shortProb = 32
   } else if (ma20 && ma50 && currentPrice < ma20 && ma20 < ma50 && rsi < 50 && rsi > 30) {
-    trend = "Bearish"
-    signal = "Resistance Short"
+    trend = "偏空"
+    signal = "反彈壓力空"
     longProb = 34
     shortProb = 66
   } else if (rsi >= 70) {
-    trend = "Overbought"
-    signal = "Watch Pullback"
+    trend = "過熱"
+    signal = "等待回踩"
     longProb = 40
     shortProb = 60
   } else if (rsi <= 30) {
-    trend = "Oversold"
-    signal = "Watch Bounce"
+    trend = "過冷"
+    signal = "等待反彈"
     longProb = 60
     shortProb = 40
   }
 
   const entry =
-    trend === "Bullish"
+    trend === "偏多"
       ? `${formatNumber(sr.support)} - ${formatNumber(currentPrice)}`
-      : trend === "Bearish"
+      : trend === "偏空"
       ? `${formatNumber(currentPrice)} - ${formatNumber(sr.resistance)}`
       : "Wait"
 
   const stop =
-    trend === "Bullish"
+    trend === "偏多"
       ? formatNumber(sr.support * 0.985)
-      : trend === "Bearish"
+      : trend === "偏空"
       ? formatNumber(sr.resistance * 1.015)
       : "-"
 
   const tp =
-    trend === "Bullish"
+    trend === "偏多"
       ? formatNumber(sr.resistance)
-      : trend === "Bearish"
+      : trend === "偏空"
       ? formatNumber(sr.support)
       : "-"
 
@@ -189,186 +197,147 @@ export default function SymbolDetail() {
   }, [symbol])
 
   return (
-    <div style={{ padding: 40 }}>
-      <h1>{symbolLabel} Analysis Pro</h1>
-      <p>單幣 AI 深度分析</p>
-      <p style={{ color: "#666", marginTop: 8 }}>最後更新：{lastUpdated || "-"}</p>
-
+    <div style={{ padding: 24 }}>
       <div
         style={{
-          display: "flex",
+          display: "grid",
+          gridTemplateColumns: "1.3fr 0.7fr",
           gap: 16,
-          marginTop: 20,
-          marginBottom: 20,
-          flexWrap: "wrap",
+          alignItems: "stretch",
         }}
       >
-        <div>
-          <div style={{ marginBottom: 8 }}>幣種</div>
-          <select
-            value={symbol}
-            onChange={(e) => setSymbol(e.target.value)}
+        <div style={CARD_STYLE}>
+          <div style={{ fontSize: 28, fontWeight: 700 }}>{symbolLabel} Analysis Pro</div>
+          <div style={{ color: "#64748b", marginTop: 8 }}>單幣 AI 深度分析</div>
+          <div style={{ color: "#64748b", marginTop: 6 }}>
+            最後更新：{lastUpdated || "-"}
+          </div>
+
+          <div
             style={{
-              padding: 10,
-              minWidth: 160,
-              borderRadius: 8,
-              border: "1px solid #ccc",
+              display: "flex",
+              gap: 16,
+              marginTop: 18,
+              flexWrap: "wrap",
             }}
           >
-            {SYMBOL_OPTIONS.map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.label}
-              </option>
-            ))}
-          </select>
+            <div>
+              <div style={{ marginBottom: 8, fontSize: 14, color: "#64748b" }}>幣種</div>
+              <select
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+                style={selectStyle}
+              >
+                {SYMBOL_OPTIONS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <div style={{ marginBottom: 8, fontSize: 14, color: "#64748b" }}>週期</div>
+              <select
+                value={interval}
+                onChange={(e) => setIntervalValue(e.target.value)}
+                style={selectStyle}
+              >
+                {INTERVAL_OPTIONS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
 
-        <div>
-          <div style={{ marginBottom: 8 }}>週期</div>
-          <select
-            value={interval}
-            onChange={(e) => setIntervalValue(e.target.value)}
-            style={{
-              padding: 10,
-              minWidth: 160,
-              borderRadius: 8,
-              border: "1px solid #ccc",
-            }}
-          >
-            {INTERVAL_OPTIONS.map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.label}
-              </option>
-            ))}
-          </select>
+        <div style={CARD_STYLE}>
+          <div style={{ fontSize: 14, color: "#64748b" }}>本次結論</div>
+          <div style={{ marginTop: 12, fontSize: 28, fontWeight: 700 }}>
+            {analysis?.signal || "-"}
+          </div>
+          <div style={{ marginTop: 10, color: "#64748b" }}>
+            趨勢：{analysis?.trend || "-"}
+          </div>
+          <div style={{ marginTop: 6, color: "#64748b" }}>
+            多頭勝率：{analysis?.longProb ?? "-"}%
+          </div>
+          <div style={{ marginTop: 6, color: "#64748b" }}>
+            空頭勝率：{analysis?.shortProb ?? "-"}%
+          </div>
         </div>
       </div>
 
       {loading || !analysis ? (
-        <p>載入中...</p>
+        <div style={{ marginTop: 20 }}>載入中...</div>
       ) : (
         <>
           <div
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(4,1fr)",
-              gap: 20,
-              marginTop: 20,
+              gap: 16,
+              marginTop: 18,
             }}
           >
-            <div style={cardStyle}>
-              <h3>Price</h3>
-              <p style={valueStyle}>${formatNumber(analysis.currentPrice)}</p>
-            </div>
-
-            <div style={cardStyle}>
-              <h3>Trend</h3>
-              <p style={valueStyle}>{analysis.trend}</p>
-            </div>
-
-            <div style={cardStyle}>
-              <h3>Signal</h3>
-              <p style={valueStyle}>{analysis.signal}</p>
-            </div>
-
-            <div style={cardStyle}>
-              <h3>RSI</h3>
-              <p style={valueStyle}>{formatNumber(analysis.rsi)}</p>
-            </div>
+            <MetricCard label="Price" value={`$${formatNumber(analysis.currentPrice)}`} />
+            <MetricCard label="Trend" value={analysis.trend} />
+            <MetricCard label="Signal" value={analysis.signal} />
+            <MetricCard label="RSI" value={formatNumber(analysis.rsi)} />
           </div>
 
           <div
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(4,1fr)",
-              gap: 20,
-              marginTop: 20,
+              gap: 16,
+              marginTop: 16,
             }}
           >
-            <div style={cardStyle}>
-              <h3>MA20</h3>
-              <p style={valueStyle}>{formatNumber(analysis.ma20)}</p>
-            </div>
-
-            <div style={cardStyle}>
-              <h3>MA50</h3>
-              <p style={valueStyle}>{formatNumber(analysis.ma50)}</p>
-            </div>
-
-            <div style={cardStyle}>
-              <h3>Support</h3>
-              <p style={valueStyle}>{formatNumber(analysis.support)}</p>
-            </div>
-
-            <div style={cardStyle}>
-              <h3>Resistance</h3>
-              <p style={valueStyle}>{formatNumber(analysis.resistance)}</p>
-            </div>
+            <MetricCard label="MA20" value={formatNumber(analysis.ma20)} />
+            <MetricCard label="MA50" value={formatNumber(analysis.ma50)} />
+            <MetricCard label="Support" value={formatNumber(analysis.support)} />
+            <MetricCard label="Resistance" value={formatNumber(analysis.resistance)} />
           </div>
 
           <div
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(2,1fr)",
-              gap: 20,
-              marginTop: 20,
+              gap: 16,
+              marginTop: 16,
             }}
           >
-            <div style={cardStyle}>
-              <h3>Long Probability</h3>
-              <p style={valueStyle}>{analysis.longProb}%</p>
-            </div>
-
-            <div style={cardStyle}>
-              <h3>Short Probability</h3>
-              <p style={valueStyle}>{analysis.shortProb}%</p>
-            </div>
+            <MetricCard label="Long Probability" value={`${analysis.longProb}%`} />
+            <MetricCard label="Short Probability" value={`${analysis.shortProb}%`} />
           </div>
 
           <div
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(3,1fr)",
-              gap: 20,
-              marginTop: 20,
+              gap: 16,
+              marginTop: 16,
             }}
           >
-            <div style={cardStyle}>
-              <h3>Entry</h3>
-              <p style={valueStyle}>{analysis.entry}</p>
-            </div>
-
-            <div style={cardStyle}>
-              <h3>Stop</h3>
-              <p style={valueStyle}>{analysis.stop}</p>
-            </div>
-
-            <div style={cardStyle}>
-              <h3>TP</h3>
-              <p style={valueStyle}>{analysis.tp}</p>
-            </div>
+            <MetricCard label="Entry" value={analysis.entry} />
+            <MetricCard label="Stop" value={analysis.stop} />
+            <MetricCard label="TP" value={analysis.tp} />
           </div>
 
-          <div
-            style={{
-              marginTop: 24,
-              padding: 20,
-              border: "1px solid #ddd",
-              borderRadius: 10,
-              background: "white",
-            }}
-          >
-            <h3>AI Summary</h3>
-            <p style={{ marginTop: 12, lineHeight: 1.8 }}>
-              {symbolLabel} 目前在 {interval} 週期下屬於{" "}
-              <strong>{analysis.trend}</strong> 結構，
-              AI 訊號為 <strong>{analysis.signal}</strong>。
-              多頭勝率約 <strong>{analysis.longProb}%</strong>，
-              空頭勝率約 <strong>{analysis.shortProb}%</strong>。
-              目前支撐位在 <strong>{formatNumber(analysis.support)}</strong>，
-              壓力位在 <strong>{formatNumber(analysis.resistance)}</strong>，
-              建議依照進場區、止損與目標位搭配風控操作。
-            </p>
+          <div style={{ ...CARD_STYLE, marginTop: 18 }}>
+            <div style={{ fontSize: 20, fontWeight: 700 }}>AI Summary</div>
+            <div style={{ marginTop: 14, lineHeight: 1.9, color: "#334155" }}>
+              {symbolLabel} 目前在 {interval} 週期下屬於 <strong>{analysis.trend}</strong> 結構，
+              AI 訊號為 <strong>{analysis.signal}</strong>。多頭勝率約{" "}
+              <strong>{analysis.longProb}%</strong>，空頭勝率約{" "}
+              <strong>{analysis.shortProb}%</strong>。目前支撐位在{" "}
+              <strong>{formatNumber(analysis.support)}</strong>，壓力位在{" "}
+              <strong>{formatNumber(analysis.resistance)}</strong>，建議依照進場區、
+              止損與目標位搭配風控操作。
+            </div>
           </div>
         </>
       )}
@@ -376,15 +345,20 @@ export default function SymbolDetail() {
   )
 }
 
-const cardStyle = {
-  border: "1px solid #ddd",
-  padding: 20,
-  borderRadius: 10,
-  background: "white",
+function MetricCard({ label, value }) {
+  return (
+    <div style={CARD_STYLE}>
+      <div style={{ fontSize: 14, color: "#64748b" }}>{label}</div>
+      <div style={{ marginTop: 10, fontSize: 22, fontWeight: 700 }}>{value}</div>
+    </div>
+  )
 }
 
-const valueStyle = {
-  fontSize: 22,
-  fontWeight: "bold",
-  marginTop: 10,
+const selectStyle = {
+  padding: 10,
+  minWidth: 160,
+  borderRadius: 10,
+  border: "1px solid #cbd5e1",
+  background: "white",
+  fontSize: 15,
 }
