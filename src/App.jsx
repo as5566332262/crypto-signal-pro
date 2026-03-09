@@ -1026,202 +1026,267 @@ export default function CryptoSignalWebApp() {
           <MetricCard label="空頭勝率" value={`${analysis?.shortProb ?? "-"}%`} helper="V2 概率模型" />
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card className="rounded-3xl shadow-md lg:col-span-2">
-            <CardHeader>
-              <CardTitle className="text-lg">K 線圖、均線與支撐壓力</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="h-[360px] w-full rounded-2xl bg-slate-100 p-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={chartData} margin={{ top: 12, right: 12, left: 4, bottom: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
-                    <XAxis dataKey="time" minTickGap={24} tick={{ fontSize: 12 }} />
-                    <YAxis yAxisId="left" domain={["auto", "auto"]} tick={{ fontSize: 12 }} width={70} />
-                    <YAxis yAxisId="right" orientation="right" tick={false} hide />
-                    <Tooltip content={<CustomTooltip symbol={symbol} />} />
+        <div className="grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
+          {/* LEFT SIDE */}
+          <div className="space-y-4">
+            <Card className="rounded-3xl shadow-md">
+              <CardHeader>
+                <CardTitle className="text-lg">K 線圖、均線與支撐壓力</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-[360px] w-full rounded-2xl bg-slate-100 p-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={chartData} margin={{ top: 12, right: 12, left: 4, bottom: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
+                      <XAxis dataKey="time" minTickGap={24} tick={{ fontSize: 12 }} />
+                      <YAxis yAxisId="left" domain={["auto", "auto"]} tick={{ fontSize: 12 }} width={70} />
+                      <YAxis yAxisId="right" orientation="right" tick={false} hide />
+                      <Tooltip content={<CustomTooltip symbol={symbol} />} />
 
-                    <ReferenceArea
-                      yAxisId="left"
-                      y1={analysis?.levels?.structureSupportZone?.low}
-                      y2={analysis?.levels?.structureSupportZone?.high}
-                      fill="#16a34a"
-                      fillOpacity={0.08}
-                    />
-                    <ReferenceArea
-                      yAxisId="left"
-                      y1={analysis?.levels?.structureResistanceZone?.low}
-                      y2={analysis?.levels?.structureResistanceZone?.high}
-                      fill="#dc2626"
-                      fillOpacity={0.08}
-                    />
-                    <ReferenceLine yAxisId="left" y={analysis?.price} stroke="#0f172a" strokeDasharray="4 4" />
+                      <ReferenceArea
+                        yAxisId="left"
+                        y1={analysis?.levels?.structureSupportZone?.low}
+                        y2={analysis?.levels?.structureSupportZone?.high}
+                        fill="#16a34a"
+                        fillOpacity={0.08}
+                      />
+                      <ReferenceArea
+                        yAxisId="left"
+                        y1={analysis?.levels?.structureResistanceZone?.low}
+                        y2={analysis?.levels?.structureResistanceZone?.high}
+                        fill="#dc2626"
+                        fillOpacity={0.08}
+                      />
+                      <ReferenceLine yAxisId="left" y={analysis?.price} stroke="#0f172a" strokeDasharray="4 4" />
 
-                    <Bar yAxisId="right" dataKey="volume" opacity={0.22} radius={[3, 3, 0, 0]}>
-                      {chartData.map((entry, index) => (
-                        <Cell key={`vol-${index}`} fill={entry.bullish ? "#16a34a" : "#dc2626"} />
-                      ))}
-                    </Bar>
+                      <Bar yAxisId="right" dataKey="volume" opacity={0.22} radius={[3, 3, 0, 0]}>
+                        {chartData.map((entry, index) => (
+                          <Cell key={`vol-${index}`} fill={entry.bullish ? "#16a34a" : "#dc2626"} />
+                        ))}
+                      </Bar>
 
-                    <Bar
-                      yAxisId="left"
-                      dataKey="bodyValue"
-                      baseValue={(data) => data.bodyBase}
-                      shape={<CandlestickBody />}
-                      isAnimationActive={false}
+                      <Bar
+                        yAxisId="left"
+                        dataKey="bodyValue"
+                        baseValue={(data) => data.bodyBase}
+                        shape={<CandlestickBody />}
+                        isAnimationActive={false}
+                      >
+                        {chartData.map((entry, index) => (
+                          <Cell key={`candle-${index}`} fill={entry.bullish ? "#16a34a" : "#dc2626"} />
+                        ))}
+                      </Bar>
+
+                      <Line yAxisId="left" type="monotone" dataKey="ma20" dot={false} strokeWidth={2} stroke="#a855f7" />
+                      <Line yAxisId="left" type="monotone" dataKey="ma50" dot={false} strokeWidth={2} stroke="#eab308" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="mt-3 text-sm text-slate-500">
+                  這張圖目前顯示 {timeframeLabel} 週期最近 60 根 K 線、MA20、MA50、成交量，以及結構支撐 / 壓力區。
+                  綠色區是結構支撐，紅色區是結構壓力，虛線是現價。
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-3xl shadow-md">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  {analysis?.bias === "偏多" ? <TrendingUp className="h-5 w-5" /> : <TrendingDown className="h-5 w-5" />}
+                  交易建議
+                </CardTitle>
+              </CardHeader>
+
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">建議方式</div>
+                    <div className="mt-1 text-lg font-semibold">{analysis?.setup || "-"}</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">止損</div>
+                    <div className="mt-1 text-lg font-semibold">{formatNumber(analysis?.stopLoss, digits)}</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">止盈</div>
+                    <div className="mt-1 text-lg font-semibold">
+                      {formatNumber(analysis?.takeProfit1, digits)} / {formatNumber(analysis?.takeProfit2, digits)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-4 text-sm leading-6 text-slate-600">
+                  <div>• V2 已加入日線，並修正週期切換會重新載入資料。</div>
+                  <div>• 偏多：優先等回踩支撐或突破確認，不建議在 RSI 過熱時追價。</div>
+                  <div>• 偏空：優先等反彈壓力或跌破確認，不建議在 RSI 過低時追空。</div>
+                  <div>• 勝率為概率模型推估，請搭配風控與結構位使用。</div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">建議進場區</div>
+                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.entryZone || "-"}</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">失效位</div>
+                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.invalidation || "-"}</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">目標一</div>
+                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target1 || "-"}</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">目標二</div>
+                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target2 || "-"}</div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-3xl shadow-md">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Target className="h-5 w-5" />
+                  即時資料摘要
+                </CardTitle>
+              </CardHeader>
+
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">短線支撐區</div>
+                    <div className="mt-1 text-lg font-semibold">
+                      {formatNumber(analysis?.levels?.shortSupportZone?.low, digits)} ~{" "}
+                      {formatNumber(analysis?.levels?.shortSupportZone?.high, digits)}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">短線壓力區</div>
+                    <div className="mt-1 text-lg font-semibold">
+                      {formatNumber(analysis?.levels?.shortResistanceZone?.low, digits)} ~{" "}
+                      {formatNumber(analysis?.levels?.shortResistanceZone?.high, digits)}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">結構支撐區</div>
+                    <div className="mt-1 text-lg font-semibold">
+                      {formatNumber(analysis?.levels?.structureSupportZone?.low, digits)} ~{" "}
+                      {formatNumber(analysis?.levels?.structureSupportZone?.high, digits)}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">結構壓力區</div>
+                    <div className="mt-1 text-lg font-semibold">
+                      {formatNumber(analysis?.levels?.structureResistanceZone?.low, digits)} ~{" "}
+                      {formatNumber(analysis?.levels?.structureResistanceZone?.high, digits)}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">ATR 波動</div>
+                    <div className="mt-1 text-lg font-semibold">{formatNumber(analysis?.atr, digits)}</div>
+                  </div>
+
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">最近 K 線區間</div>
+                    <div className="mt-1 text-lg font-semibold">
+                      {formatNumber(currentCandle?.low, digits)} ~ {formatNumber(currentCandle?.high, digits)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 p-4 text-sm text-slate-600">
+                  <div className="mb-2 font-medium text-slate-700">AI 訊號細節</div>
+                  <div>多方分數：{formatNumber(analysis?.bullScore, 1)}</div>
+                  <div>空方分數：{formatNumber(analysis?.bearScore, 1)}</div>
+                  <div>成交量：{formatNumber(currentCandle?.volume, 2)}</div>
+                  <div>V2 勝率來自偏向、結構、突破、量能、流動性與高週期共振的綜合評分。</div>
+
+                  <div className="mt-3 font-medium text-slate-700">高週期同步</div>
+                  {(analysis?.higherBiases || []).map((item) => (
+                    <div
+                      key={item.interval}
+                      className="mt-1 flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2"
                     >
-                      {chartData.map((entry, index) => (
-                        <Cell key={`candle-${index}`} fill={entry.bullish ? "#16a34a" : "#dc2626"} />
-                      ))}
-                    </Bar>
-
-                    <Line yAxisId="left" type="monotone" dataKey="ma20" dot={false} strokeWidth={2} stroke="#a855f7" />
-                    <Line yAxisId="left" type="monotone" dataKey="ma50" dot={false} strokeWidth={2} stroke="#eab308" />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-
-              <div className="mt-3 text-sm text-slate-500">
-                這張圖目前顯示 {timeframeLabel} 週期最近 60 根 K 線、MA20、MA50、成交量，以及結構支撐 /
-                壓力區。綠色區是結構支撐，紅色區是結構壓力，虛線是現價。
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-3xl shadow-md">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-lg">
-                {analysis?.bias === "偏多" ? <TrendingUp className="h-5 w-5" /> : <TrendingDown className="h-5 w-5" />}
-                交易建議
-              </CardTitle>
-            </CardHeader>
-
-            <CardContent className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-3">
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">建議方式</div>
-                  <div className="mt-1 text-lg font-semibold">{analysis?.setup || "-"}</div>
+                      <span>{item.interval}</span>
+                      <span>{item.bias}</span>
+                    </div>
+                  ))}
                 </div>
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">止損</div>
-                  <div className="mt-1 text-lg font-semibold">{formatNumber(analysis?.stopLoss, digits)}</div>
+
+                <div>
+                  <div className="mb-2 text-sm text-slate-500">自訂提醒備註</div>
+                  <Input className="rounded-2xl bg-white" placeholder="例如：SOL 日線站回 MA20 再考慮多單" />
                 </div>
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">止盈</div>
-                  <div className="mt-1 text-lg font-semibold">
-                    {formatNumber(analysis?.takeProfit1, digits)} / {formatNumber(analysis?.takeProfit2, digits)}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* RIGHT SIDE */}
+          <div className="space-y-4">
+            <Card className="rounded-3xl border-0 shadow-md">
+              <CardHeader>
+                <CardTitle className="text-lg">本次結論</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-500">趨勢偏向</span>
+                  <Badge className={`rounded-full px-3 py-1 text-sm ${biasStyle}`}>
+                    {analysis?.bias || "讀取中"}
+                  </Badge>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">是否適合進場</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.entryAdvice || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">較佳策略</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.setup || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">進場評分</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.entryScore || "-"} / 10</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">風險等級</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.riskLevel || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">多週期共振</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.confluence || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">V2 智能訊號</div>
+                  <div className="mt-1 flex items-center gap-2 text-xl font-semibold">
+                    <BrainCircuit className="h-5 w-5" />
+                    {analysis?.smartSignal || "-"}
                   </div>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 p-4 text-sm leading-6 text-slate-600">
-                <div>• V2 已加入日線，並修正週期切換會重新載入資料。</div>
-                <div>• 偏多：優先等回踩支撐或突破確認，不建議在 RSI 過熱時追價。</div>
-                <div>• 偏空：優先等反彈壓力或跌破確認，不建議在 RSI 過低時追空。</div>
-                <div>• 勝率為概率模型推估，請搭配風控與結構位使用。</div>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">建議進場區</div>
-                  <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.entryZone || "-"}</div>
-                </div>
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">失效位</div>
-                  <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.invalidation || "-"}</div>
-                </div>
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">目標一</div>
-                  <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target1 || "-"}</div>
-                </div>
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">目標二</div>
-                  <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target2 || "-"}</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-3xl shadow-md">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Target className="h-5 w-5" />
-                即時資料摘要
-              </CardTitle>
-            </CardHeader>
-
-            <CardContent className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">短線支撐區</div>
-                  <div className="mt-1 text-lg font-semibold">
-                    {formatNumber(analysis?.levels?.shortSupportZone?.low, digits)} ~{" "}
-                    {formatNumber(analysis?.levels?.shortSupportZone?.high, digits)}
+                  <div className="mt-2 text-sm text-slate-500">
+                    做多 {analysis?.longProb ?? "-"}% ・ 做空 {analysis?.shortProb ?? "-"}%
                   </div>
                 </div>
 
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">短線壓力區</div>
-                  <div className="mt-1 text-lg font-semibold">
-                    {formatNumber(analysis?.levels?.shortResistanceZone?.low, digits)} ~{" "}
-                    {formatNumber(analysis?.levels?.shortResistanceZone?.high, digits)}
-                  </div>
+                <div className="rounded-2xl bg-white p-4 shadow-sm text-sm text-slate-600">
+                  {analysis?.explanation || "等待資料中..."}
                 </div>
 
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">結構支撐區</div>
-                  <div className="mt-1 text-lg font-semibold">
-                    {formatNumber(analysis?.levels?.structureSupportZone?.low, digits)} ~{" "}
-                    {formatNumber(analysis?.levels?.structureSupportZone?.high, digits)}
-                  </div>
+                <div className="rounded-2xl bg-slate-900 p-4 text-sm leading-6 text-white shadow-sm">
+                  <div className="mb-2 text-xs uppercase tracking-wide text-slate-300">AI 綜合判斷</div>
+                  <div>{analysis?.aiSummary || "等待資料中..."}</div>
                 </div>
-
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">結構壓力區</div>
-                  <div className="mt-1 text-lg font-semibold">
-                    {formatNumber(analysis?.levels?.structureResistanceZone?.low, digits)} ~{" "}
-                    {formatNumber(analysis?.levels?.structureResistanceZone?.high, digits)}
-                  </div>
-                </div>
-
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">ATR 波動</div>
-                  <div className="mt-1 text-lg font-semibold">{formatNumber(analysis?.atr, digits)}</div>
-                </div>
-
-                <div className="rounded-2xl bg-slate-100 p-4">
-                  <div className="text-sm text-slate-500">最近 K 線區間</div>
-                  <div className="mt-1 text-lg font-semibold">
-                    {formatNumber(currentCandle?.low, digits)} ~ {formatNumber(currentCandle?.high, digits)}
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 p-4 text-sm text-slate-600">
-                <div className="mb-2 font-medium text-slate-700">AI 訊號細節</div>
-                <div>多方分數：{formatNumber(analysis?.bullScore, 1)}</div>
-                <div>空方分數：{formatNumber(analysis?.bearScore, 1)}</div>
-                <div>成交量：{formatNumber(currentCandle?.volume, 2)}</div>
-                <div>V2 勝率來自偏向、結構、突破、量能、流動性與高週期共振的綜合評分。</div>
-
-                <div className="mt-3 font-medium text-slate-700">高週期同步</div>
-                {(analysis?.higherBiases || []).map((item) => (
-                  <div
-                    key={item.interval}
-                    className="mt-1 flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2"
-                  >
-                    <span>{item.interval}</span>
-                    <span>{item.bias}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div>
-                <div className="mb-2 text-sm text-slate-500">自訂提醒備註</div>
-                <Input className="rounded-2xl bg-white" placeholder="例如：SOL 日線站回 MA20 再考慮多單" />
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       </div>
     </div>
