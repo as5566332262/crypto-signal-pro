@@ -7,6 +7,14 @@ const SYMBOLS = [
   { symbol: "BNBUSDT", name: "BNB" },
 ]
 
+const CARD_STYLE = {
+  background: "white",
+  border: "1px solid #e2e8f0",
+  borderRadius: 18,
+  padding: 20,
+  boxShadow: "0 1px 3px rgba(15,23,42,0.06)",
+}
+
 async function getPrice(symbol) {
   const res = await fetch(
     `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`
@@ -71,25 +79,25 @@ function analyzeCoin(klines, currentPrice) {
   const ma20 = sma(closes, 20).at(-1)
   const rsi = calculateRSI(closes, 14)
 
-  let trend = "Neutral"
-  let signal = "Wait"
+  let trend = "中性"
+  let signal = "等待確認"
   let prob = 50
 
   if (ma20 !== null && currentPrice > ma20 && rsi !== null && rsi < 70 && rsi > 50) {
-    trend = "Bullish"
-    signal = "Support Long"
+    trend = "偏多"
+    signal = "支撐做多"
     prob = 68
   } else if (ma20 !== null && currentPrice < ma20 && rsi !== null && rsi > 30 && rsi < 50) {
-    trend = "Bearish"
-    signal = "Resistance Short"
+    trend = "偏空"
+    signal = "反彈壓力空"
     prob = 64
   } else if (rsi !== null && rsi >= 70) {
-    trend = "Overbought"
-    signal = "Watch Pullback"
+    trend = "過熱"
+    signal = "等待回踩"
     prob = 58
   } else if (rsi !== null && rsi <= 30) {
-    trend = "Oversold"
-    signal = "Watch Bounce"
+    trend = "過冷"
+    signal = "等待反彈"
     prob = 58
   }
 
@@ -135,62 +143,117 @@ export default function Scanner() {
     }
 
     load()
-
     const interval = setInterval(load, 30000)
     return () => clearInterval(interval)
   }, [])
 
+  const bestLong =
+    signals.length > 0
+      ? [...signals]
+          .filter((s) => s.trend === "偏多")
+          .sort((a, b) => b.prob - a.prob)[0]
+      : null
+
+  const bestShort =
+    signals.length > 0
+      ? [...signals]
+          .filter((s) => s.trend === "偏空")
+          .sort((a, b) => b.prob - a.prob)[0]
+      : null
+
   return (
-    <div style={{ padding: 40 }}>
-      <h1>Market Scanner Pro</h1>
-      <p>即時市場掃描器（1h 週期）</p>
-      <p style={{ color: "#666", marginTop: 8 }}>
-        最後更新：{lastUpdated || "-"}
-      </p>
+    <div style={{ padding: 24 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1.2fr 0.8fr 0.8fr",
+          gap: 16,
+        }}
+      >
+        <div style={CARD_STYLE}>
+          <div style={{ fontSize: 28, fontWeight: 700 }}>Market Scanner Pro</div>
+          <div style={{ color: "#64748b", marginTop: 8 }}>
+            即時市場掃描器（1h 週期）
+          </div>
+          <div style={{ color: "#64748b", marginTop: 6 }}>
+            最後更新：{lastUpdated || "-"}
+          </div>
+        </div>
 
-      {loading ? (
-        <p style={{ marginTop: 20 }}>載入中...</p>
-      ) : (
-        <table
-          style={{
-            width: "100%",
-            marginTop: 20,
-            borderCollapse: "collapse",
-            background: "white",
-            border: "1px solid #ddd",
-          }}
-        >
-          <thead>
-            <tr style={{ background: "#111", color: "white" }}>
-              <th style={{ padding: 12, textAlign: "left" }}>Symbol</th>
-              <th style={{ padding: 12, textAlign: "left" }}>Price</th>
-              <th style={{ padding: 12, textAlign: "left" }}>Trend</th>
-              <th style={{ padding: 12, textAlign: "left" }}>Signal</th>
-              <th style={{ padding: 12, textAlign: "left" }}>Win %</th>
-              <th style={{ padding: 12, textAlign: "left" }}>MA20</th>
-              <th style={{ padding: 12, textAlign: "left" }}>RSI</th>
-            </tr>
-          </thead>
+        <div style={CARD_STYLE}>
+          <div style={{ fontSize: 14, color: "#64748b" }}>最佳做多機會</div>
+          <div style={{ marginTop: 10, fontSize: 24, fontWeight: 700 }}>
+            {bestLong ? bestLong.symbol : "-"}
+          </div>
+          <div style={{ marginTop: 8 }}>{bestLong ? bestLong.signal : "-"}</div>
+          <div style={{ marginTop: 8, color: "#64748b" }}>
+            {bestLong ? `${bestLong.prob}%` : "-"}
+          </div>
+        </div>
 
-          <tbody>
-            {signals.map((s) => (
-              <tr key={s.fullSymbol} style={{ borderTop: "1px solid #eee" }}>
-                <td style={{ padding: 12 }}>{s.symbol}</td>
-                <td style={{ padding: 12 }}>${s.price.toFixed(2)}</td>
-                <td style={{ padding: 12 }}>{s.trend}</td>
-                <td style={{ padding: 12 }}>{s.signal}</td>
-                <td style={{ padding: 12 }}>{s.prob}%</td>
-                <td style={{ padding: 12 }}>
-                  {s.ma20 ? s.ma20.toFixed(2) : "-"}
-                </td>
-                <td style={{ padding: 12 }}>
-                  {s.rsi ? s.rsi.toFixed(2) : "-"}
-                </td>
+        <div style={CARD_STYLE}>
+          <div style={{ fontSize: 14, color: "#64748b" }}>最佳做空機會</div>
+          <div style={{ marginTop: 10, fontSize: 24, fontWeight: 700 }}>
+            {bestShort ? bestShort.symbol : "-"}
+          </div>
+          <div style={{ marginTop: 8 }}>{bestShort ? bestShort.signal : "-"}</div>
+          <div style={{ marginTop: 8, color: "#64748b" }}>
+            {bestShort ? `${bestShort.prob}%` : "-"}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ ...CARD_STYLE, marginTop: 18, padding: 0, overflow: "hidden" }}>
+        {loading ? (
+          <div style={{ padding: 20 }}>載入中...</div>
+        ) : (
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              background: "white",
+            }}
+          >
+            <thead>
+              <tr style={{ background: "#0f172a", color: "white" }}>
+                <th style={thStyle}>Symbol</th>
+                <th style={thStyle}>Price</th>
+                <th style={thStyle}>Trend</th>
+                <th style={thStyle}>Signal</th>
+                <th style={thStyle}>Win %</th>
+                <th style={thStyle}>MA20</th>
+                <th style={thStyle}>RSI</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+            </thead>
+
+            <tbody>
+              {signals.map((s) => (
+                <tr key={s.fullSymbol} style={{ borderTop: "1px solid #e2e8f0" }}>
+                  <td style={tdStyle}>{s.symbol}</td>
+                  <td style={tdStyle}>${s.price.toFixed(2)}</td>
+                  <td style={tdStyle}>{s.trend}</td>
+                  <td style={tdStyle}>{s.signal}</td>
+                  <td style={tdStyle}>{s.prob}%</td>
+                  <td style={tdStyle}>{s.ma20 ? s.ma20.toFixed(2) : "-"}</td>
+                  <td style={tdStyle}>{s.rsi ? s.rsi.toFixed(2) : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   )
+}
+
+const thStyle = {
+  padding: 14,
+  textAlign: "left",
+  fontSize: 15,
+}
+
+const tdStyle = {
+  padding: 14,
+  textAlign: "left",
+  fontSize: 16,
 }
