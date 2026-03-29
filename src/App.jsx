@@ -675,6 +675,10 @@ function buildAiSummary({
   longProb,
   shortProb,
   primaryTimeframe,
+  rrLabel,
+  fakeBreakoutRisk,
+  tradability,
+  waitReasons,
 }) {
   const regimeText =
     marketRegime === "trend"
@@ -703,50 +707,146 @@ function buildAiSummary({
       ? "偏空主因來自均線壓制、結構偏弱與動能下行"
       : "目前多空動能互有拉扯，暫不具明確單邊優勢";
 
-  return `主週期（${primaryTimeframe}）判讀為${bias}，市場目前屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，整體信心等級為 ${confidenceLevel.toUpperCase()}。${reason}；因此策略建議「${entryAdvice} / ${setup}」，多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`;
+  const waitText = waitReasons?.length ? `目前不急於進場，主因：${waitReasons.join("、")}。` : "";
+  return `主週期（${primaryTimeframe}）判讀為${bias}，市場目前屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，整體信心等級為 ${confidenceLevel.toUpperCase()}。${reason}。風報比評估為 ${rrLabel}，假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；因此策略建議「${entryAdvice} / ${setup}」，多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%。${waitText}請依波動調整倉位與節奏。`;
+}
+
+function categorizeRR(rr) {
+  if (rr == null || rr <= 0) return "不足";
+  if (rr < 1.2) return "不足（<1.2）";
+  if (rr < 1.5) return "普通（1.2~1.5）";
+  if (rr < 2) return "可接受（>1.5）";
+  return "較佳（>2.0）";
 }
 
 function getTradePlan({ bias, setup, levels, price, atr }) {
   const buffer = Math.max((atr || price * 0.01) * 0.3, price * 0.002);
+  const calcRR = (entry, stop, target, side) => {
+    if (!entry || !stop || !target) return null;
+    const risk = side === "long" ? entry - stop : stop - entry;
+    const reward = side === "long" ? target - entry : entry - target;
+    if (risk <= 0 || reward <= 0) return null;
+    return reward / risk;
+  };
 
   if (bias === "偏多") {
+    const entryLow =
+      setup === "等突破" ? levels.structureResistanceZone.low : levels.structureSupportZone.low;
+    const entryHigh =
+      setup === "等突破" ? levels.structureResistanceZone.high + buffer : levels.structureSupportZone.high;
+    const entryMid = (entryLow + entryHigh) / 2;
+    const stop = levels.structureSupportZone.low - buffer;
+    const target1 = levels.nearestResistance;
+    const target2 = levels.secondResistance;
+    const rr1 = calcRR(entryMid, stop, target1, "long");
+    const rr2 = calcRR(entryMid, stop, target2, "long");
+
     return {
-      entryZone:
-        setup === "等突破"
-          ? `${formatNumber(levels.structureResistanceZone.low)} ~ ${formatNumber(
-              levels.structureResistanceZone.high + buffer
-            )}`
-          : `${formatNumber(levels.structureSupportZone.low)} ~ ${formatNumber(
-              levels.structureSupportZone.high
-            )}`,
-      invalidation: formatNumber(levels.structureSupportZone.low - buffer),
-      target1: formatNumber(levels.nearestResistance),
-      target2: formatNumber(levels.secondResistance),
+      side: "long",
+      entryLow,
+      entryHigh,
+      entryMid,
+      stop,
+      target1,
+      target2,
+      rr1,
+      rr2,
+      rrBest: Math.max(rr1 || 0, rr2 || 0) || null,
+      rrLabel: categorizeRR(Math.max(rr1 || 0, rr2 || 0) || null),
+      entryZone: `${formatNumber(entryLow)} ~ ${formatNumber(entryHigh)}`,
+      invalidation: formatNumber(stop),
+      target1Text: formatNumber(target1),
+      target2Text: formatNumber(target2),
     };
   }
 
   if (bias === "偏空") {
+    const entryLow =
+      setup === "等跌破" ? levels.structureSupportZone.low - buffer : levels.structureResistanceZone.low;
+    const entryHigh =
+      setup === "等跌破" ? levels.structureSupportZone.high : levels.structureResistanceZone.high;
+    const entryMid = (entryLow + entryHigh) / 2;
+    const stop = levels.structureResistanceZone.high + buffer;
+    const target1 = levels.nearestSupport;
+    const target2 = levels.secondSupport;
+    const rr1 = calcRR(entryMid, stop, target1, "short");
+    const rr2 = calcRR(entryMid, stop, target2, "short");
+
     return {
-      entryZone:
-        setup === "等跌破"
-          ? `${formatNumber(levels.structureSupportZone.low - buffer)} ~ ${formatNumber(
-              levels.structureSupportZone.high
-            )}`
-          : `${formatNumber(levels.structureResistanceZone.low)} ~ ${formatNumber(
-              levels.structureResistanceZone.high
-            )}`,
-      invalidation: formatNumber(levels.structureResistanceZone.high + buffer),
-      target1: formatNumber(levels.nearestSupport),
-      target2: formatNumber(levels.secondSupport),
+      side: "short",
+      entryLow,
+      entryHigh,
+      entryMid,
+      stop,
+      target1,
+      target2,
+      rr1,
+      rr2,
+      rrBest: Math.max(rr1 || 0, rr2 || 0) || null,
+      rrLabel: categorizeRR(Math.max(rr1 || 0, rr2 || 0) || null),
+      entryZone: `${formatNumber(entryLow)} ~ ${formatNumber(entryHigh)}`,
+      invalidation: formatNumber(stop),
+      target1Text: formatNumber(target1),
+      target2Text: formatNumber(target2),
     };
   }
 
   return {
+    side: "neutral",
+    rr1: null,
+    rr2: null,
+    rrBest: null,
+    rrLabel: "不足",
     entryZone: "等待突破或回踩確認",
     invalidation: "-",
-    target1: formatNumber(levels.nearestResistance),
-    target2: formatNumber(levels.secondSupport),
+    target1Text: formatNumber(levels.nearestResistance),
+    target2Text: formatNumber(levels.secondSupport),
   };
+}
+
+function detectFakeBreakoutRisk({ candles, levels, atr, volumeState, breakoutState }) {
+  if (!candles?.length) return { score: 0, risk: "低", reasons: [] };
+  const last = candles[candles.length - 1];
+  const prev = candles[candles.length - 2];
+  const body = Math.abs(last.close - last.open);
+  const candleRange = Math.max(last.high - last.low, 1e-8);
+  const upperWick = last.high - Math.max(last.open, last.close);
+  const lowerWick = Math.min(last.open, last.close) - last.low;
+  const buffer = Math.max((atr || last.close * 0.01) * 0.2, last.close * 0.002);
+  let score = 0;
+  const reasons = [];
+
+  if (["向上突破", "向下跌破"].includes(breakoutState) && volumeState === "量縮") {
+    score += 2.4;
+    reasons.push("突破/跌破但量能不足");
+  }
+
+  const backIntoRangeUp =
+    last.high > levels.structureResistanceZone.high + buffer && last.close < levels.structureResistanceZone.high;
+  const backIntoRangeDown =
+    last.low < levels.structureSupportZone.low - buffer && last.close > levels.structureSupportZone.low;
+  if (backIntoRangeUp || backIntoRangeDown) {
+    score += 3;
+    reasons.push("刺穿結構後收回區間");
+  }
+
+  if (upperWick > candleRange * 0.55 || lowerWick > candleRange * 0.55) {
+    score += 1.4;
+    reasons.push("長上/下影線偏長");
+  }
+
+  if (prev && ((backIntoRangeUp && last.close < prev.close) || (backIntoRangeDown && last.close > prev.close))) {
+    score += 1.8;
+    reasons.push("刺穿後快速反轉");
+  }
+
+  if (body / candleRange < 0.22) {
+    score += 0.8;
+    reasons.push("實體偏小，方向確認不足");
+  }
+
+  const risk = score >= 5.2 ? "高" : score >= 3 ? "中" : "低";
+  return { score: Number(score.toFixed(1)), risk, reasons };
 }
 
 function analyzeMarket(candlesByInterval, primaryTimeframe) {
@@ -883,6 +983,13 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     isHighVolatility: marketRegime === "high volatility",
     volumeState,
   });
+  const fakeBreakout = detectFakeBreakoutRisk({
+    candles,
+    levels,
+    atr,
+    volumeState,
+    breakoutState,
+  });
 
   let entryAdvice = "先觀望";
   let setup = "等待更明確訊號";
@@ -940,6 +1047,80 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
   const volatilityRatio = atr && price ? atr / price : 0;
   const riskLevel = volatilityRatio > 0.025 ? "高" : volatilityRatio > 0.015 ? "中" : "低";
   const tradePlan = getTradePlan({ bias, setup, levels, price, atr });
+
+  const waitReasons = [];
+  let entryScoreAdjusted = entryScoreBase;
+  let confidenceScorePenalty = 0;
+
+  if (marketRegime === "weak trend" || marketRegime === "ranging") {
+    waitReasons.push("市場偏弱趨勢/震盪");
+    entryScoreAdjusted -= 0.8;
+    confidenceScorePenalty += 1;
+  }
+  if (mtfDisagreement >= 0.42) {
+    waitReasons.push("多週期方向分歧偏大");
+    entryScoreAdjusted -= 1;
+    confidenceScorePenalty += 1;
+  }
+  if (fakeBreakout.risk === "中") {
+    waitReasons.push("假突破風險偏高");
+    entryScoreAdjusted -= 0.8;
+    confidenceScorePenalty += 1;
+  }
+  if (fakeBreakout.risk === "高") {
+    waitReasons.push("疑似流動性掃單/假突破");
+    entryScoreAdjusted -= 1.4;
+    confidenceScorePenalty += 2;
+  }
+
+  if (tradePlan.rrBest != null) {
+    if (tradePlan.rrBest < 1.2) {
+      waitReasons.push("風報比低於 1.2");
+      entryScoreAdjusted -= 2.2;
+      confidenceScorePenalty += 2;
+    } else if (tradePlan.rrBest < 1.5) {
+      waitReasons.push("風報比僅屬普通");
+      entryScoreAdjusted -= 0.8;
+      confidenceScorePenalty += 1;
+    } else if (tradePlan.rrBest > 2) {
+      entryScoreAdjusted += 0.4;
+    }
+  }
+
+  if (
+    (bias === "偏多" && (breakoutState === "反彈壓力中" || structureInfo.structure === "下降結構")) ||
+    (bias === "偏空" && (breakoutState === "回踩支撐中" || structureInfo.structure === "上升結構"))
+  ) {
+    waitReasons.push("結構與短線動能互相矛盾");
+    entryScoreAdjusted -= 1.1;
+    confidenceScorePenalty += 1;
+  }
+
+  entryScoreAdjusted = clamp(entryScoreAdjusted, 0, 10);
+  let adjustedConfidenceLevel = confidenceLevel;
+  if (confidenceScorePenalty >= 4) adjustedConfidenceLevel = "low";
+  else if (confidenceScorePenalty >= 2 && confidenceLevel === "high") adjustedConfidenceLevel = "medium";
+  else if (confidenceScorePenalty >= 2 && confidenceLevel === "medium") adjustedConfidenceLevel = "low";
+
+  const shouldWait =
+    bias === "中性" ||
+    entryScoreAdjusted < 5 ||
+    waitReasons.length >= 3 ||
+    fakeBreakout.risk === "高" ||
+    (tradePlan.rrBest != null && tradePlan.rrBest < 1.2);
+
+  if (shouldWait) {
+    entryAdvice = "建議觀望 / 暫不進場";
+    if (fakeBreakout.risk === "高") setup = "等待重新站穩 / 跌破確認";
+    else if (breakoutState === "區間內") setup = "等待突破確認";
+    else setup = "等待回踩 / 反彈確認";
+    if (waitReasons.length) {
+      explanation = `目前條件不足，${waitReasons.join("、")}，先等待更完整確認訊號。`;
+    } else {
+      explanation = "目前條件不足，先等待更完整確認訊號。";
+    }
+  }
+
   const { longProb, shortProb } = probabilityModel({
     bias,
     breakoutState,
@@ -949,20 +1130,21 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     priceVsVwap,
     riskLevel,
     marketRegime,
-    confidenceLevel,
-    entryScore: entryScoreBase,
+    confidenceLevel: adjustedConfidenceLevel,
+    entryScore: entryScoreAdjusted,
   });
 
-  const smartSignal =
-    bias === "偏多"
-      ? breakoutState === "向上突破"
-        ? "順勢突破多"
-        : "回踩支撐多"
-      : bias === "偏空"
-      ? breakoutState === "向下跌破"
-        ? "順勢跌破空"
-        : "反彈壓力空"
-      : "等待確認";
+  const smartSignal = shouldWait
+    ? "等待確認"
+    : bias === "偏多"
+    ? breakoutState === "向上突破"
+      ? "順勢突破多"
+      : "回踩支撐多"
+    : bias === "偏空"
+    ? breakoutState === "向下跌破"
+      ? "順勢跌破空"
+      : "反彈壓力空"
+    : "等待確認";
 
   const aiSummary = buildAiSummary({
     bias,
@@ -977,6 +1159,10 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     longProb,
     shortProb,
     primaryTimeframe,
+    rrLabel: tradePlan.rrLabel,
+    fakeBreakoutRisk: fakeBreakout.risk,
+    tradability: shouldWait ? "等待確認" : "可規劃進場",
+    waitReasons,
   });
 
   const timeframeBiases = timeframeSignals.map(({ interval, bias: intervalBias, spread, weight }) => ({
@@ -1008,14 +1194,16 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     levels,
     higherBiases: timeframeBiases,
     confluence,
-    confidenceLevel,
+    confidenceLevel: adjustedConfidenceLevel,
     marketRegime,
-    entryScore: Number(entryScoreBase.toFixed(1)),
+    entryScore: Number(entryScoreAdjusted.toFixed(1)),
     riskLevel,
     structure: structureInfo.structure,
     breakoutState,
     volumeState,
     tradePlan,
+    fakeBreakout,
+    waitReasons,
     liquiditySweep,
     trendlineState,
     aiSummary,
@@ -1473,6 +1661,13 @@ export default function CryptoSignalWebApp() {
                       {formatNumber(analysis?.takeProfit1, digits)} / {formatNumber(analysis?.takeProfit2, digits)}
                     </div>
                   </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">風報比 RR</div>
+                    <div className="mt-1 text-lg font-semibold">
+                      {formatNumber(analysis?.tradePlan?.rr1, 2)} / {formatNumber(analysis?.tradePlan?.rr2, 2)}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">{analysis?.tradePlan?.rrLabel || "-"}</div>
+                  </div>
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 p-4 text-sm leading-6 text-slate-600">
@@ -1493,11 +1688,11 @@ export default function CryptoSignalWebApp() {
                   </div>
                   <div className="rounded-2xl bg-slate-100 p-4">
                     <div className="text-sm text-slate-500">目標一</div>
-                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target1 || "-"}</div>
+                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target1Text || "-"}</div>
                   </div>
                   <div className="rounded-2xl bg-slate-100 p-4">
                     <div className="text-sm text-slate-500">目標二</div>
-                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target2 || "-"}</div>
+                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target2Text || "-"}</div>
                   </div>
                 </div>
               </CardContent>
@@ -1556,6 +1751,12 @@ export default function CryptoSignalWebApp() {
                       {formatNumber(currentCandle?.low, digits)} ~ {formatNumber(currentCandle?.high, digits)}
                     </div>
                   </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">假突破風險</div>
+                    <div className="mt-1 text-lg font-semibold">
+                      {analysis?.fakeBreakout?.risk || "-"}（{formatNumber(analysis?.fakeBreakout?.score, 1)}）
+                    </div>
+                  </div>
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 p-4 text-sm text-slate-600">
@@ -1563,6 +1764,8 @@ export default function CryptoSignalWebApp() {
                   <div>多方分數：{formatNumber(analysis?.bullScore, 1)}</div>
                   <div>空方分數：{formatNumber(analysis?.bearScore, 1)}</div>
                   <div>成交量：{formatNumber(currentCandle?.volume, 2)}</div>
+                  <div>RR（目標一/二）：{formatNumber(analysis?.tradePlan?.rr1, 2)} / {formatNumber(analysis?.tradePlan?.rr2, 2)}</div>
+                  <div>假突破因子：{(analysis?.fakeBreakout?.reasons || []).join("、") || "暫無明顯異常"}</div>
                   <div>V3 勝率結合主趨勢、多週期一致性、市場狀態、量能與波動風險。</div>
 
                   <div className="mt-3 font-medium text-slate-700">多週期同步</div>
