@@ -43,14 +43,9 @@ const INTERVAL_OPTIONS = [
   { label: "1d", value: "1d" },
 ];
 
-const HIGHER_INTERVAL_MAP = {
-  "15m": ["1h", "4h"],
-  "1h": ["4h", "1d"],
-  "4h": ["1d"],
-  "1d": [],
-};
+const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 
-const APP_TITLE = "Crypto Signal Pro V2";
+const APP_TITLE = "Crypto Signal Pro V3";
 
 function ema(values, period) {
   if (!values.length) return [];
@@ -446,77 +441,219 @@ function detectTrendlineState(candles) {
   return "趨勢線偏平";
 }
 
-function probabilityModel({
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getDirectionalSignal(candles) {
+  const closes = candles.map((c) => c.close);
+  const price = closes[closes.length - 1];
+  const ma20 = sma(closes, 20).at(-1);
+  const ma50 = sma(closes, 50).at(-1);
+  const rsi = calculateRSI(closes, 14);
+  const macd = calculateMACD(closes);
+  const recent = closes.slice(-8);
+  const slope = recent.length > 1 ? recent[recent.length - 1] - recent[0] : 0;
+
+  let longScore = 0;
+  let shortScore = 0;
+
+  if (ma20 != null && price > ma20) longScore += 1;
+  else shortScore += 1;
+  if (ma50 != null && price > ma50) longScore += 1;
+  else shortScore += 1;
+  if (slope > 0) longScore += 0.8;
+  else if (slope < 0) shortScore += 0.8;
+  if (macd && macd.histogram > 0) longScore += 0.8;
+  if (macd && macd.histogram < 0) shortScore += 0.8;
+  if (rsi != null && rsi >= 54 && rsi <= 72) longScore += 0.6;
+  if (rsi != null && rsi <= 46 && rsi >= 28) shortScore += 0.6;
+
+  const spread = longScore - shortScore;
+  const bias = spread > 0.75 ? "偏多" : spread < -0.75 ? "偏空" : "中性";
+  return { bias, spread, longScore, shortScore, slope };
+}
+
+function detectMarketRegime({ adx, atr, price, structure, breakoutState }) {
+  const volatilityRatio = atr && price ? atr / price : 0;
+  if (volatilityRatio > 0.028) return "high volatility";
+  if (adx != null && adx >= 27 && ["上升結構", "下降結構"].includes(structure)) return "trend";
+  if (adx != null && adx < 16 && breakoutState === "區間內") return "ranging";
+  return "weak trend";
+}
+
+function computeDimensionScores({
   bias,
-  structure,
-  breakoutState,
-  confluence,
+  priceAboveMA20,
+  priceAboveMA50,
+  adx,
   rsi,
   stochRsi,
-  adx,
+  macd,
+  volumeState,
+  breakoutState,
+  priceVsVwap,
+  structure,
+  mtfAlignment,
+  marketRegime,
+}) {
+  const trendDirection = bias === "偏多" ? 1 : bias === "偏空" ? -1 : 0;
+
+  let trendStrength = 5;
+  if (trendDirection !== 0) {
+    const maAgree = (priceAboveMA20 ? 1 : -1) === trendDirection && (priceAboveMA50 ? 1 : -1) === trendDirection;
+    if (maAgree) trendStrength += 2;
+    if (adx != null) trendStrength += clamp((adx - 16) / 6, -1.2, 2.2);
+    if (structure === "上升結構" && trendDirection > 0) trendStrength += 1.2;
+    if (structure === "下降結構" && trendDirection < 0) trendStrength += 1.2;
+  }
+
+  let momentum = 5;
+  if (trendDirection > 0) {
+    if (macd?.histogram > 0) momentum += 1.6;
+    if (rsi != null && rsi >= 53 && rsi <= 70) momentum += 1.3;
+    if (stochRsi != null && stochRsi < 20) momentum += 0.6;
+    if (stochRsi != null && stochRsi > 85) momentum -= 1;
+  } else if (trendDirection < 0) {
+    if (macd?.histogram < 0) momentum += 1.6;
+    if (rsi != null && rsi <= 47 && rsi >= 30) momentum += 1.3;
+    if (stochRsi != null && stochRsi > 80) momentum += 0.6;
+    if (stochRsi != null && stochRsi < 15) momentum -= 1;
+  }
+
+  let volumeConfirmation = 5;
+  if (volumeState === "放量") {
+    volumeConfirmation += ["向上突破", "向下跌破"].includes(breakoutState) ? 2.2 : 1.2;
+  }
+  if (volumeState === "量縮") volumeConfirmation -= 1.4;
+
+  let structurePosition = 5;
+  if (
+    trendDirection > 0 &&
+    (structure === "上升結構" || breakoutState === "向上突破" || breakoutState === "回踩支撐中")
+  ) {
+    structurePosition += 1.8;
+  }
+  if (
+    trendDirection < 0 &&
+    (structure === "下降結構" || breakoutState === "向下跌破" || breakoutState === "反彈壓力中")
+  ) {
+    structurePosition += 1.8;
+  }
+  if (priceVsVwap * trendDirection > 0.003) structurePosition += 1;
+  if (priceVsVwap * trendDirection < -0.003) structurePosition -= 0.8;
+
+  let multiTimeframeAlignment = 5 + mtfAlignment * 4;
+
+  if (marketRegime === "trend") {
+    trendStrength += 0.8;
+    multiTimeframeAlignment += 0.6;
+  } else if (marketRegime === "ranging") {
+    momentum -= 0.5;
+    structurePosition -= 0.6;
+  } else if (marketRegime === "high volatility") {
+    momentum -= 1;
+    structurePosition -= 0.8;
+    multiTimeframeAlignment -= 0.8;
+  }
+
+  return {
+    trendStrength: clamp(trendStrength, 0, 10),
+    momentum: clamp(momentum, 0, 10),
+    volumeConfirmation: clamp(volumeConfirmation, 0, 10),
+    structurePosition: clamp(structurePosition, 0, 10),
+    multiTimeframeAlignment: clamp(multiTimeframeAlignment, 0, 10),
+  };
+}
+
+function deriveConfidenceLevel({ mtfAlignedRatio, trendStrengthScore, momentumScore, isHighVolatility, volumeState }) {
+  let confidenceScore = 50;
+  confidenceScore += mtfAlignedRatio * 25;
+  confidenceScore += (trendStrengthScore - 5) * 4;
+  confidenceScore += (momentumScore - 5) * 3;
+  if (volumeState === "放量") confidenceScore += 8;
+  if (volumeState === "量縮") confidenceScore -= 6;
+  if (isHighVolatility) confidenceScore -= 14;
+
+  if (confidenceScore >= 67) return "high";
+  if (confidenceScore >= 48) return "medium";
+  return "low";
+}
+
+function probabilityModel({
+  bias,
+  breakoutState,
+  confluence,
   volumeState,
   liquiditySweep,
   priceVsVwap,
   riskLevel,
+  marketRegime,
+  confidenceLevel,
+  entryScore,
 }) {
   let longProb = 50;
   let shortProb = 50;
 
   if (bias === "偏多") {
-    longProb += 15;
-    shortProb -= 15;
+    longProb += 14;
+    shortProb -= 14;
   }
   if (bias === "偏空") {
-    shortProb += 15;
-    longProb -= 15;
+    shortProb += 14;
+    longProb -= 14;
   }
 
-  if (structure === "上升結構") longProb += 8;
-  if (structure === "下降結構") shortProb += 8;
-  if (breakoutState === "向上突破") longProb += 8;
-  if (breakoutState === "向下跌破") shortProb += 8;
   if (confluence === "多週期偏多") longProb += 10;
   if (confluence === "多週期偏空") shortProb += 10;
-
-  if (rsi != null && rsi > 70) {
-    longProb -= 6;
-    shortProb += 6;
-  }
-  if (rsi != null && rsi < 30) {
-    shortProb -= 6;
-    longProb += 6;
-  }
-  if (stochRsi != null && stochRsi > 85) {
-    longProb -= 5;
-    shortProb += 5;
-  }
-  if (stochRsi != null && stochRsi < 15) {
-    shortProb -= 5;
-    longProb += 5;
+  if (confluence === "多週期分歧") {
+    longProb -= 4;
+    shortProb -= 4;
   }
 
-  if (volumeState === "放量" && breakoutState === "向上突破") longProb += 4;
-  if (volumeState === "放量" && breakoutState === "向下跌破") shortProb += 4;
-  if (liquiditySweep === "上方流動性掃單") shortProb += 6;
-  if (liquiditySweep === "下方流動性掃單") longProb += 6;
-  if (priceVsVwap > 0.003) longProb += 5;
-  if (priceVsVwap < -0.003) shortProb += 5;
+  if (breakoutState === "向上突破") longProb += 7;
+  if (breakoutState === "向下跌破") shortProb += 7;
 
-  if (adx != null && adx < 16) {
-    longProb -= 5;
-    shortProb -= 5;
-  } else if (adx != null && adx > 28) {
-    if (bias === "偏多") longProb += 4;
-    if (bias === "偏空") shortProb += 4;
-  }
-
-  if (riskLevel === "高") {
+  if (volumeState === "放量" && bias === "偏多") longProb += 4;
+  if (volumeState === "放量" && bias === "偏空") shortProb += 4;
+  if (volumeState === "量縮") {
     longProb -= 2;
     shortProb -= 2;
   }
 
-  longProb = Math.max(5, Math.min(95, longProb));
-  shortProb = Math.max(5, Math.min(95, shortProb));
+  if (liquiditySweep === "上方流動性掃單") shortProb += 5;
+  if (liquiditySweep === "下方流動性掃單") longProb += 5;
+  if (priceVsVwap > 0.003) longProb += 4;
+  if (priceVsVwap < -0.003) shortProb += 4;
+
+  if (marketRegime === "trend") {
+    if (bias === "偏多") longProb += 4;
+    if (bias === "偏空") shortProb += 4;
+  }
+  if (marketRegime === "ranging") {
+    if (breakoutState === "向上突破") longProb -= 2;
+    if (breakoutState === "向下跌破") shortProb -= 2;
+  }
+  if (marketRegime === "high volatility" || riskLevel === "高") {
+    longProb -= 3;
+    shortProb -= 3;
+  }
+
+  if (confidenceLevel === "high") {
+    if (bias === "偏多") longProb += 5;
+    if (bias === "偏空") shortProb += 5;
+  } else if (confidenceLevel === "low") {
+    longProb -= 3;
+    shortProb -= 3;
+  }
+
+  if (entryScore <= 4.5) {
+    longProb -= 3;
+    shortProb -= 3;
+  }
+
+  longProb = clamp(longProb, 5, 95);
+  shortProb = clamp(shortProb, 5, 95);
   const total = longProb + shortProb;
 
   return {
@@ -531,23 +668,42 @@ function buildAiSummary({
   breakoutState,
   volumeState,
   confluence,
-  liquiditySweep,
-  trendlineState,
+  marketRegime,
+  confidenceLevel,
   setup,
+  entryAdvice,
   longProb,
   shortProb,
+  primaryTimeframe,
 }) {
-  const parts = [];
-  parts.push(`目前偏向${bias}`);
-  parts.push(`結構為${structure}`);
-  parts.push(`當前屬於${breakoutState}`);
-  if (confluence !== "多週期分歧") parts.push(confluence);
-  if (volumeState !== "一般") parts.push(volumeState);
-  if (liquiditySweep !== "無明顯掃流動性") parts.push(liquiditySweep);
-  if (trendlineState !== "趨勢線偏平") parts.push(trendlineState);
-  parts.push(`多頭勝率約 ${longProb}% / 空頭勝率約 ${shortProb}%`);
-  parts.push(`策略以${setup}為主`);
-  return parts.join("，") + "。";
+  const regimeText =
+    marketRegime === "trend"
+      ? "趨勢盤"
+      : marketRegime === "ranging"
+      ? "震盪盤"
+      : marketRegime === "high volatility"
+      ? "高波動盤"
+      : "弱趨勢盤";
+
+  const rhythm =
+    breakoutState === "向上突破"
+      ? "短線節奏偏突破延續"
+      : breakoutState === "向下跌破"
+      ? "短線節奏偏弱勢延續"
+      : breakoutState === "回踩支撐中"
+      ? "短線正處於回踩確認"
+      : breakoutState === "反彈壓力中"
+      ? "短線以反彈測壓為主"
+      : "短線仍在區間內等待方向";
+
+  const reason =
+    bias === "偏多"
+      ? "偏多主因來自均線位置、結構與動能站在多方"
+      : bias === "偏空"
+      ? "偏空主因來自均線壓制、結構偏弱與動能下行"
+      : "目前多空動能互有拉扯，暫不具明確單邊優勢";
+
+  return `主週期（${primaryTimeframe}）判讀為${bias}，市場目前屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，整體信心等級為 ${confidenceLevel.toUpperCase()}。${reason}；因此策略建議「${entryAdvice} / ${setup}」，多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`;
 }
 
 function getTradePlan({ bias, setup, levels, price, atr }) {
@@ -593,7 +749,10 @@ function getTradePlan({ bias, setup, levels, price, atr }) {
   };
 }
 
-function analyzeMarket(candles, higherTimeframeData = []) {
+function analyzeMarket(candlesByInterval, primaryTimeframe) {
+  const candles = candlesByInterval[primaryTimeframe] || [];
+  if (!candles.length) return null;
+
   const closes = candles.map((c) => c.close);
   const price = closes[closes.length - 1];
   const ma20 = sma(closes, 20).at(-1);
@@ -624,29 +783,22 @@ function analyzeMarket(candles, higherTimeframeData = []) {
 
   if (priceAboveMA20) bullScore += 1.2;
   else bearScore += 1.2;
-
   if (priceAboveMA50) bullScore += 1.2;
   else bearScore += 1.2;
-
   if (trendSlope > 0) bullScore += 1;
   else bearScore += 1;
-
   if (macdBullish) bullScore += 1.1;
   if (macdBearish) bearScore += 1.1;
-
   if (rsi !== null && rsi >= 55 && rsi <= 70) bullScore += 1;
   if (rsi !== null && rsi <= 45 && rsi >= 30) bearScore += 1;
   if (stochRsi !== null && stochRsi > 80) bearScore += 0.6;
   if (stochRsi !== null && stochRsi < 20) bullScore += 0.6;
   if (priceVsVwap > 0.003) bullScore += 0.9;
   if (priceVsVwap < -0.003) bearScore += 0.9;
-
   if (structureInfo.structure === "上升結構") bullScore += 1;
   if (structureInfo.structure === "下降結構") bearScore += 1;
-
   if (breakoutState === "向上突破") bullScore += 1;
   if (breakoutState === "向下跌破") bearScore += 1;
-
   if (volumeState === "放量" && trendSlope > 0) bullScore += 0.5;
   if (volumeState === "放量" && trendSlope < 0) bearScore += 0.5;
 
@@ -654,82 +806,135 @@ function analyzeMarket(candles, higherTimeframeData = []) {
   if (bullScore - bearScore >= 1.5) bias = "偏多";
   if (bearScore - bullScore >= 1.5) bias = "偏空";
 
-  const higherBiases = higherTimeframeData.map(({ interval, candles }) => ({
-    interval,
-    ...getBiasFromCandles(candles),
-  }));
+  const intervalWeights = { "1d": 0.35, "4h": 0.3, "1h": 0.2, "15m": 0.15 };
+  const primaryBoost = 0.1;
+  const timeframeSignals = ANALYSIS_INTERVALS
+    .filter((interval) => candlesByInterval[interval]?.length)
+    .map((interval) => {
+      const signal = getDirectionalSignal(candlesByInterval[interval]);
+      const baseWeight = intervalWeights[interval] || 0.15;
+      const weight = interval === primaryTimeframe ? baseWeight + primaryBoost : baseWeight;
+      return { interval, ...signal, weight };
+    });
 
-  const higherBull = higherBiases.filter((item) => item.bias === "偏多").length;
-  const higherBear = higherBiases.filter((item) => item.bias === "偏空").length;
+  const normalizedWeight = timeframeSignals.reduce((sum, item) => sum + item.weight, 0) || 1;
+  const weightedSpread = timeframeSignals.reduce((sum, item) => sum + item.spread * item.weight, 0) / normalizedWeight;
+  const mtfBias = weightedSpread > 0.5 ? "偏多" : weightedSpread < -0.5 ? "偏空" : "中性";
+
+  const alignedWeight = timeframeSignals
+    .filter((item) => item.bias !== "中性" && item.bias === bias)
+    .reduce((sum, item) => sum + item.weight, 0);
+  const oppositeWeight = timeframeSignals
+    .filter((item) => item.bias !== "中性" && item.bias !== bias)
+    .reduce((sum, item) => sum + item.weight, 0);
+
+  const mtfAlignedRatio = normalizedWeight ? alignedWeight / normalizedWeight : 0;
+  const mtfDisagreement = normalizedWeight ? oppositeWeight / normalizedWeight : 0;
   const confluence =
-    higherBull > higherBear ? "多週期偏多" : higherBear > higherBull ? "多週期偏空" : "多週期分歧";
+    mtfBias === "偏多" ? "多週期偏多" : mtfBias === "偏空" ? "多週期偏空" : "多週期分歧";
 
-  const alignmentBonus =
-    bias === "偏多" && higherBull >= 1 ? 1 : bias === "偏空" && higherBear >= 1 ? 1 : 0;
+  const marketRegime = detectMarketRegime({
+    adx,
+    atr,
+    price,
+    structure: structureInfo.structure,
+    breakoutState,
+  });
 
-  const entryScoreBase = Math.max(
-    0,
-    Math.min(
-      10,
-      4.5 + Math.abs(bullScore - bearScore) + alignmentBonus + (breakoutState === "區間內" ? -0.5 : 0)
-    )
-  );
+  const regimeWeighting = {
+    trend: { trendStrength: 0.28, momentum: 0.2, volumeConfirmation: 0.16, structurePosition: 0.16, multiTimeframeAlignment: 0.2 },
+    ranging: { trendStrength: 0.2, momentum: 0.2, volumeConfirmation: 0.16, structurePosition: 0.24, multiTimeframeAlignment: 0.2 },
+    "high volatility": { trendStrength: 0.2, momentum: 0.17, volumeConfirmation: 0.16, structurePosition: 0.17, multiTimeframeAlignment: 0.3 },
+    "weak trend": { trendStrength: 0.24, momentum: 0.2, volumeConfirmation: 0.16, structurePosition: 0.18, multiTimeframeAlignment: 0.22 },
+  };
+
+  const dimensionScores = computeDimensionScores({
+    bias,
+    priceAboveMA20,
+    priceAboveMA50,
+    adx,
+    rsi,
+    stochRsi,
+    macd,
+    volumeState,
+    breakoutState,
+    priceVsVwap,
+    structure: structureInfo.structure,
+    mtfAlignment: mtfAlignedRatio - mtfDisagreement,
+    marketRegime,
+  });
+
+  const weights = regimeWeighting[marketRegime] || regimeWeighting["weak trend"];
+  let entryScoreBase =
+    dimensionScores.trendStrength * weights.trendStrength +
+    dimensionScores.momentum * weights.momentum +
+    dimensionScores.volumeConfirmation * weights.volumeConfirmation +
+    dimensionScores.structurePosition * weights.structurePosition +
+    dimensionScores.multiTimeframeAlignment * weights.multiTimeframeAlignment;
+
+  if (marketRegime === "high volatility") entryScoreBase -= 0.7;
+  if (mtfDisagreement > 0.45) entryScoreBase -= 0.8;
+  entryScoreBase = clamp(entryScoreBase, 0, 10);
+
+  const confidenceLevel = deriveConfidenceLevel({
+    mtfAlignedRatio,
+    trendStrengthScore: dimensionScores.trendStrength,
+    momentumScore: dimensionScores.momentum,
+    isHighVolatility: marketRegime === "high volatility",
+    volumeState,
+  });
 
   let entryAdvice = "先觀望";
   let setup = "等待更明確訊號";
   let stopLoss = null;
   let takeProfit1 = null;
   let takeProfit2 = null;
-  let explanation = "目前多空訊號接近，建議等待突破或回踩確認。";
+  let explanation = "多週期尚未形成足夠共振，先等待方向更一致。";
 
   if (bias === "偏多") {
-    if (rsi !== null && rsi > 68) {
-      entryAdvice = "不建議追多";
+    if (marketRegime === "ranging") {
+      entryAdvice = "保守偏多，等回踩";
       setup = "等回踩";
-      stopLoss = levels.structureSupportZone.low;
-      takeProfit1 = levels.nearestResistance;
-      takeProfit2 = levels.secondResistance;
-      explanation = "趨勢偏多，但 RSI 過熱，等回踩到結構支撐區會比直接追價更穩。";
-    } else if (breakoutState === "向上突破") {
+      explanation = "大方向偏多但盤面偏震盪，避免追價，優先在支撐區分批。";
+    } else if (marketRegime === "high volatility") {
+      entryAdvice = "降低倉位，等波動收斂";
+      setup = "等待波動降溫";
+      explanation = "高波動環境下假突破機率偏高，建議縮小倉位並等待更穩定節奏。";
+    } else if (breakoutState === "向上突破" && mtfAlignedRatio >= 0.45) {
       entryAdvice = "可考慮突破跟隨";
       setup = "等突破";
-      stopLoss = levels.structureResistanceZone.low;
-      takeProfit1 = levels.nearestResistance;
-      takeProfit2 = levels.secondResistance;
-      explanation = "出現向上突破，若高週期也偏多，可用小倉位順勢跟隨。";
+      explanation = "主趨勢與多週期方向一致，突破搭配量價條件可小倉位順勢。";
     } else {
       entryAdvice = "可考慮分批做多";
       setup = "等回踩";
-      stopLoss = levels.structureSupportZone.low;
-      takeProfit1 = levels.nearestResistance;
-      takeProfit2 = levels.secondResistance;
-      explanation = "均線、結構與動能偏多，優先等支撐區回踩而不是追價。";
+      explanation = "主趨勢偏多，短線以回踩支撐承接會比直接追價更穩。";
     }
+    stopLoss = levels.structureSupportZone.low;
+    takeProfit1 = levels.nearestResistance;
+    takeProfit2 = levels.secondResistance;
   }
 
   if (bias === "偏空") {
-    if (rsi !== null && rsi < 32) {
-      entryAdvice = "不建議追空";
+    if (marketRegime === "ranging") {
+      entryAdvice = "保守偏空，等反彈";
       setup = "等反彈";
-      stopLoss = levels.structureResistanceZone.high;
-      takeProfit1 = levels.nearestSupport;
-      takeProfit2 = levels.secondSupport;
-      explanation = "趨勢偏空，但 RSI 偏低，直接追空容易被反彈掃到，等反彈壓力區較佳。";
-    } else if (breakoutState === "向下跌破") {
+      explanation = "大方向偏空但盤勢震盪，建議等反彈壓力區再做評估。";
+    } else if (marketRegime === "high volatility") {
+      entryAdvice = "降低倉位，等波動收斂";
+      setup = "等待波動降溫";
+      explanation = "高波動使得反抽與急跌都加劇，建議先控風險再找節奏。";
+    } else if (breakoutState === "向下跌破" && mtfAlignedRatio >= 0.45) {
       entryAdvice = "可考慮跌破跟隨";
       setup = "等跌破";
-      stopLoss = levels.structureSupportZone.high;
-      takeProfit1 = levels.nearestSupport;
-      takeProfit2 = levels.secondSupport;
-      explanation = "出現向下跌破，若高週期同步偏空，可考慮小倉位順勢。";
+      explanation = "主趨勢與多週期偏空共振，跌破訊號可用小倉位順勢。";
     } else {
       entryAdvice = "可考慮分批做空";
       setup = "等反彈";
-      stopLoss = levels.structureResistanceZone.high;
-      takeProfit1 = levels.nearestSupport;
-      takeProfit2 = levels.secondSupport;
-      explanation = "價格位於均線下方且結構偏弱，優先等反彈壓力區，不建議在低位追空。";
+      explanation = "主趨勢偏空，短線優先等反彈壓力確認，不宜低位追空。";
     }
+    stopLoss = levels.structureResistanceZone.high;
+    takeProfit1 = levels.nearestSupport;
+    takeProfit2 = levels.secondSupport;
   }
 
   const volatilityRatio = atr && price ? atr / price : 0;
@@ -737,16 +942,15 @@ function analyzeMarket(candles, higherTimeframeData = []) {
   const tradePlan = getTradePlan({ bias, setup, levels, price, atr });
   const { longProb, shortProb } = probabilityModel({
     bias,
-    structure: structureInfo.structure,
     breakoutState,
     confluence,
-    rsi,
-    stochRsi,
-    adx,
     volumeState,
     liquiditySweep,
     priceVsVwap,
     riskLevel,
+    marketRegime,
+    confidenceLevel,
+    entryScore: entryScoreBase,
   });
 
   const smartSignal =
@@ -766,12 +970,21 @@ function analyzeMarket(candles, higherTimeframeData = []) {
     breakoutState,
     volumeState,
     confluence,
-    liquiditySweep,
-    trendlineState,
+    marketRegime,
+    confidenceLevel,
     setup,
+    entryAdvice,
     longProb,
     shortProb,
+    primaryTimeframe,
   });
+
+  const timeframeBiases = timeframeSignals.map(({ interval, bias: intervalBias, spread, weight }) => ({
+    interval,
+    bias: intervalBias,
+    spread: Number(spread.toFixed(2)),
+    weight: Number(weight.toFixed(2)),
+  }));
 
   return {
     price,
@@ -793,8 +1006,10 @@ function analyzeMarket(candles, higherTimeframeData = []) {
     bullScore,
     bearScore,
     levels,
-    higherBiases,
+    higherBiases: timeframeBiases,
     confluence,
+    confidenceLevel,
+    marketRegime,
     entryScore: Number(entryScoreBase.toFixed(1)),
     riskLevel,
     structure: structureInfo.structure,
@@ -807,6 +1022,7 @@ function analyzeMarket(candles, higherTimeframeData = []) {
     longProb,
     shortProb,
     smartSignal,
+    dimensionScores,
   };
 }
 
@@ -909,22 +1125,17 @@ export default function CryptoSignalWebApp() {
     setError("");
 
     try {
-      const rows = await fetchBinanceKlines(
-        nextSymbol,
-        nextTimeframe,
-        nextTimeframe === "1d" ? 365 : 240
+      const intervalEntries = await Promise.all(
+        ANALYSIS_INTERVALS.map(async (interval) => [
+          interval,
+          await fetchBinanceKlines(nextSymbol, interval, interval === "1d" ? 365 : 240),
+        ])
       );
 
-      const higherTimeframes = HIGHER_INTERVAL_MAP[nextTimeframe] || [];
-      const higherResults = await Promise.all(
-        higherTimeframes.map(async (tf) => ({
-          interval: tf,
-          candles: await fetchBinanceKlines(nextSymbol, tf, tf === "1d" ? 365 : 240),
-        }))
-      );
+      const candlesByInterval = Object.fromEntries(intervalEntries);
 
-      setCandles(rows);
-      setAnalysis(analyzeMarket(rows, higherResults));
+      setCandles(candlesByInterval[nextTimeframe] || []);
+      setAnalysis(analyzeMarket(candlesByInterval, nextTimeframe));
       setLastUpdated(new Date().toLocaleString());
     } catch (err) {
       setError(err.message || "讀取資料失敗");
@@ -1077,8 +1288,8 @@ export default function CryptoSignalWebApp() {
               ) : null}
 
               <div className="rounded-2xl bg-slate-100 p-4 text-sm text-slate-600">
-                目前分析週期：{timeframeLabel}。V2 已修正週期切換，並新增日線。系統會依目前幣種與週期重新抓 Binance
-                K 線資料，計算 MA20、MA50、RSI、MACD、ATR、結構、突破、量能、多週期共振與智能訊號。最後更新：
+                目前分析週期：{timeframeLabel}。V3 第一階段已升級為 15m / 1h / 4h / 1d 多週期共振，並加入市場狀態、
+                信心等級、分維度進場評分與強化結論文字。最後更新：
                 {lastUpdated || "-"}
               </div>
             </CardContent>
@@ -1101,8 +1312,8 @@ export default function CryptoSignalWebApp() {
           <MetricCard label="量能狀態" value={analysis?.volumeState || "-"} helper="放量 / 量縮 / 一般" />
           <MetricCard label="掃流動性" value={analysis?.liquiditySweep || "-"} helper="掃高 / 掃低" />
           <MetricCard label="趨勢線" value={analysis?.trendlineState || "-"} helper="趨勢線狀態" />
-          <MetricCard label="多頭勝率" value={`${analysis?.longProb ?? "-"}%`} helper="V2 概率模型" />
-          <MetricCard label="空頭勝率" value={`${analysis?.shortProb ?? "-"}%`} helper="V2 概率模型" />
+          <MetricCard label="多頭勝率" value={`${analysis?.longProb ?? "-"}%`} helper="V3 概率模型" />
+          <MetricCard label="空頭勝率" value={`${analysis?.shortProb ?? "-"}%`} helper="V3 概率模型" />
         </div>
 
         <div className="grid gap-4">
@@ -1141,12 +1352,22 @@ export default function CryptoSignalWebApp() {
                 </div>
 
                 <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">信心等級</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.confidenceLevel || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">市場狀態</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.marketRegime || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
                   <div className="text-sm text-slate-500">多週期共振</div>
                   <div className="mt-1 text-xl font-semibold">{analysis?.confluence || "-"}</div>
                 </div>
 
                 <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">V2 智能訊號</div>
+                  <div className="text-sm text-slate-500">V3 智能訊號</div>
                   <div className="mt-1 flex items-center gap-2 text-xl font-semibold">
                     <BrainCircuit className="h-5 w-5" />
                     {analysis?.smartSignal || "-"}
@@ -1255,9 +1476,9 @@ export default function CryptoSignalWebApp() {
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 p-4 text-sm leading-6 text-slate-600">
-                  <div>• V2 已加入日線，並修正週期切換會重新載入資料。</div>
-                  <div>• 偏多：優先等回踩支撐或突破確認，不建議在 RSI 過熱時追價。</div>
-                  <div>• 偏空：優先等反彈壓力或跌破確認，不建議在 RSI 過低時追空。</div>
+                  <div>• V3 第一階段改為四週期共振與市場狀態分流評分。</div>
+                  <div>• 趨勢盤偏重順勢，震盪盤偏重結構區間，高波動盤會主動降分控風險。</div>
+                  <div>• 若多週期分歧，進場分數與信心會同步下調。</div>
                   <div>• 勝率為概率模型推估，請搭配風控與結構位使用。</div>
                 </div>
 
@@ -1342,9 +1563,9 @@ export default function CryptoSignalWebApp() {
                   <div>多方分數：{formatNumber(analysis?.bullScore, 1)}</div>
                   <div>空方分數：{formatNumber(analysis?.bearScore, 1)}</div>
                   <div>成交量：{formatNumber(currentCandle?.volume, 2)}</div>
-                  <div>V2 勝率來自偏向、結構、突破、量能、流動性與高週期共振的綜合評分。</div>
+                  <div>V3 勝率結合主趨勢、多週期一致性、市場狀態、量能與波動風險。</div>
 
-                  <div className="mt-3 font-medium text-slate-700">高週期同步</div>
+                  <div className="mt-3 font-medium text-slate-700">多週期同步</div>
                   {(analysis?.higherBiases || []).map((item) => (
                     <div
                       key={item.interval}
