@@ -1788,7 +1788,7 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     weight: Number(weight.toFixed(2)),
   }));
 
-  return {
+  const analysisViewModel = {
     price,
     ma20,
     ma50,
@@ -1838,6 +1838,38 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     shortProb,
     smartSignal,
     dimensionScores,
+  };
+
+  const simulatorPayloadModel = {
+    version: "v6",
+    symbol: null,
+    timeframe: primaryTimeframe,
+    generatedAt: new Date().toISOString(),
+    finalDecision,
+    entryTiming,
+    setupType,
+    marketRegime,
+    confidenceLevel: adjustedConfidenceLevel,
+    tradePlan: finalTradePlan,
+    triggerEngine,
+    risk: {
+      riskLevel,
+      fakeBreakout,
+      rrLabel: finalTradePlan?.rrLabel || "無效",
+    },
+    context: {
+      bias,
+      confluence,
+      higherBiases: timeframeBiases,
+      waitReasons,
+      waitForConditions,
+      noEntryReason,
+    },
+  };
+
+  return {
+    analysisViewModel,
+    simulatorPayloadModel,
   };
 }
 
@@ -1930,10 +1962,12 @@ export default function CryptoSignalWebApp() {
   const [timeframe, setTimeframe] = useState("15m");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [analysis, setAnalysis] = useState(null);
+  const [analysisViewModel, setAnalysisViewModel] = useState(null);
+  const [simulatorPayloadModel, setSimulatorPayloadModel] = useState(null);
   const [candles, setCandles] = useState([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState("");
+  const [viewMode, setViewMode] = useState("analysis");
 
   const loadData = async (nextSymbol = symbol, nextTimeframe = timeframe) => {
     setIsLoading(true);
@@ -1949,8 +1983,14 @@ export default function CryptoSignalWebApp() {
 
       const candlesByInterval = Object.fromEntries(intervalEntries);
 
+      const nextAnalysis = analyzeMarket(candlesByInterval, nextTimeframe);
       setCandles(candlesByInterval[nextTimeframe] || []);
-      setAnalysis(analyzeMarket(candlesByInterval, nextTimeframe));
+      setAnalysisViewModel(nextAnalysis?.analysisViewModel || null);
+      setSimulatorPayloadModel(
+        nextAnalysis?.simulatorPayloadModel
+          ? { ...nextAnalysis.simulatorPayloadModel, symbol: nextSymbol }
+          : null
+      );
       setLastUpdated(new Date().toLocaleString());
     } catch (err) {
       setError(err.message || "讀取資料失敗");
@@ -1969,6 +2009,7 @@ export default function CryptoSignalWebApp() {
     return () => window.clearInterval(timer);
   }, [autoRefresh, symbol, timeframe]);
 
+  const analysis = analysisViewModel;
   const currentCandle = candles[candles.length - 1];
 
   const chartData = useMemo(() => {
@@ -2095,6 +2136,26 @@ export default function CryptoSignalWebApp() {
                 </div>
               </div>
 
+              <div>
+                <div className="mb-2 text-sm text-slate-600">顯示模式</div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <Button
+                    variant={viewMode === "analysis" ? "default" : "outline"}
+                    className="rounded-2xl"
+                    onClick={() => setViewMode("analysis")}
+                  >
+                    分析模式
+                  </Button>
+                  <Button
+                    variant={viewMode === "simulator" ? "default" : "outline"}
+                    className="rounded-2xl"
+                    onClick={() => setViewMode("simulator")}
+                  >
+                    模擬交易模式
+                  </Button>
+                </div>
+              </div>
+
               {error ? (
                 <Alert className="rounded-2xl border-rose-200 bg-rose-50 text-rose-700">
                   <AlertTriangle className="h-4 w-4" />
@@ -2111,6 +2172,8 @@ export default function CryptoSignalWebApp() {
 
         </motion.div>
 
+        {viewMode === "analysis" ? (
+          <>
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
           <MetricCard label="現價" value={formatNumber(analysis?.price, digits)} />
           <MetricCard label="MA20" value={formatNumber(analysis?.ma20, digits)} helper="20 根均線" />
@@ -2547,6 +2610,32 @@ export default function CryptoSignalWebApp() {
           </div>
 
         </div>
+          </>
+        ) : (
+          <Card className="rounded-3xl border-0 shadow-md">
+            <CardHeader>
+              <CardTitle className="text-lg">V6 模擬交易模式（資料層）</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm text-slate-600">
+              <div className="rounded-2xl bg-slate-100 p-4">
+                <div className="text-slate-500">Payload 狀態</div>
+                <div className="mt-1 text-base font-semibold text-slate-900">
+                  {simulatorPayloadModel ? "已準備完成（預設隱藏 JSON）" : "尚無資料"}
+                </div>
+              </div>
+              <div className="rounded-2xl bg-slate-100 p-4">
+                <div>版本：{simulatorPayloadModel?.version || "-"}</div>
+                <div>幣種：{simulatorPayloadModel?.symbol || "-"}</div>
+                <div>週期：{simulatorPayloadModel?.timeframe || "-"}</div>
+                <div>決策：{analysis?.finalDecisionLabel || "-"}</div>
+                <div>策略型態：{analysis?.setupTypeLabel || "-"}</div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 p-4">
+                此模式僅保留後續 V6 simulator 需要的資料模型，不在主畫面直接顯示 JSON payload，避免污染分析視覺。
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );
