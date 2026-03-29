@@ -772,21 +772,22 @@ function buildAiSummary({
       ? `目前無進場訊號，原因：${noEntryReason}。`
       : "";
   const triggerText = triggerEngine
-    ? `進場條件：價格區間 ${triggerEngine.priceRange}；${triggerEngine.triggerChecklist.join("；")}。取消條件：${triggerEngine.invalidationTriggers
-        .slice(0, 2)
-        .join("、")}。轉向條件：${triggerEngine.biasShiftConditions.slice(0, 2).join("、")}。確認強度：${triggerEngine.confirmationLabel}。`
+    ? `進場觸發：${triggerEngine.entryTriggerSentence}。策略失效：${triggerEngine.invalidationSentence}。轉向條件：${triggerEngine.biasShiftSentence}。確認強度：${triggerEngine.confirmationLabel}。`
     : "";
-  const tooLateText =
-    entryTiming === "TOO_LATE" ? "此 setup 已接近第一目標位，風報比優勢下降，不建議現在追單。" : "";
+  const waitExecutionText =
+    finalDecision === "WAIT" || finalDecision === "NO_TRADE"
+      ? `目前先不進場，正在等待：${triggerEngine?.waitConditionSentence || "價格回到關鍵區並完成結構確認"}。`
+    : "";
+  const tooLateText = entryTiming === "TOO_LATE" ? "此 setup 已接近第一目標位，風報比優勢下降，不建議現在追單。" : "";
   return [
     `【最終決策】${finalDecisionLabel}`,
     `【Setup Type】${setupTypeLabel}`,
     `【Entry Timing】${entryTimingLabel}`,
-    triggerEngine ? `【進場條件】價格區間 ${triggerEngine.priceRange}；${triggerEngine.triggerChecklist.join("；")}` : "",
-    triggerEngine ? `【取消條件】${triggerEngine.invalidationTriggers.slice(0, 3).join("、")}` : "",
-    triggerEngine ? `【轉向條件】${triggerEngine.biasShiftConditions.slice(0, 2).join("、")}` : "",
+    triggerEngine ? `【進場觸發條件】${triggerEngine.entryTriggerSentence}` : "",
+    triggerEngine ? `【策略失效條件】${triggerEngine.invalidationSentence}` : "",
+    triggerEngine ? `【轉向條件】${triggerEngine.biasShiftSentence}` : "",
     `【風報比 RR】${rrLabel}`,
-    `【AI綜合結論】主週期（${primaryTimeframe}）判讀為${bias}，市場屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，信心等級為${confidenceText}。${reason}。假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；策略建議「${entryAdvice} / ${setup}」。${entryNowText}${tooLateText}${cannotEnterText}${waitForText}${noSetupText}${triggerText}多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`,
+    `【AI綜合結論】主週期（${primaryTimeframe}）判讀為${bias}，市場屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，信心等級為${confidenceText}。${reason}。假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；策略建議「${entryAdvice} / ${setup}」。${entryNowText}${tooLateText}${cannotEnterText}${waitForText}${waitExecutionText}${noSetupText}${triggerText}多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -934,29 +935,33 @@ function buildTriggerEngine({
   const actionableSide = bias === "偏多" ? "做多" : bias === "偏空" ? "做空" : "等待";
   const entryLow = tradePlan?.entryLow;
   const entryHigh = tradePlan?.entryHigh;
+  const hasEntryZone = entryLow != null && entryHigh != null;
+  const supportZoneText = `${formatNumber(levels?.structureSupportZone?.low)} ~ ${formatNumber(levels?.structureSupportZone?.high)}`;
+  const resistanceZoneText = `${formatNumber(levels?.structureResistanceZone?.low)} ~ ${formatNumber(levels?.structureResistanceZone?.high)}`;
   const candleTrigger =
     bias === "偏多"
-      ? "K 線收盤價需連續 2 根站上進場區中軸，且最新一根低點不得跌破前一根低點"
-      : "K 線收盤價需連續 2 根跌破進場區中軸，且最新一根高點不得高於前一根高點";
+      ? "回踩後需出現止跌 K / 吞噬 K，且至少一根 K 線收盤站回進場區中軸"
+      : "反彈後需出現上影線轉弱 K / 空方吞噬，且至少一根 K 線收盤跌回進場區中軸";
   const maTrigger =
     bias === "偏多"
-      ? `現價需站上 MA20（${formatNumber(ma20)}）且 MA20 > MA50（${formatNumber(ma50)}）`
-      : `現價需跌破 MA20（${formatNumber(ma20)}）且 MA20 < MA50（${formatNumber(ma50)}）`;
+      ? `價格需重新站上 MA20（${formatNumber(ma20)}）並維持 MA20 > MA50（${formatNumber(ma50)}）`
+      : `價格需重新跌破 MA20（${formatNumber(ma20)}）並維持 MA20 < MA50（${formatNumber(ma50)}）`;
   const structureTrigger =
     bias === "偏多"
-      ? "結構需維持上升高低點，且不得跌回結構支撐區下緣"
-      : "結構需維持下降高低點，且不得站回結構壓力區上緣";
+      ? `結構需守住支撐區 ${supportZoneText}，並維持高低點墊高`
+      : `結構需守住壓力區 ${resistanceZoneText} 下方，並維持高低點下移`;
   const volumeTrigger =
     volumeState === "量增"
-      ? "成交量需維持量增，最新成交量不可低於近 20 根均量"
-      : "成交量需在突破/跌破當根放大至近 20 根均量以上";
+      ? "成交量需維持放大，最新量能不可低於近 20 根均量"
+      : "突破/跌破當根的成交量需放大至近 20 根均量以上";
 
   const entryTriggers = [];
   const invalidationTriggers = [];
   const biasShiftConditions = [];
+  const waitConditions = [];
   let triggerScore = 0;
 
-  if (entryLow != null && entryHigh != null) {
+  if (hasEntryZone) {
     entryTriggers.push(`價格回到進場區 ${formatNumber(entryLow)} ~ ${formatNumber(entryHigh)}`);
     const zoneMid = (entryLow + entryHigh) / 2;
     const zoneRange = Math.max(entryHigh - entryLow, price * 0.002);
@@ -964,18 +969,38 @@ function buildTriggerEngine({
   }
 
   if (setupType === "breakout") {
-    entryTriggers.push("價格有效突破關鍵區間，且收盤站穩/跌破關鍵位");
+    entryTriggers.push(
+      bias === "偏多"
+        ? `等待價格有效突破 ${formatNumber(levels?.structureResistanceZone?.high)} 並收盤站穩，再搭配量能放大才追價`
+        : `等待價格有效跌破 ${formatNumber(levels?.structureSupportZone?.low)} 並收盤跌破，再搭配量能放大才追空`
+    );
+    waitConditions.push("等待有效突破/跌破後的收盤確認與量能放大");
     if (["向上突破", "向下跌破"].includes(breakoutState)) triggerScore += 1.5;
   } else if (setupType === "pullback" || setupType === "range") {
-    entryTriggers.push("回踩支撐/反彈壓力後出現止跌或轉弱確認");
+    entryTriggers.push(
+      bias === "偏多"
+        ? `等待價格回踩 ${hasEntryZone ? `${formatNumber(entryLow)} ~ ${formatNumber(entryHigh)}` : supportZoneText} 支撐區，並出現止跌 K 線再考慮做多`
+        : `等待價格反彈 ${hasEntryZone ? `${formatNumber(entryLow)} ~ ${formatNumber(entryHigh)}` : resistanceZoneText} 壓力區，並出現轉弱 K 線再考慮做空`
+    );
+    waitConditions.push(
+      bias === "偏多" ? "等待回踩支撐區後出現止跌/吞噬 K 確認" : "等待反彈壓力區後出現上影線/吞噬 K 確認"
+    );
     if (["回踩支撐中", "反彈壓力中"].includes(breakoutState)) triggerScore += 1.2;
   } else if (setupType === "reversal") {
-    entryTriggers.push("結構反轉成立，並伴隨動能翻轉");
+    entryTriggers.push("等待結構突破前高/前低並完成回測，且動能由弱轉強（或由強轉弱）再進場");
+    waitConditions.push("等待結構反轉與回測確認");
   } else {
     entryTriggers.push("先等待結構與動能重新同步，再尋找觸發");
+    waitConditions.push("等待結構方向與動能重新同向");
   }
 
-  entryTriggers.push("RSI / 動能回到與方向一致的位置");
+  entryTriggers.push(
+    bias === "偏多"
+      ? `RSI 需回到 52 上方且價格站回 MA20（${formatNumber(ma20)}）`
+      : bias === "偏空"
+      ? `RSI 需落在 48 下方且價格跌回 MA20（${formatNumber(ma20)}）`
+      : "等待 RSI 與均線方向同向再評估"
+  );
   if (rsi != null && ((bias === "偏多" && rsi >= 52) || (bias === "偏空" && rsi <= 48))) triggerScore += 1;
   if (momentumScore >= 6) triggerScore += 1;
   if (mtfAlignedRatio >= 0.4 && mtfAlignedRatio > mtfDisagreement) triggerScore += 1.3;
@@ -983,21 +1008,30 @@ function buildTriggerEngine({
   if (fakeBreakoutRisk === "低") triggerScore += 0.6;
 
   if (tradePlan?.invalidation && tradePlan.invalidation !== "-") {
-    if (bias === "偏多") invalidationTriggers.push(`價格跌破失效位 ${tradePlan.invalidation}`);
-    else if (bias === "偏空") invalidationTriggers.push(`價格站上失效位 ${tradePlan.invalidation}`);
+    if (bias === "偏多") {
+      invalidationTriggers.push(
+        `若價格跌破 ${tradePlan.invalidation} 並收在其下方，代表偏多策略失效，應停止做多並等待下一次結構重建`
+      );
+    } else if (bias === "偏空") {
+      invalidationTriggers.push(
+        `若價格突破 ${tradePlan.invalidation} 並站穩其上，代表偏空策略失效，應停止做空並重新評估方向`
+      );
+    }
   }
-  invalidationTriggers.push(`${directionText}邏輯被破壞（結構反向且動能背離）`);
-  if (setupType === "breakout") invalidationTriggers.push("突破後迅速回到區間內，且量能無法延續");
-  if (mtfDisagreement >= 0.45) invalidationTriggers.push("多週期分歧持續擴大，原 setup 不再成立");
-  if (marketRegime === "high volatility") invalidationTriggers.push("波動異常擴張，觸發風控撤退");
+  invalidationTriggers.push(`${directionText}邏輯若出現結構反向且動能背離，該 setup 即視為失效並暫停進場`);
+  if (setupType === "breakout") {
+    invalidationTriggers.push("若突破後 1~2 根 K 線內回到原區間且量能無法延續，視為假突破，撤銷追價計畫");
+  }
+  if (mtfDisagreement >= 0.45) invalidationTriggers.push("若多週期分歧持續擴大，原方向優勢被破壞，先回到觀望");
+  if (marketRegime === "high volatility") invalidationTriggers.push("若波動異常擴張且止損頻繁被掃，先退場等待波動收斂");
 
   if (bias === "偏多") {
     biasShiftConditions.push(
-      `若價格有效跌破 ${formatNumber(levels?.structureSupportZone?.low)} 並連續 2 根 K 線收盤於其下，方向由做多轉為做空`
+      `若跌破結構支撐 ${formatNumber(levels?.structureSupportZone?.low)} 並連續 2 根收在其下，偏多轉為中性/偏空`
     );
   } else if (bias === "偏空") {
     biasShiftConditions.push(
-      `若價格有效站上 ${formatNumber(levels?.structureResistanceZone?.high)} 並連續 2 根 K 線收盤於其上，方向由做空轉為做多`
+      `若突破結構壓力 ${formatNumber(levels?.structureResistanceZone?.high)} 並連續 2 根收在其上，偏空轉為中性/偏多`
     );
   } else {
     biasShiftConditions.push("若價格突破結構壓力且量增轉強，偏向做多；若跌破結構支撐且量增轉弱，偏向做空");
@@ -1005,7 +1039,9 @@ function buildTriggerEngine({
   biasShiftConditions.push(
     bias === "偏多"
       ? `若 RSI 跌破 45 且 MACD 柱體連續 3 根為負值，取消做多偏向`
-      : `若 RSI 站上 55 且 MACD 柱體連續 3 根為正值，取消做空偏向`
+      : bias === "偏空"
+      ? `若 RSI 站上 55 且 MACD 柱體連續 3 根為正值，取消做空偏向`
+      : "若 RSI 重新站上 55 偏多優先；若 RSI 跌破 45 偏空優先"
   );
 
   if (entryTiming === "READY") triggerScore += 2.2;
@@ -1032,6 +1068,10 @@ function buildTriggerEngine({
     entryTriggers: [...new Set(entryTriggers)],
     invalidationTriggers: [...new Set(invalidationTriggers)],
     biasShiftConditions: [...new Set(biasShiftConditions)],
+    entryTriggerSentence: [...new Set(entryTriggers)].slice(0, 2).join("；"),
+    invalidationSentence: [...new Set(invalidationTriggers)].slice(0, 2).join("；"),
+    biasShiftSentence: [...new Set(biasShiftConditions)].slice(0, 2).join("；"),
+    waitConditionSentence: [...new Set(waitConditions.concat(waitReasons || []))].slice(0, 3).join("、"),
     waitReason:
       entryTiming === "READY" ? "" : noEntryReason || waitReasons?.[0] || "目前尚未符合可執行進場條件",
     confirmationStrength,
@@ -2195,22 +2235,22 @@ export default function CryptoSignalWebApp() {
 
                 <div className="grid gap-3 md:grid-cols-3">
                   <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm font-semibold text-slate-600">【進場條件】</div>
+                    <div className="text-sm font-semibold text-slate-600">【進場觸發條件】</div>
                     <div className="mt-2 text-sm text-slate-700">
-                      <div>價格區間：{analysis?.triggerEngine?.priceRange || "-"}</div>
-                      <div className="mt-1">{(analysis?.triggerEngine?.triggerChecklist || []).join("；") || "-"}</div>
+                      <div>{analysis?.triggerEngine?.entryTriggerSentence || "-"}</div>
+                      <div className="mt-1 text-xs text-slate-500">價格區間：{analysis?.triggerEngine?.priceRange || "-"}</div>
                     </div>
                   </div>
                   <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm font-semibold text-slate-600">【取消條件】</div>
+                    <div className="text-sm font-semibold text-slate-600">【策略失效條件】</div>
                     <div className="mt-2 text-sm text-slate-700">
-                      {(analysis?.triggerEngine?.invalidationTriggers || []).slice(0, 3).join("、") || "-"}
+                      {analysis?.triggerEngine?.invalidationSentence || "-"}
                     </div>
                   </div>
                   <div className="rounded-2xl bg-slate-100 p-4">
                     <div className="text-sm font-semibold text-slate-600">【轉向條件】</div>
                     <div className="mt-2 text-sm text-slate-700">
-                      {(analysis?.triggerEngine?.biasShiftConditions || []).slice(0, 2).join("、") || "-"}
+                      {analysis?.triggerEngine?.biasShiftSentence || "-"}
                     </div>
                   </div>
                 </div>
@@ -2219,6 +2259,8 @@ export default function CryptoSignalWebApp() {
                   <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
                     <div className="font-semibold">【不進場原因】</div>
                     <div className="mt-1">{analysis?.triggerEngine?.waitReason || analysis?.noEntryReason || "目前條件不足，暫不進場。"}</div>
+                    <div className="mt-2 font-semibold">【等待條件】</div>
+                    <div className="mt-1">{analysis?.triggerEngine?.waitConditionSentence || "等待價格回到關鍵區並完成觸發。"}</div>
                   </div>
                 ) : null}
 
@@ -2328,8 +2370,9 @@ export default function CryptoSignalWebApp() {
                   <div>成交量：{formatNumber(currentCandle?.volume, 2)}</div>
                   <div>RR（目標一/二）：{formatNumber(analysis?.tradePlan?.rr1, 2)} / {formatNumber(analysis?.tradePlan?.rr2, 2)}</div>
                   <div>假突破因子：{(analysis?.fakeBreakout?.reasons || []).join("、") || "暫無明顯異常"}</div>
-                  <div>進場觸發條件：{(analysis?.triggerEngine?.entryTriggers || []).slice(0, 3).join("、") || "等待結構與動能同步"}</div>
-                  <div>失效條件：{(analysis?.triggerEngine?.invalidationTriggers || []).slice(0, 2).join("、") || "結構失效"}</div>
+                  <div>進場觸發條件：{analysis?.triggerEngine?.entryTriggerSentence || "等待結構與動能同步"}</div>
+                  <div>失效條件：{analysis?.triggerEngine?.invalidationSentence || "結構失效"}</div>
+                  <div>轉向條件：{analysis?.triggerEngine?.biasShiftSentence || "等待突破關鍵結構後再轉向"}</div>
                   <div>V3 勝率結合主趨勢、多週期一致性、市場狀態、量能與波動風險。</div>
 
                   <div className="mt-3 font-medium text-slate-700">多週期同步</div>
