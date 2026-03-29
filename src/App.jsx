@@ -1002,7 +1002,7 @@ export default function CryptoSignalWebApp() {
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          className="grid gap-4 md:grid-cols-[1.3fr_0.7fr]"
+          className="grid gap-4"
         >
           <Card className="rounded-3xl border-0 shadow-md">
             <CardHeader>
@@ -1084,64 +1084,6 @@ export default function CryptoSignalWebApp() {
             </CardContent>
           </Card>
 
-          <Card className="rounded-3xl border-0 shadow-md">
-            <CardHeader>
-              <CardTitle className="text-lg">本次結論</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-slate-500">趨勢偏向</span>
-                <Badge className={`rounded-full px-3 py-1 text-sm ${biasStyle}`}>
-                  {analysis?.bias || "讀取中"}
-                </Badge>
-              </div>
-
-              <div className="rounded-2xl bg-white p-4 shadow-sm">
-                <div className="text-sm text-slate-500">是否適合進場</div>
-                <div className="mt-1 text-xl font-semibold">{analysis?.entryAdvice || "-"}</div>
-              </div>
-
-              <div className="rounded-2xl bg-white p-4 shadow-sm">
-                <div className="text-sm text-slate-500">較佳策略</div>
-                <div className="mt-1 text-xl font-semibold">{analysis?.setup || "-"}</div>
-              </div>
-
-              <div className="rounded-2xl bg-white p-4 shadow-sm">
-                <div className="text-sm text-slate-500">進場評分</div>
-                <div className="mt-1 text-xl font-semibold">{analysis?.entryScore || "-"} / 10</div>
-              </div>
-
-              <div className="rounded-2xl bg-white p-4 shadow-sm">
-                <div className="text-sm text-slate-500">風險等級</div>
-                <div className="mt-1 text-xl font-semibold">{analysis?.riskLevel || "-"}</div>
-              </div>
-
-              <div className="rounded-2xl bg-white p-4 shadow-sm">
-                <div className="text-sm text-slate-500">多週期共振</div>
-                <div className="mt-1 text-xl font-semibold">{analysis?.confluence || "-"}</div>
-              </div>
-
-              <div className="rounded-2xl bg-white p-4 shadow-sm">
-                <div className="text-sm text-slate-500">V2 智能訊號</div>
-                <div className="mt-1 flex items-center gap-2 text-xl font-semibold">
-                  <BrainCircuit className="h-5 w-5" />
-                  {analysis?.smartSignal || "-"}
-                </div>
-                <div className="mt-2 text-sm text-slate-500">
-                  做多 {analysis?.longProb ?? "-"}% ・ 做空 {analysis?.shortProb ?? "-"}%
-                </div>
-              </div>
-
-              <div className="rounded-2xl bg-white p-4 shadow-sm text-sm text-slate-600">
-                {analysis?.explanation || "等待資料中..."}
-              </div>
-
-              <div className="rounded-2xl bg-slate-900 p-4 text-sm leading-6 text-white shadow-sm">
-                <div className="mb-2 text-xs uppercase tracking-wide text-slate-300">AI 綜合判斷</div>
-                <div>{analysis?.aiSummary || "等待資料中..."}</div>
-              </div>
-            </CardContent>
-          </Card>
         </motion.div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
@@ -1163,9 +1105,68 @@ export default function CryptoSignalWebApp() {
           <MetricCard label="空頭勝率" value={`${analysis?.shortProb ?? "-"}%`} helper="V2 概率模型" />
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
+        <div className="grid gap-4">
           {/* LEFT SIDE */}
           <div className="space-y-4">
+            <Card className="rounded-3xl border-0 shadow-md">
+              <CardHeader>
+                <CardTitle className="text-lg">本次結論</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-slate-500">趨勢偏向</span>
+                  <Badge className={`rounded-full px-3 py-1 text-sm ${biasStyle}`}>
+                    {analysis?.bias || "讀取中"}
+                  </Badge>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">是否適合進場</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.entryAdvice || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">較佳策略</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.setup || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">進場評分</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.entryScore || "-"} / 10</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">風險等級</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.riskLevel || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">多週期共振</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.confluence || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">V2 智能訊號</div>
+                  <div className="mt-1 flex items-center gap-2 text-xl font-semibold">
+                    <BrainCircuit className="h-5 w-5" />
+                    {analysis?.smartSignal || "-"}
+                  </div>
+                  <div className="mt-2 text-sm text-slate-500">
+                    做多 {analysis?.longProb ?? "-"}% ・ 做空 {analysis?.shortProb ?? "-"}%
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm text-sm text-slate-600">
+                  {analysis?.explanation || "等待資料中..."}
+                </div>
+
+                <div className="rounded-2xl bg-slate-900 p-4 text-sm leading-6 text-white shadow-sm">
+                  <div className="mb-2 text-xs uppercase tracking-wide text-slate-300">AI 綜合判斷</div>
+                  <div>{analysis?.aiSummary || "等待資料中..."}</div>
+                </div>
+              </CardContent>
+            </Card>
+
             <Card className="rounded-3xl shadow-md">
               <CardHeader>
                 <CardTitle className="text-lg">K 線圖、均線與支撐壓力</CardTitle>
@@ -1363,67 +1364,6 @@ export default function CryptoSignalWebApp() {
             </Card>
           </div>
 
-          {/* RIGHT SIDE */}
-          <div className="space-y-4">
-            <Card className="rounded-3xl border-0 shadow-md">
-              <CardHeader>
-                <CardTitle className="text-lg">本次結論</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-500">趨勢偏向</span>
-                  <Badge className={`rounded-full px-3 py-1 text-sm ${biasStyle}`}>
-                    {analysis?.bias || "讀取中"}
-                  </Badge>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">是否適合進場</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.entryAdvice || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">較佳策略</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.setup || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">進場評分</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.entryScore || "-"} / 10</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">風險等級</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.riskLevel || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">多週期共振</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.confluence || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">V2 智能訊號</div>
-                  <div className="mt-1 flex items-center gap-2 text-xl font-semibold">
-                    <BrainCircuit className="h-5 w-5" />
-                    {analysis?.smartSignal || "-"}
-                  </div>
-                  <div className="mt-2 text-sm text-slate-500">
-                    做多 {analysis?.longProb ?? "-"}% ・ 做空 {analysis?.shortProb ?? "-"}%
-                  </div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm text-sm text-slate-600">
-                  {analysis?.explanation || "等待資料中..."}
-                </div>
-
-                <div className="rounded-2xl bg-slate-900 p-4 text-sm leading-6 text-white shadow-sm">
-                  <div className="mb-2 text-xs uppercase tracking-wide text-slate-300">AI 綜合判斷</div>
-                  <div>{analysis?.aiSummary || "等待資料中..."}</div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
         </div>
       </div>
     </div>
