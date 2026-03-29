@@ -45,7 +45,7 @@ const INTERVAL_OPTIONS = [
 
 const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 
-const APP_TITLE = "Crypto Signal Pro V5 - Phase 3.6";
+const APP_TITLE = "Crypto Signal Pro V5 - Final Phase";
 
 const FINAL_DECISION_LABELS = {
   WAIT: "等待",
@@ -1078,8 +1078,8 @@ function buildTriggerEngine({
     bias === "偏多" ? "執行做多" : bias === "偏空" ? "執行做空" : "等待方向明確後執行";
   const formattedEntryCondition =
     bias === "中性"
-      ? "當：價格突破關鍵區間且結構與量能同向 → 才執行交易"
-      : `當：價格進入 ${entryZoneText}；且：${behaviorClause}；→ 才執行交易（${triggerActionText}）`;
+      ? "當：價格突破關鍵區間；且：結構與量能同向；→ 執行：依突破方向下單"
+      : `當：價格進入 ${entryZoneText}；且：${behaviorClause}；→ 執行：${triggerActionText}`;
 
   const defaultExecutionPrice =
     tradePlan?.entryMid ?? tradePlan?.entryLow ?? tradePlan?.entryHigh ?? price;
@@ -1096,15 +1096,48 @@ function buildTriggerEngine({
     bias === "偏多"
       ? `若 2 根 K 線收盤跌破 ${tradePlan?.invalidation || formatNumber(levels?.structureSupportZone?.low)}，取消多單計畫`
       : `若 2 根 K 線收盤突破 ${tradePlan?.invalidation || formatNumber(levels?.structureResistanceZone?.high)}，取消空單計畫`;
+  const reverseCondition =
+    bias === "偏多"
+      ? `若價格跌破 ${formatNumber(levels?.structureSupportZone?.low)} 且收盤未站回，取消做多並啟動做空劇本`
+      : bias === "偏空"
+      ? `若價格突破 ${formatNumber(levels?.structureResistanceZone?.high)} 且收盤未跌回，取消做空並啟動做多劇本`
+      : "若有效突破壓力改做多，若有效跌破支撐改做空";
+  const executionModeText =
+    executionType === "Market"
+      ? bias === "偏多"
+        ? `市價條件：若突破 ${formatNumber(levels?.structureResistanceZone?.high)}，立即市價做多`
+        : `市價條件：若跌破 ${formatNumber(levels?.structureSupportZone?.low)}，立即市價做空`
+      : bias === "偏多"
+      ? `掛單價格（Limit）：${formatNumber(defaultExecutionPrice)} 做多`
+      : `掛單價格（Limit）：${formatNumber(defaultExecutionPrice)} 做空`;
 
   const waitLongPrice = formatNumber(levels?.structureResistanceZone?.high);
   const waitShortPrice = formatNumber(levels?.structureSupportZone?.low);
-  const waitLongScript = `若：價格突破 ${waitLongPrice} 且收盤站上、成交量高於近 20 根均量、MA20 > MA50 → 市價做多；若下一根 K 線跌回 ${waitLongPrice} 下方則取消。`;
-  const waitShortScript = `若：價格跌破 ${waitShortPrice} 且收盤跌下、成交量高於近 20 根均量、MA20 < MA50 → 市價做空；若下一根 K 線站回 ${waitShortPrice} 上方則取消。`;
+  const waitLongScript = `若：價格突破 ${waitLongPrice} 且收盤站上、成交量高於近 20 根均量、MA20 > MA50 → 執行：市價做多；取消：下一根 K 線跌回 ${waitLongPrice} 下方；反手：跌破支撐 ${waitShortPrice} 時切換做空劇本。`;
+  const waitShortScript = `若：價格跌破 ${waitShortPrice} 且收盤跌下、成交量高於近 20 根均量、MA20 < MA50 → 執行：市價做空；取消：下一根 K 線站回 ${waitShortPrice} 上方；反手：突破壓力 ${waitLongPrice} 時切換做多劇本。`;
   const nextAction =
     entryTiming === "READY"
       ? `${executionAction}，並同時設定止損 ${tradePlan?.invalidation || "-"}。`
       : `先不下單；滿足「${formattedEntryCondition}」後再執行。`;
+  const ifActionBlock = [
+    "當：",
+    `- 價格條件：${hasEntryZone ? `價格進入 ${entryZoneText}` : "價格觸發關鍵結構區"}`,
+    `且`,
+    `- 行為條件：${behaviorClause}`,
+    "→ 執行：",
+    `- ${bias === "偏空" ? "做空" : bias === "偏多" ? "做多" : "依方向交易"}`,
+    `- ${executionModeText}`,
+  ].join("\n");
+  const executionCard = {
+    direction: bias === "偏多" ? "做多" : bias === "偏空" ? "做空" : "WAIT（雙劇本）",
+    entryCondition: ifActionBlock,
+    execution: executionModeText,
+    stopLoss: tradePlan?.invalidation || "-",
+    target: `${tradePlan?.target1Text || "-"} / ${tradePlan?.target2Text || "-"}`,
+    rr: `${formatNumber(tradePlan?.rr1, 2)} / ${formatNumber(tradePlan?.rr2, 2)}（${tradePlan?.rrLabel || "-"}）`,
+    cancel: executionCancel,
+    reverse: reverseCondition,
+  };
 
   return {
     side: actionableSide,
@@ -1127,11 +1160,14 @@ function buildTriggerEngine({
       type: executionType,
       action: executionAction,
       cancel: executionCancel,
+      mode: executionModeText,
     },
+    ifActionBlock,
     waitScripts: {
       long: waitLongScript,
       short: waitShortScript,
     },
+    executionCard,
     nextAction,
     waitReason:
       entryTiming === "READY" ? "" : noEntryReason || waitReasons?.[0] || "目前尚未符合可執行進場條件",
@@ -2067,8 +2103,7 @@ export default function CryptoSignalWebApp() {
               ) : null}
 
               <div className="rounded-2xl bg-slate-100 p-4 text-sm text-slate-600">
-                目前分析週期：{timeframeLabel}。目前版本已整合多週期共振、市場狀態、信心等級，並在 V5 第一階段加入
-                策略型態與進場時機，V5 第二階段新增觸發條件、失效條件與等待內容說明。最後更新：
+                目前分析週期：{timeframeLabel}。V5 Final 已提供可直接下單的「交易執行計畫」：每筆策略都包含價格、條件、行動、取消與反手規則。最後更新：
                 {lastUpdated || "-"}
               </div>
             </CardContent>
@@ -2324,6 +2359,46 @@ export default function CryptoSignalWebApp() {
                     <div className="text-sm font-semibold text-slate-600">【轉向條件】</div>
                     <div className="mt-2 text-sm text-slate-700">
                       {analysis?.triggerEngine?.biasShiftSentence || "-"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border-2 border-slate-900 bg-white p-4">
+                  <div className="text-base font-bold text-slate-900">【交易執行計畫】</div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-xl bg-slate-100 p-3">
+                      <div className="text-xs text-slate-500">方向</div>
+                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.direction || "-"}</div>
+                    </div>
+                    <div className="rounded-xl bg-slate-100 p-3">
+                      <div className="text-xs text-slate-500">執行方式</div>
+                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.execution || "-"}</div>
+                    </div>
+                    <div className="rounded-xl bg-slate-100 p-3 md:col-span-2">
+                      <div className="text-xs text-slate-500">進場條件（if → action）</div>
+                      <pre className="mt-1 whitespace-pre-wrap font-sans text-sm text-slate-700">
+                        {analysis?.triggerEngine?.executionCard?.entryCondition || "-"}
+                      </pre>
+                    </div>
+                    <div className="rounded-xl bg-slate-100 p-3">
+                      <div className="text-xs text-slate-500">止損</div>
+                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.stopLoss || "-"}</div>
+                    </div>
+                    <div className="rounded-xl bg-slate-100 p-3">
+                      <div className="text-xs text-slate-500">目標</div>
+                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.target || "-"}</div>
+                    </div>
+                    <div className="rounded-xl bg-slate-100 p-3">
+                      <div className="text-xs text-slate-500">RR</div>
+                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.rr || "-"}</div>
+                    </div>
+                    <div className="rounded-xl bg-slate-100 p-3">
+                      <div className="text-xs text-slate-500">取消條件</div>
+                      <div className="mt-1 text-sm text-slate-700">{analysis?.triggerEngine?.executionCard?.cancel || "-"}</div>
+                    </div>
+                    <div className="rounded-xl bg-slate-100 p-3 md:col-span-2">
+                      <div className="text-xs text-slate-500">反手條件</div>
+                      <div className="mt-1 text-sm text-slate-700">{analysis?.triggerEngine?.executionCard?.reverse || "-"}</div>
                     </div>
                   </div>
                 </div>
