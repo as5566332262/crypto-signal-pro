@@ -45,7 +45,7 @@ const INTERVAL_OPTIONS = [
 
 const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 
-const APP_TITLE = "Crypto Signal Pro V5 - Phase 3";
+const APP_TITLE = "Crypto Signal Pro V5 - Phase 3.6";
 
 const FINAL_DECISION_LABELS = {
   WAIT: "等待",
@@ -55,7 +55,7 @@ const FINAL_DECISION_LABELS = {
 };
 
 const SETUP_TYPE_LABELS = {
-  wait: "觀望",
+  wait: "等待條件",
   pullback: "回踩進場",
   breakout: "突破進場",
   reversal: "反轉進場",
@@ -772,20 +772,23 @@ function buildAiSummary({
       ? `目前無進場訊號，原因：${noEntryReason}。`
       : "";
   const triggerText = triggerEngine
-    ? `進場觸發：${triggerEngine.entryTriggerSentence}。策略失效：${triggerEngine.invalidationSentence}。轉向條件：${triggerEngine.biasShiftSentence}。確認強度：${triggerEngine.confirmationLabel}。`
+    ? `進場觸發：${triggerEngine.formattedEntryCondition}。執行方式：${triggerEngine.executionPlan?.type}，${triggerEngine.executionPlan?.action}。取消條件：${triggerEngine.executionPlan?.cancel}。策略失效：${triggerEngine.invalidationSentence}。轉向條件：${triggerEngine.biasShiftSentence}。確認強度：${triggerEngine.confirmationLabel}。`
     : "";
   const waitExecutionText =
     finalDecision === "WAIT" || finalDecision === "NO_TRADE"
-      ? `目前先不進場，正在等待：${triggerEngine?.waitConditionSentence || "價格回到關鍵區並完成結構確認"}。`
+      ? `目前先不進場，正在等待：${triggerEngine?.waitConditionSentence || "價格回到關鍵區並完成結構確認"}。做多劇本：${triggerEngine?.waitScripts?.long || "-"} 做空劇本：${triggerEngine?.waitScripts?.short || "-"}`
     : "";
   const tooLateText = entryTiming === "TOO_LATE" ? "此 setup 已接近第一目標位，風報比優勢下降，不建議現在追單。" : "";
   return [
     `【最終決策】${finalDecisionLabel}`,
     `【Setup Type】${setupTypeLabel}`,
     `【Entry Timing】${entryTimingLabel}`,
-    triggerEngine ? `【進場觸發條件】${triggerEngine.entryTriggerSentence}` : "",
+    triggerEngine ? `【進場觸發條件】${triggerEngine.formattedEntryCondition}` : "",
+    triggerEngine ? `【執行方式】${triggerEngine.executionPlan?.type} / ${triggerEngine.executionPlan?.action}` : "",
+    triggerEngine ? `【取消條件】${triggerEngine.executionPlan?.cancel}` : "",
     triggerEngine ? `【策略失效條件】${triggerEngine.invalidationSentence}` : "",
     triggerEngine ? `【轉向條件】${triggerEngine.biasShiftSentence}` : "",
+    triggerEngine ? `【下一步行動】${triggerEngine.nextAction}` : "",
     `【風報比 RR】${rrLabel}`,
     `【AI綜合結論】主週期（${primaryTimeframe}）判讀為${bias}，市場屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，信心等級為${confidenceText}。${reason}。假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；策略建議「${entryAdvice} / ${setup}」。${entryNowText}${tooLateText}${cannotEnterText}${waitForText}${waitExecutionText}${noSetupText}${triggerText}多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`,
   ]
@@ -1056,6 +1059,53 @@ function buildTriggerEngine({
   else if (triggerScore < 5.5) confirmationStrength = "near";
   else confirmationStrength = "ready";
 
+  const entryZoneText = hasEntryZone
+    ? `${formatNumber(entryLow)} ~ ${formatNumber(entryHigh)}`
+    : bias === "偏多"
+    ? supportZoneText
+    : resistanceZoneText;
+  const behaviorClause =
+    setupType === "breakout"
+      ? bias === "偏多"
+        ? `1 根 K 線收盤站上 ${formatNumber(levels?.structureResistanceZone?.high)}，且成交量高於近 20 根均量`
+        : `1 根 K 線收盤跌破 ${formatNumber(levels?.structureSupportZone?.low)}，且成交量高於近 20 根均量`
+      : bias === "偏多"
+      ? `出現止跌/吞噬 K 線，且收盤站回 MA20（${formatNumber(ma20)}）`
+      : bias === "偏空"
+      ? `出現上影轉弱/空方吞噬 K 線，且收盤跌回 MA20（${formatNumber(ma20)}）`
+      : "結構與動能同向";
+  const triggerActionText =
+    bias === "偏多" ? "執行做多" : bias === "偏空" ? "執行做空" : "等待方向明確後執行";
+  const formattedEntryCondition =
+    bias === "中性"
+      ? "當：價格突破關鍵區間且結構與量能同向 → 才執行交易"
+      : `當：價格進入 ${entryZoneText}；且：${behaviorClause}；→ 才執行交易（${triggerActionText}）`;
+
+  const defaultExecutionPrice =
+    tradePlan?.entryMid ?? tradePlan?.entryLow ?? tradePlan?.entryHigh ?? price;
+  const executionType = setupType === "breakout" ? "Market" : "Limit";
+  const executionAction =
+    executionType === "Market"
+      ? bias === "偏多"
+        ? `突破 ${formatNumber(levels?.structureResistanceZone?.high)} 後，市價做多`
+        : `跌破 ${formatNumber(levels?.structureSupportZone?.low)} 後，市價做空`
+      : bias === "偏多"
+      ? `掛多單於 ${formatNumber(defaultExecutionPrice)}`
+      : `掛空單於 ${formatNumber(defaultExecutionPrice)}`;
+  const executionCancel =
+    bias === "偏多"
+      ? `若 2 根 K 線收盤跌破 ${tradePlan?.invalidation || formatNumber(levels?.structureSupportZone?.low)}，取消多單計畫`
+      : `若 2 根 K 線收盤突破 ${tradePlan?.invalidation || formatNumber(levels?.structureResistanceZone?.high)}，取消空單計畫`;
+
+  const waitLongPrice = formatNumber(levels?.structureResistanceZone?.high);
+  const waitShortPrice = formatNumber(levels?.structureSupportZone?.low);
+  const waitLongScript = `若：價格突破 ${waitLongPrice} 且收盤站上、成交量高於近 20 根均量、MA20 > MA50 → 市價做多；若下一根 K 線跌回 ${waitLongPrice} 下方則取消。`;
+  const waitShortScript = `若：價格跌破 ${waitShortPrice} 且收盤跌下、成交量高於近 20 根均量、MA20 < MA50 → 市價做空；若下一根 K 線站回 ${waitShortPrice} 上方則取消。`;
+  const nextAction =
+    entryTiming === "READY"
+      ? `${executionAction}，並同時設定止損 ${tradePlan?.invalidation || "-"}。`
+      : `先不下單；滿足「${formattedEntryCondition}」後再執行。`;
+
   return {
     side: actionableSide,
     priceRange: entryLow != null && entryHigh != null ? `${formatNumber(entryLow)} ~ ${formatNumber(entryHigh)}` : "-",
@@ -1072,6 +1122,17 @@ function buildTriggerEngine({
     invalidationSentence: [...new Set(invalidationTriggers)].slice(0, 2).join("；"),
     biasShiftSentence: [...new Set(biasShiftConditions)].slice(0, 2).join("；"),
     waitConditionSentence: [...new Set(waitConditions.concat(waitReasons || []))].slice(0, 3).join("、"),
+    formattedEntryCondition,
+    executionPlan: {
+      type: executionType,
+      action: executionAction,
+      cancel: executionCancel,
+    },
+    waitScripts: {
+      long: waitLongScript,
+      short: waitShortScript,
+    },
+    nextAction,
     waitReason:
       entryTiming === "READY" ? "" : noEntryReason || waitReasons?.[0] || "目前尚未符合可執行進場條件",
     confirmationStrength,
@@ -2233,12 +2294,24 @@ export default function CryptoSignalWebApp() {
                   </div>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-3">
+                <div className="grid gap-3 md:grid-cols-4">
                   <div className="rounded-2xl bg-slate-100 p-4">
                     <div className="text-sm font-semibold text-slate-600">【進場觸發條件】</div>
                     <div className="mt-2 text-sm text-slate-700">
-                      <div>{analysis?.triggerEngine?.entryTriggerSentence || "-"}</div>
+                      <div>{analysis?.triggerEngine?.formattedEntryCondition || analysis?.triggerEngine?.entryTriggerSentence || "-"}</div>
                       <div className="mt-1 text-xs text-slate-500">價格區間：{analysis?.triggerEngine?.priceRange || "-"}</div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm font-semibold text-slate-600">【執行方式】</div>
+                    <div className="mt-2 text-sm text-slate-700">
+                      <div>
+                        {analysis?.triggerEngine?.executionPlan?.type || "-"} /{" "}
+                        {analysis?.triggerEngine?.executionPlan?.action || "-"}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        取消：{analysis?.triggerEngine?.executionPlan?.cancel || "-"}
+                      </div>
                     </div>
                   </div>
                   <div className="rounded-2xl bg-slate-100 p-4">
@@ -2261,6 +2334,9 @@ export default function CryptoSignalWebApp() {
                     <div className="mt-1">{analysis?.triggerEngine?.waitReason || analysis?.noEntryReason || "目前條件不足，暫不進場。"}</div>
                     <div className="mt-2 font-semibold">【等待條件】</div>
                     <div className="mt-1">{analysis?.triggerEngine?.waitConditionSentence || "等待價格回到關鍵區並完成觸發。"}</div>
+                    <div className="mt-2 font-semibold">【WAIT 雙劇本】</div>
+                    <div className="mt-1">1️⃣ 做多劇本：{analysis?.triggerEngine?.waitScripts?.long || "-"}</div>
+                    <div className="mt-1">2️⃣ 做空劇本：{analysis?.triggerEngine?.waitScripts?.short || "-"}</div>
                   </div>
                 ) : null}
 
