@@ -14,6 +14,9 @@ import {
   Activity,
   BrainCircuit,
   Target,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Wallet,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -46,6 +49,42 @@ const INTERVAL_OPTIONS = [
 const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 
 const APP_TITLE = "Crypto Signal Pro V5 - Final Phase";
+const PAPER_ACCOUNT_STORAGE_KEY = "crypto-signal-pro-paper-account-v6";
+const PAPER_INITIAL_BALANCE = 5000;
+const PAPER_SUPPORTED_SYMBOLS = ["BTC", "ETH", "SOL"];
+
+function createInitialPaperAccount() {
+  return {
+    initialBalance: PAPER_INITIAL_BALANCE,
+    balance: PAPER_INITIAL_BALANCE,
+    equity: PAPER_INITIAL_BALANCE,
+    realizedPnL: 0,
+    unrealizedPnL: 0,
+    totalTrades: 0,
+    wins: 0,
+    losses: 0,
+    winRate: 0,
+    openPosition: null,
+    tradeHistory: [],
+  };
+}
+
+function loadPaperAccount() {
+  if (typeof window === "undefined") return createInitialPaperAccount();
+  try {
+    const raw = window.localStorage.getItem(PAPER_ACCOUNT_STORAGE_KEY);
+    if (!raw) return createInitialPaperAccount();
+    const parsed = JSON.parse(raw);
+    return {
+      ...createInitialPaperAccount(),
+      ...parsed,
+      openPosition: parsed?.openPosition || null,
+      tradeHistory: Array.isArray(parsed?.tradeHistory) ? parsed.tradeHistory : [],
+    };
+  } catch {
+    return createInitialPaperAccount();
+  }
+}
 
 const FINAL_DECISION_LABELS = {
   WAIT: "等待",
@@ -1934,6 +1973,10 @@ export default function CryptoSignalWebApp() {
   const [candles, setCandles] = useState([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [appMode, setAppMode] = useState("analysis");
+  const [paperSymbol, setPaperSymbol] = useState("SOL");
+  const [paperAccount, setPaperAccount] = useState(() => loadPaperAccount());
 
   const loadData = async (nextSymbol = symbol, nextTimeframe = timeframe) => {
     setIsLoading(true);
@@ -1968,6 +2011,11 @@ export default function CryptoSignalWebApp() {
     const timer = window.setInterval(() => loadData(symbol, timeframe), 30000);
     return () => window.clearInterval(timer);
   }, [autoRefresh, symbol, timeframe]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(PAPER_ACCOUNT_STORAGE_KEY, JSON.stringify(paperAccount));
+  }, [paperAccount]);
 
   const currentCandle = candles[candles.length - 1];
 
@@ -2019,12 +2067,191 @@ export default function CryptoSignalWebApp() {
   }, [analysis]);
 
   const digits = symbol === "BTCUSDT" ? 0 : 2;
+  const paperDigits = paperSymbol === "BTC" ? 0 : 2;
   const timeframeLabel =
     INTERVAL_OPTIONS.find((item) => item.value === timeframe)?.label || timeframe;
+  const paperCurrentPrice = symbol.startsWith(paperSymbol) ? analysis?.price : null;
+  const openPositionUnrealizedPnL = useMemo(() => {
+    if (!paperAccount.openPosition || !paperCurrentPrice) return 0;
+    const direction = paperAccount.openPosition.side === "LONG" ? 1 : -1;
+    return (paperCurrentPrice - paperAccount.openPosition.entryPrice) * paperAccount.openPosition.size * direction;
+  }, [paperAccount.openPosition, paperCurrentPrice]);
+
+  const accountSnapshot = useMemo(() => {
+    const unrealizedPnL = paperAccount.openPosition ? openPositionUnrealizedPnL : 0;
+    const equity = paperAccount.balance + unrealizedPnL;
+    const wins = paperAccount.wins || 0;
+    const losses = paperAccount.losses || 0;
+    const totalTrades = paperAccount.totalTrades || 0;
+    const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
+    return {
+      ...paperAccount,
+      equity,
+      unrealizedPnL,
+      winRate,
+      wins,
+      losses,
+      totalTrades,
+    };
+  }, [openPositionUnrealizedPnL, paperAccount]);
+
+  const simulatorSignalPayload = useMemo(() => {
+    if (!analysis) return null;
+    return {
+      symbol: paperSymbol,
+      finalDecision: analysis.finalDecision,
+      setupType: analysis.setupType,
+      entryTiming: analysis.entryTiming,
+      entryTrigger: analysis.triggerEngine?.entryTriggerSentence || "",
+      invalidation: analysis.tradePlan?.invalidation || analysis.triggerEngine?.invalidationSentence || "",
+      biasShift: analysis.triggerEngine?.biasShiftSentence || "",
+      entryZone: analysis.tradePlan?.entryZone || "",
+      stopLoss: analysis.stopLoss,
+      target1: analysis.takeProfit1,
+      target2: analysis.takeProfit2,
+      rr: {
+        target1: analysis.tradePlan?.rr1 ?? null,
+        target2: analysis.tradePlan?.rr2 ?? null,
+      },
+      fakeBreakoutRisk: analysis.fakeBreakout?.risk || "",
+    };
+  }, [analysis, paperSymbol]);
+
+  const handleResetPaperAccount = () => {
+    setPaperAccount(createInitialPaperAccount());
+  };
 
   return (
-    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
-      <div className="mx-auto max-w-6xl space-y-6">
+    <div className="min-h-screen bg-slate-50">
+      <div className="flex min-h-screen">
+        <aside
+          className={`border-r border-slate-200 bg-white p-3 transition-all duration-200 ${
+            sidebarOpen ? "w-80" : "w-[72px]"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            {sidebarOpen ? (
+              <div className="text-sm font-semibold text-slate-700">Workspace</div>
+            ) : (
+              <Wallet className="mx-auto h-5 w-5 text-slate-600" />
+            )}
+            <Button variant="ghost" size="icon" onClick={() => setSidebarOpen((v) => !v)}>
+              {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+            </Button>
+          </div>
+
+          {sidebarOpen ? (
+            <div className="mt-4 space-y-3">
+              <Card className="rounded-2xl">
+                <CardContent className="space-y-2 p-3">
+                  <div className="text-xs font-medium text-slate-500">模式切換</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      variant={appMode === "analysis" ? "default" : "outline"}
+                      onClick={() => setAppMode("analysis")}
+                    >
+                      分析模式
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={appMode === "paper" ? "default" : "outline"}
+                      onClick={() => setAppMode("paper")}
+                    >
+                      模擬交易
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl">
+                <CardContent className="space-y-2 p-3">
+                  <div className="text-xs font-medium text-slate-500">模擬幣種</div>
+                  <Select value={paperSymbol} onValueChange={setPaperSymbol}>
+                    <SelectTrigger className="rounded-xl">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PAPER_SUPPORTED_SYMBOLS.map((item) => (
+                        <SelectItem key={item} value={item}>
+                          {item}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <div className="text-xs text-slate-500">初始資金：{formatNumber(accountSnapshot.initialBalance, 2)} USDT</div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">帳戶資訊</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1 text-xs text-slate-600">
+                  <div>目前餘額：{formatNumber(accountSnapshot.balance, 2)} USDT</div>
+                  <div>淨值 Equity：{formatNumber(accountSnapshot.equity, 2)} USDT</div>
+                  <div>已實現損益：{formatNumber(accountSnapshot.realizedPnL, 2)} USDT</div>
+                  <div>未實現損益：{formatNumber(accountSnapshot.unrealizedPnL, 2)} USDT</div>
+                  <div>勝率：{formatNumber(accountSnapshot.winRate, 2)}%</div>
+                  <div>交易次數：{accountSnapshot.totalTrades}</div>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">持倉資訊</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1 text-xs text-slate-600">
+                  {accountSnapshot.openPosition ? (
+                    <>
+                      <div>狀態：持倉中</div>
+                      <div>方向：{accountSnapshot.openPosition.side}</div>
+                      <div>進場價：{formatNumber(accountSnapshot.openPosition.entryPrice, paperDigits)}</div>
+                      <div>止損：{formatNumber(accountSnapshot.openPosition.stopLoss, paperDigits)}</div>
+                      <div>
+                        止盈：{formatNumber(accountSnapshot.openPosition.target1, paperDigits)} /{" "}
+                        {formatNumber(accountSnapshot.openPosition.target2, paperDigits)}
+                      </div>
+                      <div>浮盈虧：{formatNumber(accountSnapshot.unrealizedPnL, 2)} USDT</div>
+                    </>
+                  ) : (
+                    <div>目前無持倉</div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-2xl">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">最近交易紀錄</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-xs">
+                  {accountSnapshot.tradeHistory.length ? (
+                    accountSnapshot.tradeHistory.slice(0, 5).map((trade, index) => (
+                      <div key={`${trade.openedAt}-${index}`} className="rounded-lg bg-slate-50 p-2 text-slate-600">
+                        <div className="font-medium text-slate-700">
+                          {trade.symbol} {trade.side} · {trade.result}
+                        </div>
+                        <div>
+                          {formatNumber(trade.entryPrice, paperDigits)} → {formatNumber(trade.exitPrice, paperDigits)}
+                        </div>
+                        <div>PnL: {formatNumber(trade.pnl, 2)} USDT</div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-slate-500">尚無交易紀錄</div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Button variant="outline" className="w-full rounded-2xl" onClick={handleResetPaperAccount}>
+                重設模擬帳戶
+              </Button>
+            </div>
+          ) : null}
+        </aside>
+
+        <main className="flex-1 p-4 md:p-8">
+          <div className="mx-auto max-w-6xl space-y-6">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -2106,6 +2333,12 @@ export default function CryptoSignalWebApp() {
                 目前分析週期：{timeframeLabel}。V5 Final 已提供可直接下單的「交易執行計畫」：每筆策略都包含價格、條件、行動、取消與反手規則。最後更新：
                 {lastUpdated || "-"}
               </div>
+              {simulatorSignalPayload ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-600">
+                  <div className="mb-1 font-semibold text-slate-700">V6 Simulator Payload（Phase 1）</div>
+                  <pre className="overflow-x-auto whitespace-pre-wrap">{JSON.stringify(simulatorSignalPayload, null, 2)}</pre>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 
@@ -2547,6 +2780,8 @@ export default function CryptoSignalWebApp() {
           </div>
 
         </div>
+          </div>
+        </main>
       </div>
     </div>
   );
