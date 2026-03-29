@@ -45,7 +45,7 @@ const INTERVAL_OPTIONS = [
 
 const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 
-const APP_TITLE = "Crypto Signal Pro V5 - Phase 2";
+const APP_TITLE = "Crypto Signal Pro V5 - Phase 3";
 
 const FINAL_DECISION_LABELS = {
   WAIT: "等待",
@@ -66,10 +66,10 @@ const SETUP_TYPE_LABELS = {
 
 const ENTRY_TIMING_LABELS = {
   READY: "可進場",
-  WAIT_PULLBACK: "等回踩",
-  WAIT_BREAKOUT: "等突破",
+  WAIT_PULLBACK: "等待回踩",
+  WAIT_BREAKOUT: "等待突破",
   TOO_LATE: "已錯過",
-  NO_SETUP: "無進場訊號",
+  NO_SETUP: "無進場條件",
 };
 
 const CONFIRMATION_STRENGTH_LABELS = {
@@ -772,13 +772,24 @@ function buildAiSummary({
       ? `目前無進場訊號，原因：${noEntryReason}。`
       : "";
   const triggerText = triggerEngine
-    ? `觸發條件：${triggerEngine.entryTriggers.slice(0, 3).join("、")}。失效條件：${triggerEngine.invalidationTriggers
+    ? `進場條件：價格區間 ${triggerEngine.priceRange}；${triggerEngine.triggerChecklist.join("；")}。取消條件：${triggerEngine.invalidationTriggers
         .slice(0, 2)
-        .join("、")}。確認強度：${triggerEngine.confirmationLabel}。`
+        .join("、")}。轉向條件：${triggerEngine.biasShiftConditions.slice(0, 2).join("、")}。確認強度：${triggerEngine.confirmationLabel}。`
     : "";
   const tooLateText =
     entryTiming === "TOO_LATE" ? "此 setup 已接近第一目標位，風報比優勢下降，不建議現在追單。" : "";
-  return `主週期（${primaryTimeframe}）判讀為${bias}，市場目前屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，整體信心等級為${confidenceText}。${reason}。風報比評估為 ${rrLabel}，假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；策略型態為${setupTypeLabel}，進場時機為${entryTimingLabel}，策略建議「${entryAdvice} / ${setup}」，最終決策為${finalDecisionLabel}。${entryNowText}${tooLateText}${cannotEnterText}${waitForText}${noSetupText}${triggerText}多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`;
+  return [
+    `【最終決策】${finalDecisionLabel}`,
+    `【Setup Type】${setupTypeLabel}`,
+    `【Entry Timing】${entryTimingLabel}`,
+    triggerEngine ? `【進場條件】價格區間 ${triggerEngine.priceRange}；${triggerEngine.triggerChecklist.join("；")}` : "",
+    triggerEngine ? `【取消條件】${triggerEngine.invalidationTriggers.slice(0, 3).join("、")}` : "",
+    triggerEngine ? `【轉向條件】${triggerEngine.biasShiftConditions.slice(0, 2).join("、")}` : "",
+    `【風報比 RR】${rrLabel}`,
+    `【AI綜合結論】主週期（${primaryTimeframe}）判讀為${bias}，市場屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，信心等級為${confidenceText}。${reason}。假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；策略建議「${entryAdvice} / ${setup}」。${entryNowText}${tooLateText}${cannotEnterText}${waitForText}${noSetupText}${triggerText}多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function categorizeRR(rr) {
@@ -912,14 +923,39 @@ function buildTriggerEngine({
   tradePlan,
   price,
   fakeBreakoutRisk,
+  levels,
+  ma20,
+  ma50,
+  volumeState,
+  waitReasons,
+  noEntryReason,
 }) {
   const directionText = bias === "偏多" ? "偏多" : bias === "偏空" ? "偏空" : "中性";
-  const entryTriggers = [];
-  const invalidationTriggers = [];
-  let triggerScore = 0;
-
+  const actionableSide = bias === "偏多" ? "做多" : bias === "偏空" ? "做空" : "等待";
   const entryLow = tradePlan?.entryLow;
   const entryHigh = tradePlan?.entryHigh;
+  const candleTrigger =
+    bias === "偏多"
+      ? "K 線收盤價需連續 2 根站上進場區中軸，且最新一根低點不得跌破前一根低點"
+      : "K 線收盤價需連續 2 根跌破進場區中軸，且最新一根高點不得高於前一根高點";
+  const maTrigger =
+    bias === "偏多"
+      ? `現價需站上 MA20（${formatNumber(ma20)}）且 MA20 > MA50（${formatNumber(ma50)}）`
+      : `現價需跌破 MA20（${formatNumber(ma20)}）且 MA20 < MA50（${formatNumber(ma50)}）`;
+  const structureTrigger =
+    bias === "偏多"
+      ? "結構需維持上升高低點，且不得跌回結構支撐區下緣"
+      : "結構需維持下降高低點，且不得站回結構壓力區上緣";
+  const volumeTrigger =
+    volumeState === "量增"
+      ? "成交量需維持量增，最新成交量不可低於近 20 根均量"
+      : "成交量需在突破/跌破當根放大至近 20 根均量以上";
+
+  const entryTriggers = [];
+  const invalidationTriggers = [];
+  const biasShiftConditions = [];
+  let triggerScore = 0;
+
   if (entryLow != null && entryHigh != null) {
     entryTriggers.push(`價格回到進場區 ${formatNumber(entryLow)} ~ ${formatNumber(entryHigh)}`);
     const zoneMid = (entryLow + entryHigh) / 2;
@@ -955,6 +991,23 @@ function buildTriggerEngine({
   if (mtfDisagreement >= 0.45) invalidationTriggers.push("多週期分歧持續擴大，原 setup 不再成立");
   if (marketRegime === "high volatility") invalidationTriggers.push("波動異常擴張，觸發風控撤退");
 
+  if (bias === "偏多") {
+    biasShiftConditions.push(
+      `若價格有效跌破 ${formatNumber(levels?.structureSupportZone?.low)} 並連續 2 根 K 線收盤於其下，方向由做多轉為做空`
+    );
+  } else if (bias === "偏空") {
+    biasShiftConditions.push(
+      `若價格有效站上 ${formatNumber(levels?.structureResistanceZone?.high)} 並連續 2 根 K 線收盤於其上，方向由做空轉為做多`
+    );
+  } else {
+    biasShiftConditions.push("若價格突破結構壓力且量增轉強，偏向做多；若跌破結構支撐且量增轉弱，偏向做空");
+  }
+  biasShiftConditions.push(
+    bias === "偏多"
+      ? `若 RSI 跌破 45 且 MACD 柱體連續 3 根為負值，取消做多偏向`
+      : `若 RSI 站上 55 且 MACD 柱體連續 3 根為正值，取消做空偏向`
+  );
+
   if (entryTiming === "READY") triggerScore += 2.2;
   if (entryTiming === "TOO_LATE") triggerScore -= 1.5;
   if (entryTiming === "NO_SETUP") triggerScore -= 2;
@@ -968,8 +1021,19 @@ function buildTriggerEngine({
   else confirmationStrength = "ready";
 
   return {
+    side: actionableSide,
+    priceRange: entryLow != null && entryHigh != null ? `${formatNumber(entryLow)} ~ ${formatNumber(entryHigh)}` : "-",
+    triggerChecklist: [
+      `【K線】${candleTrigger}`,
+      `【均線】${maTrigger}`,
+      `【結構】${structureTrigger}`,
+      `【成交量】${volumeTrigger}`,
+    ],
     entryTriggers: [...new Set(entryTriggers)],
     invalidationTriggers: [...new Set(invalidationTriggers)],
+    biasShiftConditions: [...new Set(biasShiftConditions)],
+    waitReason:
+      entryTiming === "READY" ? "" : noEntryReason || waitReasons?.[0] || "目前尚未符合可執行進場條件",
     confirmationStrength,
     confirmationLabel: CONFIRMATION_STRENGTH_LABELS[confirmationStrength],
     triggerScore: Number(triggerScore.toFixed(1)),
@@ -1461,6 +1525,12 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     tradePlan,
     price,
     fakeBreakoutRisk: fakeBreakout.risk,
+    levels,
+    ma20,
+    ma50,
+    volumeState,
+    waitReasons,
+    noEntryReason,
   });
 
   if (finalDecision === "WAIT" || finalDecision === "NO_TRADE") {
@@ -2122,6 +2192,35 @@ export default function CryptoSignalWebApp() {
                     <div className="mt-1 text-xs text-slate-500">{analysis?.tradePlan?.rrLabel || "-"}</div>
                   </div>
                 </div>
+
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm font-semibold text-slate-600">【進場條件】</div>
+                    <div className="mt-2 text-sm text-slate-700">
+                      <div>價格區間：{analysis?.triggerEngine?.priceRange || "-"}</div>
+                      <div className="mt-1">{(analysis?.triggerEngine?.triggerChecklist || []).join("；") || "-"}</div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm font-semibold text-slate-600">【取消條件】</div>
+                    <div className="mt-2 text-sm text-slate-700">
+                      {(analysis?.triggerEngine?.invalidationTriggers || []).slice(0, 3).join("、") || "-"}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm font-semibold text-slate-600">【轉向條件】</div>
+                    <div className="mt-2 text-sm text-slate-700">
+                      {(analysis?.triggerEngine?.biasShiftConditions || []).slice(0, 2).join("、") || "-"}
+                    </div>
+                  </div>
+                </div>
+
+                {analysis?.finalDecision === "WAIT" ? (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                    <div className="font-semibold">【不進場原因】</div>
+                    <div className="mt-1">{analysis?.triggerEngine?.waitReason || analysis?.noEntryReason || "目前條件不足，暫不進場。"}</div>
+                  </div>
+                ) : null}
 
                 <div className="rounded-2xl border border-slate-200 p-4 text-sm leading-6 text-slate-600">
                   <div>• V3 第一階段改為四週期共振與市場狀態分流評分。</div>
