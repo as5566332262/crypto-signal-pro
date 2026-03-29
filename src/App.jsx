@@ -147,6 +147,100 @@ function calculateATR(candles, period = 14) {
   return recent.reduce((sum, v) => sum + v, 0) / recent.length;
 }
 
+function calculateVWAP(candles) {
+  if (!candles?.length) return null;
+  let cumulativePV = 0;
+  let cumulativeVol = 0;
+
+  for (const candle of candles) {
+    const typicalPrice = (candle.high + candle.low + candle.close) / 3;
+    cumulativePV += typicalPrice * candle.volume;
+    cumulativeVol += candle.volume;
+  }
+
+  if (!cumulativeVol) return null;
+  return cumulativePV / cumulativeVol;
+}
+
+function calculateStochRSI(closes, period = 14, smoothK = 3) {
+  if (closes.length < period + smoothK + 5) return null;
+  const rsiSeries = closes.map((_, i) => calculateRSI(closes.slice(0, i + 1), period));
+  const validRsi = rsiSeries.filter((v) => v !== null);
+  if (validRsi.length < period + smoothK) return null;
+
+  const stochSeries = rsiSeries.map((value, index) => {
+    if (value === null || index < period) return null;
+    const window = rsiSeries.slice(Math.max(0, index - period + 1), index + 1).filter((v) => v !== null);
+    if (!window.length) return null;
+    const low = Math.min(...window);
+    const high = Math.max(...window);
+    if (high === low) return 50;
+    return ((value - low) / (high - low)) * 100;
+  });
+
+  const validStoch = stochSeries.filter((v) => v !== null);
+  if (validStoch.length < smoothK) return null;
+  const k = validStoch.slice(-smoothK).reduce((a, b) => a + b, 0) / smoothK;
+  return k;
+}
+
+function calculateADX(candles, period = 14) {
+  if (!candles || candles.length < period + 15) return null;
+  const tr = [];
+  const plusDM = [];
+  const minusDM = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    const upMove = candles[i].high - candles[i - 1].high;
+    const downMove = candles[i - 1].low - candles[i].low;
+
+    plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+
+    tr.push(
+      Math.max(
+        candles[i].high - candles[i].low,
+        Math.abs(candles[i].high - candles[i - 1].close),
+        Math.abs(candles[i].low - candles[i - 1].close)
+      )
+    );
+  }
+
+  const smooth = (arr) => {
+    const result = [];
+    let rolling = arr.slice(0, period).reduce((a, b) => a + b, 0);
+    result.push(rolling);
+    for (let i = period; i < arr.length; i++) {
+      rolling = rolling - rolling / period + arr[i];
+      result.push(rolling);
+    }
+    return result;
+  };
+
+  const trSmooth = smooth(tr);
+  const plusSmooth = smooth(plusDM);
+  const minusSmooth = smooth(minusDM);
+  if (!trSmooth.length || trSmooth.length !== plusSmooth.length || trSmooth.length !== minusSmooth.length) {
+    return null;
+  }
+
+  const dx = trSmooth.map((trValue, i) => {
+    if (!trValue) return 0;
+    const plusDI = (100 * plusSmooth[i]) / trValue;
+    const minusDI = (100 * minusSmooth[i]) / trValue;
+    if (plusDI + minusDI === 0) return 0;
+    return (100 * Math.abs(plusDI - minusDI)) / (plusDI + minusDI);
+  });
+
+  if (dx.length < period) return null;
+  const adxSeed = dx.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  let adx = adxSeed;
+  for (let i = period; i < dx.length; i++) {
+    adx = (adx * (period - 1) + dx[i]) / period;
+  }
+  return adx;
+}
+
 function detectSwingPoints(candles, left = 3, right = 3) {
   const swingHighs = [];
   const swingLows = [];
@@ -358,8 +452,12 @@ function probabilityModel({
   breakoutState,
   confluence,
   rsi,
+  stochRsi,
+  adx,
   volumeState,
   liquiditySweep,
+  priceVsVwap,
+  riskLevel,
 }) {
   let longProb = 50;
   let shortProb = 50;
@@ -388,11 +486,34 @@ function probabilityModel({
     shortProb -= 6;
     longProb += 6;
   }
+  if (stochRsi != null && stochRsi > 85) {
+    longProb -= 5;
+    shortProb += 5;
+  }
+  if (stochRsi != null && stochRsi < 15) {
+    shortProb -= 5;
+    longProb += 5;
+  }
 
   if (volumeState === "放量" && breakoutState === "向上突破") longProb += 4;
   if (volumeState === "放量" && breakoutState === "向下跌破") shortProb += 4;
   if (liquiditySweep === "上方流動性掃單") shortProb += 6;
   if (liquiditySweep === "下方流動性掃單") longProb += 6;
+  if (priceVsVwap > 0.003) longProb += 5;
+  if (priceVsVwap < -0.003) shortProb += 5;
+
+  if (adx != null && adx < 16) {
+    longProb -= 5;
+    shortProb -= 5;
+  } else if (adx != null && adx > 28) {
+    if (bias === "偏多") longProb += 4;
+    if (bias === "偏空") shortProb += 4;
+  }
+
+  if (riskLevel === "高") {
+    longProb -= 2;
+    shortProb -= 2;
+  }
 
   longProb = Math.max(5, Math.min(95, longProb));
   shortProb = Math.max(5, Math.min(95, shortProb));
@@ -480,6 +601,9 @@ function analyzeMarket(candles, higherTimeframeData = []) {
   const rsi = calculateRSI(closes, 14);
   const macd = calculateMACD(closes);
   const atr = calculateATR(candles, 14);
+  const adx = calculateADX(candles, 14);
+  const vwap = calculateVWAP(candles.slice(-80));
+  const stochRsi = calculateStochRSI(closes, 14, 3);
   const levels = findPivotLevels(candles.slice(-180), price, atr);
   const structureInfo = detectStructure(candles);
   const volumeState = detectVolumeState(candles);
@@ -493,24 +617,29 @@ function analyzeMarket(candles, higherTimeframeData = []) {
   const priceAboveMA50 = ma50 !== null && price > ma50;
   const macdBullish = macd && macd.macd > macd.signal && macd.histogram > 0;
   const macdBearish = macd && macd.macd < macd.signal && macd.histogram < 0;
+  const priceVsVwap = vwap ? (price - vwap) / vwap : 0;
 
   let bullScore = 0;
   let bearScore = 0;
 
-  if (priceAboveMA20) bullScore += 1;
-  else bearScore += 1;
+  if (priceAboveMA20) bullScore += 1.2;
+  else bearScore += 1.2;
 
-  if (priceAboveMA50) bullScore += 1;
-  else bearScore += 1;
+  if (priceAboveMA50) bullScore += 1.2;
+  else bearScore += 1.2;
 
   if (trendSlope > 0) bullScore += 1;
   else bearScore += 1;
 
-  if (macdBullish) bullScore += 1;
-  if (macdBearish) bearScore += 1;
+  if (macdBullish) bullScore += 1.1;
+  if (macdBearish) bearScore += 1.1;
 
   if (rsi !== null && rsi >= 55 && rsi <= 70) bullScore += 1;
   if (rsi !== null && rsi <= 45 && rsi >= 30) bearScore += 1;
+  if (stochRsi !== null && stochRsi > 80) bearScore += 0.6;
+  if (stochRsi !== null && stochRsi < 20) bullScore += 0.6;
+  if (priceVsVwap > 0.003) bullScore += 0.9;
+  if (priceVsVwap < -0.003) bearScore += 0.9;
 
   if (structureInfo.structure === "上升結構") bullScore += 1;
   if (structureInfo.structure === "下降結構") bearScore += 1;
@@ -603,7 +732,8 @@ function analyzeMarket(candles, higherTimeframeData = []) {
     }
   }
 
-  const riskLevel = atr && price ? (atr / price > 0.025 ? "高" : atr / price > 0.015 ? "中" : "低") : "中";
+  const volatilityRatio = atr && price ? atr / price : 0;
+  const riskLevel = volatilityRatio > 0.025 ? "高" : volatilityRatio > 0.015 ? "中" : "低";
   const tradePlan = getTradePlan({ bias, setup, levels, price, atr });
   const { longProb, shortProb } = probabilityModel({
     bias,
@@ -611,8 +741,12 @@ function analyzeMarket(candles, higherTimeframeData = []) {
     breakoutState,
     confluence,
     rsi,
+    stochRsi,
+    adx,
     volumeState,
     liquiditySweep,
+    priceVsVwap,
+    riskLevel,
   });
 
   const smartSignal =
@@ -646,6 +780,9 @@ function analyzeMarket(candles, higherTimeframeData = []) {
     rsi,
     macd,
     atr,
+    adx,
+    vwap,
+    stochRsi,
     bias,
     entryAdvice,
     setup,
