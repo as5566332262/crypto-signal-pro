@@ -45,7 +45,7 @@ const INTERVAL_OPTIONS = [
 
 const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 
-const APP_TITLE = "Crypto Signal Pro V3";
+const APP_TITLE = "Crypto Signal Pro V5 - Phase 1";
 
 function ema(values, period) {
   if (!values.length) return [];
@@ -664,6 +664,8 @@ function probabilityModel({
 
 function buildAiSummary({
   finalDecision,
+  entryTiming,
+  setupType,
   bias,
   structure,
   breakoutState,
@@ -709,15 +711,21 @@ function buildAiSummary({
       ? "偏空主因來自均線壓制、結構偏弱與動能下行"
       : "目前多空動能互有拉扯，暫不具明確單邊優勢";
 
+  const entryNowText =
+    finalDecision === "BUY" || finalDecision === "SELL"
+      ? "目前可考慮進場，但仍需依風控分批執行。"
+      : "目前不建議立即進場。";
   const cannotEnterText =
     finalDecision === "WAIT" || finalDecision === "NO_TRADE"
-      ? `目前不建議進場，主因：${waitReasons?.length ? waitReasons.join("、") : "條件尚未完整"}。`
+      ? `主因：${waitReasons?.length ? waitReasons.join("、") : "條件尚未完整"}。`
       : "";
   const waitForText =
     finalDecision === "WAIT" || finalDecision === "NO_TRADE"
       ? `建議等待：${waitForConditions?.length ? waitForConditions.join("、") : "趨勢與動能同步確認"}。`
       : "";
-  return `主週期（${primaryTimeframe}）判讀為${bias}，市場目前屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，整體信心等級為 ${confidenceLevel.toUpperCase()}。${reason}。風報比評估為 ${rrLabel}，假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；因此策略建議「${entryAdvice} / ${setup}」，最終決策為 ${finalDecision}，多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%。${cannotEnterText}${waitForText}請依波動調整倉位與節奏。`;
+  const tooLateText =
+    entryTiming === "TOO_LATE" ? "此 setup 已接近第一目標位，風報比優勢下降，不建議現在追單。" : "";
+  return `主週期（${primaryTimeframe}）判讀為${bias}，市場目前屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，整體信心等級為 ${confidenceLevel.toUpperCase()}。${reason}。風報比評估為 ${rrLabel}，假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；策略型態為 ${setupType}，進場時機狀態為 ${entryTiming}，策略建議「${entryAdvice} / ${setup}」，最終決策為 ${finalDecision}。${entryNowText}${tooLateText}${cannotEnterText}${waitForText}多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`;
 }
 
 function categorizeRR(rr) {
@@ -726,6 +734,95 @@ function categorizeRR(rr) {
   if (rr < 1.5) return "普通（1.2~1.5）";
   if (rr < 2) return "可接受（>1.5）";
   return "較佳（>2.0）";
+}
+
+function deriveSetupType({
+  bias,
+  marketRegime,
+  breakoutState,
+  structure,
+  momentumScore,
+  mtfAlignedRatio,
+  mtfDisagreement,
+  directionalDecision,
+}) {
+  if (directionalDecision === "NO_TRADE") return "no-trade";
+  if (directionalDecision === "WAIT" && bias === "中性") return "wait";
+  if (marketRegime === "ranging" && breakoutState === "區間內") return "range";
+  if (["向上突破", "向下跌破"].includes(breakoutState)) return "breakout";
+  if (momentumScore <= 4.4 && mtfDisagreement > mtfAlignedRatio) return "wait";
+  if (
+    (bias === "偏多" && (breakoutState === "回踩支撐中" || structure === "上升結構")) ||
+    (bias === "偏空" && (breakoutState === "反彈壓力中" || structure === "下降結構"))
+  ) {
+    return "pullback";
+  }
+  if (
+    (bias === "偏多" && breakoutState === "向下跌破" && momentumScore >= 5.6) ||
+    (bias === "偏空" && breakoutState === "向上突破" && momentumScore >= 5.6)
+  ) {
+    return "reversal";
+  }
+  return directionalDecision === "WAIT" ? "wait" : "pullback";
+}
+
+function evaluateEntryTiming({
+  directionalDecision,
+  setupType,
+  bias,
+  price,
+  atr,
+  tradePlan,
+  breakoutState,
+  marketRegime,
+  mtfAlignedRatio,
+  fakeBreakoutRisk,
+}) {
+  if (directionalDecision === "NO_TRADE" || bias === "中性" || ["no-trade", "wait"].includes(setupType)) {
+    return "NO_SETUP";
+  }
+
+  const rrBest = tradePlan?.rrBest || 0;
+  if (rrBest < 1.2 || fakeBreakoutRisk === "高") return "NO_SETUP";
+
+  const atrBuffer = Math.max((atr || price * 0.01) * 0.2, price * 0.0018);
+  const entryLow = tradePlan?.entryLow ?? price;
+  const entryHigh = tradePlan?.entryHigh ?? price;
+  const entryInZone = price >= entryLow - atrBuffer && price <= entryHigh + atrBuffer;
+  const target1 = tradePlan?.target1;
+
+  if (target1 != null) {
+    const distanceToTarget = Math.abs(target1 - price);
+    const baseline = Math.max(Math.abs(target1 - (tradePlan?.entryMid ?? price)), atrBuffer);
+    if (distanceToTarget / baseline < 0.28) return "TOO_LATE";
+  }
+
+  if (setupType === "breakout") {
+    if (!["向上突破", "向下跌破"].includes(breakoutState)) return "WAIT_BREAKOUT";
+    if (marketRegime === "ranging" && mtfAlignedRatio < 0.4) return "WAIT_BREAKOUT";
+    return entryInZone ? "READY" : "WAIT_BREAKOUT";
+  }
+  if (setupType === "pullback") {
+    if (!entryInZone) return "WAIT_PULLBACK";
+    return mtfAlignedRatio >= 0.32 ? "READY" : "WAIT_PULLBACK";
+  }
+  if (setupType === "range") {
+    return entryInZone ? "READY" : "WAIT_PULLBACK";
+  }
+  if (setupType === "reversal") {
+    if (marketRegime === "high volatility" && mtfAlignedRatio < 0.35) return "WAIT_BREAKOUT";
+    return entryInZone ? "READY" : "WAIT_PULLBACK";
+  }
+  return "NO_SETUP";
+}
+
+function integrateDecisionWithTiming(directionalDecision, entryTiming) {
+  if (directionalDecision === "NO_TRADE") return "NO_TRADE";
+  if (entryTiming === "NO_SETUP" || entryTiming === "TOO_LATE") return "WAIT";
+  if ((directionalDecision === "BUY" || directionalDecision === "SELL") && entryTiming !== "READY") {
+    return "WAIT";
+  }
+  return directionalDecision;
 }
 
 function getTradePlan({ bias, setup, levels, price, atr }) {
@@ -1165,17 +1262,60 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
       (mtfDisagreement >= 0.42 || isRangeMiddlePosition || momentumUnclear)) ||
     (fakeBreakout.risk === "高" && mtfDisagreement >= 0.35);
 
-  const finalDecision = shouldNoTrade ? "NO_TRADE" : shouldWait ? "WAIT" : bias === "偏多" ? "BUY" : "SELL";
+  const directionalDecision = shouldNoTrade ? "NO_TRADE" : shouldWait ? "WAIT" : bias === "偏多" ? "BUY" : "SELL";
+  const setupType = deriveSetupType({
+    bias,
+    marketRegime,
+    breakoutState,
+    structure: structureInfo.structure,
+    momentumScore: dimensionScores.momentum,
+    mtfAlignedRatio,
+    mtfDisagreement,
+    directionalDecision,
+  });
+  const entryTiming = evaluateEntryTiming({
+    directionalDecision,
+    setupType,
+    bias,
+    price,
+    atr,
+    tradePlan,
+    breakoutState,
+    marketRegime,
+    mtfAlignedRatio,
+    fakeBreakoutRisk: fakeBreakout.risk,
+  });
+  const finalDecision = integrateDecisionWithTiming(directionalDecision, entryTiming);
 
   if (finalDecision === "WAIT" || finalDecision === "NO_TRADE") {
     entryAdvice = finalDecision === "WAIT" ? "不建議進場（等待條件）" : "本輪無有效交易機會";
-    if (fakeBreakout.risk === "高") setup = "等待重新站穩 / 跌破確認";
+    if (entryTiming === "TOO_LATE") setup = "等待下一次回踩 / 反彈重置";
+    else if (entryTiming === "WAIT_BREAKOUT") setup = "等待突破確認";
+    else if (entryTiming === "WAIT_PULLBACK") setup = "等待回踩 / 反彈確認";
+    else if (fakeBreakout.risk === "高") setup = "等待重新站穩 / 跌破確認";
     else if (breakoutState === "區間內") setup = "等待突破確認";
     else setup = "等待回踩 / 反彈確認";
     if (waitReasons.length) {
       explanation = `目前條件不足，${waitReasons.join("、")}，先等待更完整確認訊號。`;
     } else {
       explanation = "目前條件不足，先等待更完整確認訊號。";
+    }
+  }
+
+  if (entryTiming === "TOO_LATE") {
+    if (!waitReasons.includes("價格已接近第一目標，不宜追價")) {
+      waitReasons.push("價格已接近第一目標，不宜追價");
+    }
+    if (!waitForConditions.includes("等待下一次回踩/反彈後重建風報比")) {
+      waitForConditions.push("等待下一次回踩/反彈後重建風報比");
+    }
+    explanation = "方向可能仍延續，但此波已接近目標區，建議等待下一次結構回測再評估。";
+  }
+
+  if (entryTiming === "NO_SETUP") {
+    if (!waitReasons.includes("目前沒有有效 setup")) waitReasons.push("目前沒有有效 setup");
+    if (!waitForConditions.includes("等待結構、動能與風報比同時成立")) {
+      waitForConditions.push("等待結構、動能與風報比同時成立");
     }
   }
 
@@ -1225,10 +1365,18 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     : "等待確認";
 
   const tradability =
-    finalDecision === "NO_TRADE" ? "無有效交易機會" : finalDecision === "WAIT" ? "等待確認" : "可規劃進場";
+    entryTiming === "READY" && (finalDecision === "BUY" || finalDecision === "SELL")
+      ? "可規劃進場"
+      : entryTiming === "TOO_LATE"
+      ? "已錯過較佳進場"
+      : entryTiming === "NO_SETUP"
+      ? "無有效 setup"
+      : "等待確認";
 
   const aiSummary = buildAiSummary({
     finalDecision,
+    entryTiming,
+    setupType,
     bias,
     structure: structureInfo.structure,
     breakoutState,
@@ -1268,6 +1416,8 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     bias,
     entryAdvice,
     finalDecision,
+    entryTiming,
+    setupType,
     setup,
     stopLoss,
     takeProfit1,
@@ -1561,8 +1711,8 @@ export default function CryptoSignalWebApp() {
               ) : null}
 
               <div className="rounded-2xl bg-slate-100 p-4 text-sm text-slate-600">
-                目前分析週期：{timeframeLabel}。V3 第一階段已升級為 15m / 1h / 4h / 1d 多週期共振，並加入市場狀態、
-                信心等級、分維度進場評分與強化結論文字。最後更新：
+                目前分析週期：{timeframeLabel}。目前版本已整合多週期共振、市場狀態、信心等級，並在 V5 第一階段加入
+                setup type 與 entry timing（READY / WAIT_PULLBACK / WAIT_BREAKOUT / TOO_LATE / NO_SETUP）。最後更新：
                 {lastUpdated || "-"}
               </div>
             </CardContent>
@@ -1617,6 +1767,16 @@ export default function CryptoSignalWebApp() {
                 <div className="rounded-2xl bg-white p-4 shadow-sm">
                   <div className="text-sm text-slate-500">較佳策略</div>
                   <div className="mt-1 text-xl font-semibold">{analysis?.setup || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">Setup Type</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.setupType || "-"}</div>
+                </div>
+
+                <div className="rounded-2xl bg-white p-4 shadow-sm">
+                  <div className="text-sm text-slate-500">Entry Timing</div>
+                  <div className="mt-1 text-xl font-semibold">{analysis?.entryTiming || "-"}</div>
                 </div>
 
                 <div className="rounded-2xl bg-white p-4 shadow-sm">
@@ -1748,6 +1908,12 @@ export default function CryptoSignalWebApp() {
                     <div className="mt-1 text-lg font-semibold">{analysis?.setup || "-"}</div>
                   </div>
                   <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">Setup / Timing</div>
+                    <div className="mt-1 text-lg font-semibold">
+                      {analysis?.setupType || "-"} / {analysis?.entryTiming || "-"}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
                     <div className="text-sm text-slate-500">止損</div>
                     <div className="mt-1 text-lg font-semibold">{formatNumber(analysis?.stopLoss, digits)}</div>
                   </div>
@@ -1852,6 +2018,10 @@ export default function CryptoSignalWebApp() {
                     <div className="mt-1 text-lg font-semibold">
                       {analysis?.fakeBreakout?.risk || "-"}（{formatNumber(analysis?.fakeBreakout?.score, 1)}）
                     </div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-100 p-4">
+                    <div className="text-sm text-slate-500">進場時機狀態</div>
+                    <div className="mt-1 text-lg font-semibold">{analysis?.entryTiming || "-"}</div>
                   </div>
                 </div>
 
