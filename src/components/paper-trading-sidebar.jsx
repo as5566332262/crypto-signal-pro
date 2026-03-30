@@ -95,8 +95,12 @@ function TradingStateTerminal({
     { key: "cancelled", label: "已取消", count: cancelledOrders.length },
   ];
 
-  const takeProfitLabel = (item) =>
-    [item.takeProfit1, item.takeProfit2, item.takeProfit3].filter((value) => value !== undefined && value !== null).map((value) => formatNumber(value, paperDigits)).join(" / ") || "-";
+  const takeProfitDetailLabel = (item) =>
+    [
+      item.takeProfit1 ? `TP1 ${formatNumber(item.takeProfit1, paperDigits)}` : null,
+      item.takeProfit2 ? `TP2 ${formatNumber(item.takeProfit2, paperDigits)}` : null,
+      item.takeProfit3 ? `TP3 ${formatNumber(item.takeProfit3, paperDigits)}` : null,
+    ].filter(Boolean).join(" / ") || "-";
 
   const formatDate = (value) => (value ? new Date(value).toLocaleString() : "-");
 
@@ -139,128 +143,140 @@ function TradingStateTerminal({
       <CardContent className="p-3 pt-0 text-xs text-slate-600">
         {activeTab === "positions" ? (
           openPositions.length ? (
-            <div className="overflow-x-auto">
-              <table className="min-w-[980px] divide-y divide-slate-200">
-                <thead className="text-[11px] text-slate-500">
-                  <tr>
-                    <th className="px-2 py-2 text-left">幣種</th><th className="px-2 py-2 text-left">方向</th><th className="px-2 py-2 text-left">進場價</th><th className="px-2 py-2 text-left">現價</th><th className="px-2 py-2 text-left">數量</th><th className="px-2 py-2 text-left">未實現損益</th><th className="px-2 py-2 text-left">止損</th><th className="px-2 py-2 text-left">止盈</th><th className="px-2 py-2 text-left">開倉時間</th><th className="px-2 py-2 text-left">操作</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {openPositions.map((position) => {
-                    const pnlPositive = Number(position.unrealizedPnl || 0) >= 0;
-                    return (
-                      <tr key={position.id} className="hover:bg-slate-50/70">
-                        <td className="px-2 py-2 font-medium text-slate-700">{position.symbol}</td>
-                        <td className="px-2 py-2">{sideLabel(position.side)}</td>
-                        <td className="px-2 py-2">{formatNumber(position.entryPrice, paperDigits)}</td>
-                        <td className="px-2 py-2">{formatNumber(position.currentPrice, paperDigits)}</td>
-                        <td className="px-2 py-2">{formatNumber(position.quantity, 2)}</td>
-                        <td className={`px-2 py-2 font-semibold ${pnlPositive ? "text-emerald-600" : "text-rose-600"}`}>{`${pnlPositive ? "+" : ""}${formatNumber(position.unrealizedPnl, 2)} USDT`}</td>
-                        <td className="px-2 py-2">{formatNumber(position.stopLoss, paperDigits)}</td>
-                        <td className="px-2 py-2">{takeProfitLabel(position)}</td>
-                        <td className="px-2 py-2">{formatDate(position.openedAt)}</td>
-                        <td className="px-2 py-2">
-                          <Button variant="outline" size="sm" className="h-7 rounded-lg px-2" onClick={() => onClosePosition?.(position.id)}>平倉</Button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+              {openPositions.map((position) => {
+                const pnlPositive = Number(position.unrealizedPnl || 0) >= 0;
+                const positionValue = Number(position.currentPrice || 0) * Number(position.quantity || 0);
+                return (
+                  <div key={position.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                    <div className="mb-2.5 flex items-center justify-between gap-2">
+                      <div className="text-sm font-semibold text-slate-800">{position.symbol}</div>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${position.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                        {sideLabel(position.side)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                      <InfoItem label="進場價" value={formatNumber(position.entryPrice, paperDigits)} />
+                      <InfoItem label="現價" value={formatNumber(position.currentPrice, paperDigits)} />
+                      <InfoItem label="數量" value={formatNumber(position.quantity, 2)} />
+                      <InfoItem label="倉位價值" value={`${formatNumber(positionValue, 2)} USDT`} />
+                      <InfoItem
+                        label="未實現損益"
+                        value={`${pnlPositive ? "+" : ""}${formatNumber(position.unrealizedPnl, 2)} USDT`}
+                        valueClassName={pnlPositive ? "text-emerald-600" : "text-rose-600"}
+                      />
+                      <InfoItem label="止損" value={formatNumber(position.stopLoss, paperDigits)} />
+                      <InfoItem label="止盈（TP1 / TP2 / TP3）" value={takeProfitDetailLabel(position)} className="col-span-2" />
+                      <InfoItem label="開倉時間" value={formatDate(position.openedAt)} className="col-span-2" />
+                    </div>
+                    <div className="mt-3 border-t border-slate-100 pt-2.5">
+                      <Button variant="outline" size="sm" className="h-7 w-full rounded-lg px-2" onClick={() => onClosePosition?.(position.id)}>
+                        平倉
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">目前無持倉</div>
         ) : null}
 
         {activeTab === "pending" ? (
           pendingOrders.length ? (
-            <div className="overflow-x-auto">
-              <table className="min-w-[960px] divide-y divide-slate-200">
-                <thead className="text-[11px] text-slate-500">
-                  <tr>
-                    <th className="px-2 py-2 text-left">幣種</th><th className="px-2 py-2 text-left">方向</th><th className="px-2 py-2 text-left">觸發價</th><th className="px-2 py-2 text-left">數量</th><th className="px-2 py-2 text-left">止損</th><th className="px-2 py-2 text-left">止盈</th><th className="px-2 py-2 text-left">失效價</th><th className="px-2 py-2 text-left">建立時間</th><th className="px-2 py-2 text-left">操作</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {pendingOrders.map((order) => (
-                    <tr key={order.id} className="hover:bg-slate-50/70">
-                      <td className="px-2 py-2 font-medium text-slate-700">{order.symbol}</td>
-                      <td className="px-2 py-2">{sideLabel(order.side)}</td>
-                      <td className="px-2 py-2">{formatNumber(order.triggerPrice, paperDigits)}</td>
-                      <td className="px-2 py-2">{formatNumber(order.quantity, 2)}</td>
-                      <td className="px-2 py-2">{formatNumber(order.stopLoss, paperDigits)}</td>
-                      <td className="px-2 py-2">{takeProfitLabel(order)}</td>
-                      <td className="px-2 py-2">{formatNumber(order.invalidationPrice, paperDigits)}</td>
-                      <td className="px-2 py-2">{formatDate(order.createdAt)}</td>
-                      <td className="px-2 py-2">
-                        <Button variant="outline" size="sm" className="h-7 rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => onCancelPendingOrder?.(order.id)}>取消掛單</Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+              {pendingOrders.map((order) => (
+                <div key={order.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="mb-2.5 flex items-center justify-between gap-2">
+                    <div className="text-sm font-semibold text-slate-800">{order.symbol}</div>
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${order.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                      {sideLabel(order.side)}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                    <InfoItem label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
+                    <InfoItem label="數量" value={formatNumber(order.quantity, 2)} />
+                    <InfoItem label="止損" value={formatNumber(order.stopLoss, paperDigits)} />
+                    <InfoItem label="失效價" value={formatNumber(order.invalidationPrice, paperDigits)} />
+                    <InfoItem label="止盈（TP1 / TP2 / TP3）" value={takeProfitDetailLabel(order)} className="col-span-2" />
+                    <InfoItem label="建立時間" value={formatDate(order.createdAt)} className="col-span-2" />
+                  </div>
+                  <div className="mt-3 border-t border-slate-100 pt-2.5">
+                    <Button variant="outline" size="sm" className="h-7 w-full rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => onCancelPendingOrder?.(order.id)}>
+                      取消掛單
+                    </Button>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">無待觸發掛單</div>
         ) : null}
 
         {activeTab === "closed" ? (
           closedTrades.length ? (
-            <div className="overflow-x-auto">
-              <table className="min-w-[860px] divide-y divide-slate-200">
-                <thead className="text-[11px] text-slate-500">
-                  <tr>
-                    <th className="px-2 py-2 text-left">幣種</th><th className="px-2 py-2 text-left">方向</th><th className="px-2 py-2 text-left">進場價</th><th className="px-2 py-2 text-left">出場價</th><th className="px-2 py-2 text-left">數量</th><th className="px-2 py-2 text-left">已實現損益</th><th className="px-2 py-2 text-left">平倉原因</th><th className="px-2 py-2 text-left">時間</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {closedTrades.map((trade) => {
-                    const pnlPositive = Number(trade.realizedPnl || 0) >= 0;
-                    return (
-                      <tr key={trade.id} className="hover:bg-slate-50/70">
-                        <td className="px-2 py-2 font-medium text-slate-700">{trade.symbol}</td>
-                        <td className="px-2 py-2">{sideLabel(trade.side)}</td>
-                        <td className="px-2 py-2">{formatNumber(trade.entryPrice, paperDigits)}</td>
-                        <td className="px-2 py-2">{formatNumber(trade.exitPrice, paperDigits)}</td>
-                        <td className="px-2 py-2">{formatNumber(trade.quantity, 2)}</td>
-                        <td className={`px-2 py-2 font-semibold ${pnlPositive ? "text-emerald-600" : "text-rose-600"}`}>{`${pnlPositive ? "+" : ""}${formatNumber(trade.realizedPnl, 2)} USDT`}</td>
-                        <td className="px-2 py-2">{reasonLabel(trade.closeReason)}</td>
-                        <td className="px-2 py-2">{formatDate(trade.closedAt)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+              {closedTrades.map((trade) => {
+                const pnlPositive = Number(trade.realizedPnl || 0) >= 0;
+                return (
+                  <div key={trade.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="text-sm font-semibold text-slate-800">{trade.symbol}</div>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${trade.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                        {sideLabel(trade.side)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                      <InfoItem label="進場價" value={formatNumber(trade.entryPrice, paperDigits)} />
+                      <InfoItem label="出場價" value={formatNumber(trade.exitPrice, paperDigits)} />
+                      <InfoItem label="數量" value={formatNumber(trade.quantity, 2)} />
+                      <InfoItem
+                        label="已實現損益"
+                        value={`${pnlPositive ? "+" : ""}${formatNumber(trade.realizedPnl, 2)} USDT`}
+                        valueClassName={pnlPositive ? "text-emerald-600" : "text-rose-600"}
+                      />
+                      <InfoItem label="平倉原因" value={reasonLabel(trade.closeReason)} className="col-span-2" />
+                      <InfoItem label="時間" value={formatDate(trade.closedAt)} className="col-span-2" />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">無交易紀錄</div>
         ) : null}
 
         {activeTab === "cancelled" ? (
           cancelledOrders.length ? (
-            <div className="overflow-x-auto">
-              <table className="min-w-[760px] divide-y divide-slate-200">
-                <thead className="text-[11px] text-slate-500">
-                  <tr>
-                    <th className="px-2 py-2 text-left">幣種</th><th className="px-2 py-2 text-left">方向</th><th className="px-2 py-2 text-left">觸發價</th><th className="px-2 py-2 text-left">數量</th><th className="px-2 py-2 text-left">取消原因</th><th className="px-2 py-2 text-left">建立/取消時間</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {cancelledOrders.map((order) => (
-                    <tr key={`${order.id}-${order.cancelledAt || order.createdAt}`} className="hover:bg-slate-50/70">
-                      <td className="px-2 py-2 font-medium text-slate-700">{order.symbol}</td>
-                      <td className="px-2 py-2">{sideLabel(order.side)}</td>
-                      <td className="px-2 py-2">{formatNumber(order.triggerPrice, paperDigits)}</td>
-                      <td className="px-2 py-2">{formatNumber(order.quantity, 2)}</td>
-                      <td className="px-2 py-2">{order.cancelReason || "-"}</td>
-                      <td className="px-2 py-2">{`${formatDate(order.createdAt)} / ${formatDate(order.cancelledAt)}`}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+              {cancelledOrders.map((order) => (
+                <div key={`${order.id}-${order.cancelledAt || order.createdAt}`} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="text-sm font-semibold text-slate-800">{order.symbol}</div>
+                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${order.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                      {sideLabel(order.side)}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                    <InfoItem label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
+                    <InfoItem label="數量" value={formatNumber(order.quantity, 2)} />
+                    <InfoItem label="取消原因" value={order.cancelReason || "-"} className="col-span-2" />
+                    <InfoItem label="建立時間" value={formatDate(order.createdAt)} className="col-span-2" />
+                    <InfoItem label="取消時間" value={formatDate(order.cancelledAt)} className="col-span-2" />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">無取消掛單紀錄</div>
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function InfoItem({ label, value, className = "", valueClassName = "" }) {
+  return (
+    <div className={`rounded-lg bg-slate-50 p-2 ${className}`}>
+      <div className="text-[11px] text-slate-500">{label}</div>
+      <div className={`mt-1 break-all font-semibold text-slate-800 ${valueClassName}`}>{value || "-"}</div>
+    </div>
   );
 }
 
