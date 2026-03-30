@@ -695,13 +695,28 @@ export function applyMarketTickToPaperState(
   return recalculateAccountState(nextState);
 }
 
-export function closePositionManually(state, { symbol, timeframe, price, reason = "MANUAL_CLOSE" }) {
-  const open = state.openPositions.find((position) => position.symbol === symbol && position.timeframe === timeframe);
+export function closePositionManually(state, { positionId, symbol, timeframe, price, reason = "MANUAL_CLOSE" }) {
+  const open = positionId
+    ? state.openPositions.find((position) => position.id === positionId)
+    : state.openPositions.find((position) => position.symbol === symbol && position.timeframe === timeframe);
   if (!open) return state;
   return closePosition(state, {
     positionId: open.id,
     exitPrice: asSafeNumber(price, open.currentPrice),
     closeReason: reason,
+  });
+}
+
+export function cancelPendingOrderManually(state, { orderId, reason = "MANUAL_CANCEL", cancelledAt = nowIso() }) {
+  if (!orderId) return state;
+  const targetOrder = (state.pendingOrders || []).find((order) => order.id === orderId && order.status === "PENDING");
+  if (!targetOrder) return state;
+
+  return recalculateAccountState({
+    ...state,
+    pendingOrders: (state.pendingOrders || []).filter((order) => order.id !== orderId),
+    cancelledOrders: [cancelPendingOrder(targetOrder, reason, cancelledAt), ...(state.cancelledOrders || [])]
+      .slice(0, MAX_CANCELLED_ORDERS_HISTORY),
   });
 }
 
