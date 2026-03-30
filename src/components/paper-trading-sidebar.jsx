@@ -368,7 +368,7 @@ export default function PaperTradingSidebar({
   const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[360px]" : "w-full lg:w-[76px]";
 
   return (
-    <aside className={`shrink-0 border-b border-slate-200 bg-slate-50/70 p-3 transition-all duration-200 lg:border-b-0 lg:border-r ${sidebarWidthClass}`}>
+    <aside className={`shrink-0 border-b border-slate-200 bg-slate-50/70 p-4 transition-all duration-200 lg:border-b-0 lg:border-r ${sidebarWidthClass}`}>
       <div className="flex items-center justify-between gap-2">
         {sidebarOpen ? <div className="text-sm font-semibold text-slate-700">模擬交易</div> : <Wallet className="mx-auto h-5 w-5 text-slate-600" />}
         <Button variant="ghost" size="icon" onClick={onToggleSidebar}>
@@ -377,7 +377,7 @@ export default function PaperTradingSidebar({
       </div>
 
       {sidebarOpen ? (
-        <div className="mt-4 space-y-3">
+        <div className="mt-4 space-y-4">
           <Card className="rounded-2xl border-slate-200">
             <CardContent className="space-y-2 p-3">
               <div className="text-xs font-medium text-slate-500">幣種</div>
