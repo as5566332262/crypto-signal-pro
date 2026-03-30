@@ -149,14 +149,12 @@ function TradingStateTerminal({
                 const positionValue = Number(position.currentPrice || 0) * Number(position.quantity || 0);
                 return (
                   <div key={position.id} className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="mb-3 flex items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <div className="truncate text-sm font-semibold text-slate-800">{position.symbol}</div>
-                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${position.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
-                          {sideLabel(position.side)}
-                        </span>
-                      </div>
-                      <div className={`shrink-0 whitespace-nowrap text-sm font-bold ${pnlPositive ? "text-emerald-600" : "text-rose-600"}`}>
+                    <div className="mb-3 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                      <div className="truncate text-sm font-semibold text-slate-800">{position.symbol}</div>
+                      <span className={`justify-self-center shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${position.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                        {sideLabel(position.side)}
+                      </span>
+                      <div className={`justify-self-end whitespace-nowrap text-base font-extrabold tracking-wide ${pnlPositive ? "text-emerald-600" : "text-rose-600"}`}>
                         {pnlPositive ? "+" : ""}
                         {formatNumber(position.unrealizedPnl, 2)} USDT
                       </div>
