@@ -827,6 +827,21 @@ export function simulateDecisionExecution({
     decisionContextKey: contextKey,
   };
 
+  const createPendingOrder = ({ baseState, order }) => {
+    const beforeCount = (baseState?.pendingOrders || []).length;
+    const nextState = recalculateAccountState({
+      ...baseState,
+      pendingOrders: [order, ...(baseState?.pendingOrders || [])],
+    });
+    const afterCount = (nextState?.pendingOrders || []).length;
+    return {
+      nextState,
+      beforeCount,
+      afterCount,
+      created: afterCount > beforeCount,
+    };
+  };
+
   if (executionIntent === "WATCH_ONLY") {
     return {
       state,
@@ -900,17 +915,15 @@ export function simulateDecisionExecution({
     };
   }
 
-  const nextState = recalculateAccountState({
-    ...state,
-    pendingOrders: [pendingOrder, ...state.pendingOrders],
-  });
+  const pendingCreation = createPendingOrder({ baseState: state, order: pendingOrder });
 
   return {
-    state: nextState,
+    state: pendingCreation.nextState,
     result: "PENDING_CREATED",
     executionIntent: "PLACE_PENDING",
     confirmationResult,
     pendingOrder,
+    pendingCreation,
     eligibilityInfo: effectiveEligibility,
   };
 }
