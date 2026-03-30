@@ -16,6 +16,7 @@ import {
   Bar,
   ReferenceArea,
   ReferenceLine,
+  ReferenceDot,
   Cell,
 } from "recharts";
 
@@ -230,7 +231,9 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
   );
 }
 
-export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, formatNumber }) {
+export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, formatNumber, paperState, paperSymbol }) {
+  const activePosition = (paperState?.openPositions || []).find((position) => position.symbol === paperSymbol);
+  const activePendingOrder = (paperState?.pendingOrders || []).find((order) => order.symbol === paperSymbol);
   const overlays = [
     { label: "Entry", tone: "bg-slate-100 text-slate-700" },
     { label: "Stop Loss", tone: "bg-rose-100 text-rose-700" },
@@ -283,6 +286,30 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
               <ReferenceLine yAxisId="left" y={analysis?.takeProfit2} stroke="#16a34a" strokeDasharray="3 3" label="TP2" />
               {analysis?.executionPlan?.triggerPrice ? (
                 <ReferenceLine yAxisId="left" y={analysis?.executionPlan?.triggerPrice} stroke="#0284c7" strokeDasharray="5 5" label="Trigger" />
+              ) : null}
+              {activePendingOrder?.triggerPrice ? (
+                <ReferenceLine yAxisId="left" y={activePendingOrder.triggerPrice} stroke="#0ea5e9" strokeDasharray="2 6" label="Pending" />
+              ) : null}
+              {activePendingOrder?.invalidationPrice ? (
+                <ReferenceLine yAxisId="left" y={activePendingOrder.invalidationPrice} stroke="#f97316" strokeDasharray="2 4" label="Inv" />
+              ) : null}
+              {activePosition?.entryPrice ? (
+                <ReferenceLine yAxisId="left" y={activePosition.entryPrice} stroke="#6366f1" strokeDasharray="5 3" label="Entry" />
+              ) : null}
+              {activePosition?.stopLoss ? (
+                <ReferenceLine yAxisId="left" y={activePosition.stopLoss} stroke="#ef4444" strokeDasharray="3 3" label="Pos SL" />
+              ) : null}
+              {activePosition?.takeProfit1 ? (
+                <ReferenceLine yAxisId="left" y={activePosition.takeProfit1} stroke="#22c55e" strokeDasharray="3 3" label="Pos TP1" />
+              ) : null}
+              {activePosition?.takeProfit2 ? (
+                <ReferenceLine yAxisId="left" y={activePosition.takeProfit2} stroke="#16a34a" strokeDasharray="3 3" label="Pos TP2" />
+              ) : null}
+              {activePosition?.takeProfit3 ? (
+                <ReferenceLine yAxisId="left" y={activePosition.takeProfit3} stroke="#15803d" strokeDasharray="3 3" label="Pos TP3" />
+              ) : null}
+              {activePosition?.openedAt ? (
+                <ReferenceDot yAxisId="left" x={chartData.at(-1)?.time} y={activePosition.entryPrice} r={4} fill="#4f46e5" stroke="none" />
               ) : null}
 
               <Bar yAxisId="right" dataKey="volume" opacity={0.22} radius={[3, 3, 0, 0]}>
@@ -390,6 +417,8 @@ export default function TradingDecisionPage({
   formatNumber,
   digits,
   showDevOutput = false,
+  paperState,
+  paperSymbol,
 }) {
   const symbolLabel = symbolOptions.find((item) => item.value === symbol)?.label || symbol;
 
@@ -434,7 +463,7 @@ export default function TradingDecisionPage({
           <AIAnalysisAccordion analysis={analysis} showRawOutput={showDevOutput} />
         </div>
         <div className="min-w-0 space-y-6">
-          <ChartPanel chartData={chartData} analysis={analysis} symbol={symbol} timeframeLabel={timeframeLabel} formatNumber={formatNumber} />
+          <ChartPanel chartData={chartData} analysis={analysis} symbol={symbol} timeframeLabel={timeframeLabel} formatNumber={formatNumber} paperState={paperState} paperSymbol={paperSymbol} />
           <MarketContextCard analysis={analysis} currentCandle={currentCandle} digits={digits} formatNumber={formatNumber} />
         </div>
       </div>

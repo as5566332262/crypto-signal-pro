@@ -1,4 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
+import {
+  applyMarketTickToPaperState,
+  closePositionManually,
+  createInitialPaperAccountState,
+  resetPaperTradingState,
+  simulateDecisionExecution,
+} from "@/lib/paper-trading-engine";
 import { registerSW } from "virtual:pwa-register";
 import PaperTradingSidebar from "@/components/paper-trading-sidebar";
 import TradingDecisionPage from "@/components/trading-decision-page";
@@ -18,41 +25,24 @@ const INTERVAL_OPTIONS = [
 
 const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 
-const PAPER_ACCOUNT_STORAGE_KEY = "crypto-signal-pro-paper-account-v6";
-const PAPER_INITIAL_BALANCE = 5000;
+const PAPER_ACCOUNT_STORAGE_KEY = "crypto-signal-pro-paper-account-v7";
 const PAPER_SUPPORTED_SYMBOLS = ["BTC", "ETH", "SOL"];
 
-function createInitialPaperAccount() {
-  return {
-    initialBalance: PAPER_INITIAL_BALANCE,
-    balance: PAPER_INITIAL_BALANCE,
-    equity: PAPER_INITIAL_BALANCE,
-    usedMargin: 0,
-    realizedPnL: 0,
-    unrealizedPnL: 0,
-    totalTrades: 0,
-    wins: 0,
-    losses: 0,
-    winRate: 0,
-    openPosition: null,
-    tradeHistory: [],
-  };
-}
-
 function loadPaperAccount() {
-  if (typeof window === "undefined") return createInitialPaperAccount();
+  if (typeof window === "undefined") return createInitialPaperAccountState();
   try {
     const raw = window.localStorage.getItem(PAPER_ACCOUNT_STORAGE_KEY);
-    if (!raw) return createInitialPaperAccount();
+    if (!raw) return createInitialPaperAccountState();
     const parsed = JSON.parse(raw);
     return {
-      ...createInitialPaperAccount(),
+      ...createInitialPaperAccountState(),
       ...parsed,
-      openPosition: parsed?.openPosition || null,
-      tradeHistory: Array.isArray(parsed?.tradeHistory) ? parsed.tradeHistory : [],
+      openPositions: Array.isArray(parsed?.openPositions) ? parsed.openPositions : [],
+      pendingOrders: Array.isArray(parsed?.pendingOrders) ? parsed.pendingOrders : [],
+      closedTrades: Array.isArray(parsed?.closedTrades) ? parsed.closedTrades : [],
     };
   } catch {
-    return createInitialPaperAccount();
+    return createInitialPaperAccountState();
   }
 }
 
@@ -2284,87 +2274,66 @@ export default function CryptoSignalWebApp() {
   const paperDigits = paperSymbol === "BTC" ? 0 : 2;
   const timeframeLabel =
     INTERVAL_OPTIONS.find((item) => item.value === timeframe)?.label || timeframe;
-  const paperCurrentPrice = symbol.startsWith(paperSymbol) ? analysis?.price : null;
-  const openPositionUnrealizedPnL = useMemo(() => {
-    if (!paperAccount.openPosition || !paperCurrentPrice) return 0;
-    const direction = paperAccount.openPosition.side === "LONG" ? 1 : -1;
-    return (paperCurrentPrice - paperAccount.openPosition.entryPrice) * paperAccount.openPosition.size * direction;
-  }, [paperAccount.openPosition, paperCurrentPrice]);
+  const paperMarketSymbol = `${paperSymbol}USDT`;
+  const paperCurrentPrice = symbol === paperMarketSymbol ? analysis?.price : null;
+
+  useEffect(() => {
+    if (!paperCurrentPrice) return;
+    setPaperAccount((prev) =>
+      applyMarketTickToPaperState(prev, {
+        price: paperCurrentPrice,
+        candleClose: currentCandle?.close,
+      })
+    );
+  }, [paperCurrentPrice, currentCandle?.close]);
 
   const accountSnapshot = useMemo(() => {
-    const unrealizedPnL = paperAccount.openPosition ? openPositionUnrealizedPnL : 0;
-    const equity = paperAccount.balance + unrealizedPnL;
-    const wins = paperAccount.wins || 0;
-    const losses = paperAccount.losses || 0;
-    const totalTrades = paperAccount.totalTrades || 0;
-    const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
+    const wins = paperAccount.closedTrades.filter((trade) => trade.realizedPnl >= 0).length;
+    const losses = paperAccount.closedTrades.length - wins;
+    const totalTrades = paperAccount.closedTrades.length;
+    const winRate = totalTrades ? (wins / totalTrades) * 100 : 0;
+
     return {
       ...paperAccount,
-      equity,
-      unrealizedPnL,
-      winRate,
       wins,
       losses,
       totalTrades,
+      winRate,
     };
-  }, [openPositionUnrealizedPnL, paperAccount]);
+  }, [paperAccount]);
 
   const handleExecuteSimulation = () => {
-    if (!analysis || !paperCurrentPrice) return;
-    if (paperAccount.openPosition) return;
-    if (!["BUY", "SELL"].includes(analysis.finalDecision)) return;
+    if (!analysis?.aiDecisionOutput || !paperCurrentPrice) return;
 
-    const nextSide = analysis.finalDecision === "BUY" ? "LONG" : "SHORT";
-    setPaperAccount((prev) => ({
-      ...prev,
-      usedMargin: paperCurrentPrice,
-      openPosition: {
-        symbol: paperSymbol,
-        side: nextSide,
-        size: 1,
-        entryPrice: paperCurrentPrice,
-        stopLoss: analysis.stopLoss,
-        target1: analysis.takeProfit1,
-        target2: analysis.takeProfit2,
-        openedAt: Date.now(),
-      },
-    }));
+    setPaperAccount((prev) => {
+      const result = simulateDecisionExecution({
+        state: prev,
+        decision: analysis.aiDecisionOutput,
+        symbol: paperMarketSymbol,
+        timeframe,
+        currentPrice: paperCurrentPrice,
+        quantity: 1,
+      });
+
+      return result.state;
+    });
   };
 
   const handleClosePosition = () => {
-    if (!paperAccount.openPosition || !paperCurrentPrice) return;
-    const position = paperAccount.openPosition;
-    const direction = position.side === "LONG" ? 1 : -1;
-    const pnl = (paperCurrentPrice - position.entryPrice) * position.size * direction;
-    const result = pnl >= 0 ? "WIN" : "LOSS";
+    if (!paperCurrentPrice) return;
 
-    setPaperAccount((prev) => ({
-      ...prev,
-      balance: prev.balance + pnl,
-      realizedPnL: prev.realizedPnL + pnl,
-      usedMargin: 0,
-      totalTrades: (prev.totalTrades || 0) + 1,
-      wins: (prev.wins || 0) + (result === "WIN" ? 1 : 0),
-      losses: (prev.losses || 0) + (result === "LOSS" ? 1 : 0),
-      openPosition: null,
-      tradeHistory: [
-        {
-          symbol: position.symbol,
-          side: position.side,
-          entryPrice: position.entryPrice,
-          exitPrice: paperCurrentPrice,
-          pnl,
-          result,
-          openedAt: position.openedAt,
-          closedAt: Date.now(),
-        },
-        ...(prev.tradeHistory || []),
-      ],
-    }));
+    setPaperAccount((prev) =>
+      closePositionManually(prev, {
+        symbol: paperMarketSymbol,
+        timeframe,
+        price: paperCurrentPrice,
+        reason: "MANUAL_CLOSE",
+      })
+    );
   };
 
   const handleResetPaperAccount = () => {
-    setPaperAccount(createInitialPaperAccount());
+    setPaperAccount(resetPaperTradingState());
   };
 
   return (
@@ -2405,6 +2374,8 @@ export default function CryptoSignalWebApp() {
             formatNumber={formatNumber}
             digits={digits}
             showDevOutput={Boolean(import.meta.env.DEV)}
+            paperState={accountSnapshot}
+            paperSymbol={paperMarketSymbol}
           />
         </main>
       </div>

@@ -14,29 +14,35 @@ export function PaperAccountCard({ accountSnapshot, formatNumber }) {
         <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">餘額</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.balance, 2)} USDT</div></div>
         <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">淨值</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.equity, 2)} USDT</div></div>
         <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">已用保證金</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.usedMargin || 0, 2)} USDT</div></div>
-        <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">已實現損益</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.realizedPnL, 2)} USDT</div></div>
-        <div className="col-span-2 rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">未實現損益</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.unrealizedPnL, 2)} USDT</div></div>
+        <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">已實現損益</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.realizedPnl, 2)} USDT</div></div>
+        <div className="col-span-2 rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">未實現損益</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.unrealizedPnl, 2)} USDT</div></div>
       </CardContent>
     </Card>
   );
 }
 
-export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber, activeOrders = 0 }) {
+export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber }) {
+  const positions = accountSnapshot.openPositions || [];
+
   return (
     <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">持倉資訊</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs text-slate-600">
-        <div>目前持倉: {accountSnapshot.openPosition ? 1 : 0}</div>
-        <div>模擬委託中: {activeOrders}</div>
-        {accountSnapshot.openPosition ? (
-          <>
-            <div>方向: <span className="font-semibold text-slate-800">{accountSnapshot.openPosition.side}</span></div>
-            <div>進場: <span className="font-semibold text-slate-800">{formatNumber(accountSnapshot.openPosition.entryPrice, paperDigits)}</span></div>
-            <div>SL: <span className="font-semibold text-slate-800">{formatNumber(accountSnapshot.openPosition.stopLoss, paperDigits)}</span></div>
-            <div>TP: <span className="font-semibold text-slate-800">{formatNumber(accountSnapshot.openPosition.target1, paperDigits)} / {formatNumber(accountSnapshot.openPosition.target2, paperDigits)}</span></div>
-          </>
+        <div>目前持倉: {positions.length}</div>
+        {positions.length ? (
+          positions.slice(0, 3).map((position) => (
+            <div key={position.id} className="rounded-lg bg-slate-50 p-2">
+              <div className="font-semibold text-slate-800">{position.symbol} · {position.side}</div>
+              <div>進場: {formatNumber(position.entryPrice, paperDigits)}</div>
+              <div>現價: {formatNumber(position.currentPrice, paperDigits)}</div>
+              <div>未實現: {formatNumber(position.unrealizedPnl, 2)} USDT</div>
+              <div>SL: {formatNumber(position.stopLoss, paperDigits)}</div>
+              <div>TP: {formatNumber(position.takeProfit1, paperDigits)} / {formatNumber(position.takeProfit2, paperDigits)} / {formatNumber(position.takeProfit3, paperDigits)}</div>
+              <div>開倉: {new Date(position.openedAt).toLocaleString()}</div>
+            </div>
+          ))
         ) : (
           <div>目前無持倉</div>
         )}
@@ -45,19 +51,45 @@ export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber, 
   );
 }
 
-export function TradeHistoryDrawer({ tradeHistory, paperDigits, formatNumber }) {
+export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber }) {
+  return (
+    <Card className="rounded-2xl border-slate-200">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">掛單中</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 text-xs">
+        {pendingOrders.length ? (
+          pendingOrders.slice(0, 6).map((order) => (
+            <div key={order.id} className="rounded-lg bg-slate-50 p-2 text-slate-600">
+              <div className="font-medium text-slate-700">{order.symbol} · {order.side}</div>
+              <div>觸發價: {formatNumber(order.triggerPrice, paperDigits)}</div>
+              <div>失效價: {formatNumber(order.invalidationPrice, paperDigits)}</div>
+              <div>建立: {new Date(order.createdAt).toLocaleString()}</div>
+              <div>Context: {order.decisionContextKey?.slice(0, 42) || "-"}...</div>
+            </div>
+          ))
+        ) : (
+          <div className="text-slate-500">無待觸發掛單</div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+export function TradeHistoryDrawer({ closedTrades, paperDigits, formatNumber }) {
   return (
     <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">交易紀錄</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs">
-        {tradeHistory.length ? (
-          tradeHistory.slice(0, 6).map((trade, index) => (
-            <div key={`${trade.openedAt}-${index}`} className="rounded-lg bg-slate-50 p-2 text-slate-600">
-              <div className="font-medium text-slate-700">{trade.symbol} {trade.side} · {trade.result}</div>
+        {closedTrades.length ? (
+          closedTrades.slice(0, 6).map((trade) => (
+            <div key={trade.id} className="rounded-lg bg-slate-50 p-2 text-slate-600">
+              <div className="font-medium text-slate-700">{trade.symbol} {trade.side} · {trade.closeReason}</div>
               <div>{formatNumber(trade.entryPrice, paperDigits)} → {formatNumber(trade.exitPrice, paperDigits)}</div>
-              <div>損益: {formatNumber(trade.pnl, 2)} USDT</div>
+              <div>損益: {formatNumber(trade.realizedPnl, 2)} USDT ({formatNumber(trade.pnlPercent, 2)}%)</div>
+              <div>{new Date(trade.openedAt).toLocaleString()} - {new Date(trade.closedAt).toLocaleString()}</div>
             </div>
           ))
         ) : (
@@ -65,6 +97,28 @@ export function TradeHistoryDrawer({ tradeHistory, paperDigits, formatNumber }) 
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function DebugStateCard({ accountSnapshot }) {
+  return (
+    <details className="rounded-2xl border border-slate-200 bg-white p-3 text-xs" open={false}>
+      <summary className="cursor-pointer font-semibold text-slate-700">開發者模式：模擬狀態</summary>
+      <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-slate-900 p-2 text-[11px] text-slate-100">
+        {JSON.stringify({
+          account: {
+            balance: accountSnapshot.balance,
+            equity: accountSnapshot.equity,
+            usedMargin: accountSnapshot.usedMargin,
+            realizedPnl: accountSnapshot.realizedPnl,
+            unrealizedPnl: accountSnapshot.unrealizedPnl,
+          },
+          pendingOrders: accountSnapshot.pendingOrders,
+          openPositions: accountSnapshot.openPositions,
+          closedTrades: accountSnapshot.closedTrades,
+        }, null, 2)}
+      </pre>
+    </details>
   );
 }
 
@@ -81,7 +135,7 @@ export default function PaperTradingSidebar({
   onClosePosition,
   formatNumber,
 }) {
-  const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[280px]" : "w-full lg:w-[76px]";
+  const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[320px]" : "w-full lg:w-[76px]";
 
   return (
     <aside className={`shrink-0 border-b border-slate-200 bg-slate-50/70 p-3 transition-all duration-200 lg:border-b-0 lg:border-r ${sidebarWidthClass}`}>
@@ -108,7 +162,9 @@ export default function PaperTradingSidebar({
 
           <PaperAccountCard accountSnapshot={accountSnapshot} formatNumber={formatNumber} />
           <OpenPositionsCard accountSnapshot={accountSnapshot} paperDigits={paperDigits} formatNumber={formatNumber} />
-          <TradeHistoryDrawer tradeHistory={accountSnapshot.tradeHistory} paperDigits={paperDigits} formatNumber={formatNumber} />
+          <PendingOrdersCard pendingOrders={accountSnapshot.pendingOrders || []} paperDigits={paperDigits} formatNumber={formatNumber} />
+          <TradeHistoryDrawer closedTrades={accountSnapshot.closedTrades || []} paperDigits={paperDigits} formatNumber={formatNumber} />
+          <DebugStateCard accountSnapshot={accountSnapshot} />
 
           <div className="grid grid-cols-1 gap-2">
             <Button className="rounded-2xl bg-slate-900 text-white hover:bg-slate-800" onClick={onExecuteSimulation}>執行模擬</Button>
