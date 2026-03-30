@@ -234,6 +234,9 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
 export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, formatNumber, paperState, paperSymbol }) {
   const activePosition = (paperState?.openPositions || []).find((position) => position.symbol === paperSymbol);
   const activePendingOrder = (paperState?.pendingOrders || []).find((order) => order.symbol === paperSymbol);
+  const entryPointLabel = activePosition?.entryCandleTime
+    ? chartData.find((row) => Number(row.openTime) === Number(activePosition.entryCandleTime))?.time
+    : null;
   const overlays = [
     { label: "Entry", tone: "bg-slate-100 text-slate-700" },
     { label: "Stop Loss", tone: "bg-rose-100 text-rose-700" },
@@ -321,7 +324,14 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
                 <ReferenceLine yAxisId="left" y={activePosition.takeProfit3} stroke="#15803d" strokeDasharray="3 3" label="Pos TP3" />
               ) : null}
               {activePosition?.openedAt ? (
-                <ReferenceDot yAxisId="left" x={chartData.at(-1)?.time} y={activePosition.entryPrice} r={4} fill="#4f46e5" stroke="none" />
+                <ReferenceDot
+                  yAxisId="left"
+                  x={entryPointLabel || chartData.at(-1)?.time}
+                  y={activePosition.entryPrice}
+                  r={4}
+                  fill="#4f46e5"
+                  stroke="none"
+                />
               ) : null}
 
               <Bar yAxisId="right" dataKey="volume" opacity={0.22} radius={[3, 3, 0, 0]}>

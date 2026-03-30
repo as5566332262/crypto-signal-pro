@@ -294,13 +294,49 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
   });
 }
 
-function shouldFillOrder(order, tickPrice, candleClose) {
+function shouldFillOrder(order, tickPrice) {
   const triggerPrice = asSafeNumber(order.triggerPrice);
   if (!triggerPrice) return false;
-  const comparePrice = candleClose ?? tickPrice;
-  if (!Number.isFinite(comparePrice)) return false;
-  if (order.side === "LONG") return comparePrice >= triggerPrice;
-  return comparePrice <= triggerPrice;
+  if (!Number.isFinite(tickPrice)) return false;
+  if (order.side === "LONG") return tickPrice >= triggerPrice;
+  return tickPrice <= triggerPrice;
+}
+
+function hasActiveTrapSignal(decisionSnapshot) {
+  const trapSignal = String(decisionSnapshot?.trapDetection?.trapSignal || "").toUpperCase();
+  return trapSignal && trapSignal !== "NONE";
+}
+
+function getOrderRsiThreshold(order) {
+  const customThreshold = normalizeNumber(
+    order?.decisionSnapshot?.executionPlan?.confirmationRsiThreshold ??
+      order?.decisionSnapshot?.executionPlan?.rsiThreshold ??
+      order?.confirmationRsiThreshold
+  );
+  if (Number.isFinite(customThreshold)) return customThreshold;
+  return order.side === "SHORT" ? 45 : 55;
+}
+
+function hasConfirmation(order, { candleClose, rsi, macd, ma20 }) {
+  const threshold = getOrderRsiThreshold(order);
+  if (!Number.isFinite(candleClose) || !Number.isFinite(rsi) || !Number.isFinite(macd) || !Number.isFinite(ma20)) {
+    return false;
+  }
+  if (order.side === "LONG") {
+    return rsi >= threshold && macd > 0 && candleClose > ma20;
+  }
+  return rsi <= threshold && macd < 0 && candleClose < ma20;
+}
+
+function resolveMacdValue(value) {
+  if (Number.isFinite(value)) return value;
+  if (value && typeof value === "object") {
+    const candidates = [value.histogram, value.macd, value.value];
+    for (const candidate of candidates) {
+      if (Number.isFinite(candidate)) return candidate;
+    }
+  }
+  return undefined;
 }
 
 function isPreEntryInvalidated(order, tickPrice) {
@@ -311,7 +347,7 @@ function isPreEntryInvalidated(order, tickPrice) {
   return tickPrice >= invalidation;
 }
 
-function maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp = nowIso() }) {
+function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20, candleTime, timestamp = nowIso() }) {
   let nextState = {
     ...state,
     pendingOrders: [...state.pendingOrders],
@@ -325,7 +361,9 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp = now
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp));
       return { ...order, status: "CANCELLED" };
     }
-    if (!shouldFillOrder(order, tickPrice, candleClose)) return order;
+    if (hasActiveTrapSignal(order.decisionSnapshot)) return order;
+    if (!shouldFillOrder(order, tickPrice)) return order;
+    if (!hasConfirmation(order, { candleClose, rsi, macd, ma20 })) return order;
 
     const entryPrice = asSafeNumber(candleClose ?? tickPrice, order.triggerPrice);
     const normalizedLevels = normalizeDirectionalLevels({
@@ -356,6 +394,7 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp = now
       takeProfit3: normalizedLevels.takeProfit3,
       invalidationPrice: order.invalidationPrice,
       openedAt: timestamp,
+      entryCandleTime: candleTime ?? null,
       unrealizedPnl: 0,
       entryReason: order.entryReason || null,
       decisionSnapshot: order.decisionSnapshot,
@@ -363,6 +402,14 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp = now
       hitTargets: [],
     };
     nextState.openPositions.push(position);
+    console.info("[paper-trading] pending order executed", {
+      orderId: order.id,
+      symbol: order.symbol,
+      timeframe: order.timeframe,
+      side: order.side,
+      entryPrice,
+      executedAt: timestamp,
+    });
     return { ...order, status: "FILLED", filledAt: timestamp };
   });
 
@@ -597,11 +644,27 @@ export function reconcilePendingOrdersWithDecision({
   });
 }
 
-export function applyMarketTickToPaperState(state, { price, candleClose, timestamp = nowIso() }) {
+export function applyMarketTickToPaperState(
+  state,
+  { price, candleClose, rsi, macd, ma20, candleTime, timestamp = nowIso() }
+) {
   const tickPrice = asSafeNumber(price);
   if (!Number.isFinite(tickPrice)) return state;
 
-  let nextState = maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp });
+  const normalizedRsi = normalizeNumber(rsi);
+  const normalizedCandleClose = normalizeNumber(candleClose);
+  const normalizedMa20 = normalizeNumber(ma20);
+  const normalizedMacd = resolveMacdValue(macd);
+
+  let nextState = maybeFillPendingOrders(state, {
+    tickPrice,
+    candleClose: normalizedCandleClose,
+    rsi: normalizedRsi,
+    macd: normalizedMacd,
+    ma20: normalizedMa20,
+    candleTime,
+    timestamp,
+  });
   const updatedPositions = nextState.openPositions.map((position) => ({
     ...position,
     currentPrice: tickPrice,
