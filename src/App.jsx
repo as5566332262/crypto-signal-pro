@@ -2404,6 +2404,15 @@ export default function CryptoSignalWebApp() {
     INTERVAL_OPTIONS.find((item) => item.value === timeframe)?.label || timeframe;
   const paperMarketSymbol = `${paperSymbol}USDT`;
   const paperCurrentPrice = symbol === paperMarketSymbol ? analysis?.price : null;
+  const recentVolumes = useMemo(
+    () => (candles || []).slice(-20).map((c) => Number(c.volume)).filter((v) => Number.isFinite(v)),
+    [candles]
+  );
+  const paperAvgVolume20 = useMemo(
+    () => (recentVolumes.length ? recentVolumes.reduce((sum, v) => sum + v, 0) / recentVolumes.length : null),
+    [recentVolumes]
+  );
+  const paperCurrentVolume = Number(currentCandle?.volume ?? candles?.[candles.length - 1]?.volume);
 
   useEffect(() => {
     if (!paperCurrentPrice) return;
@@ -2414,10 +2423,12 @@ export default function CryptoSignalWebApp() {
         rsi: analysis?.rsi,
         macd: analysis?.macd,
         ma20: analysis?.ma20,
+        currentVolume: paperCurrentVolume,
+        avgVolume20: paperAvgVolume20,
         candleTime: currentCandle?.openTime,
       })
     );
-  }, [paperCurrentPrice, currentCandle?.close, currentCandle?.openTime, analysis?.rsi, analysis?.macd, analysis?.ma20]);
+  }, [paperCurrentPrice, currentCandle?.close, currentCandle?.openTime, analysis?.rsi, analysis?.macd, analysis?.ma20, paperCurrentVolume, paperAvgVolume20]);
 
   useEffect(() => {
     if (!analysis?.aiDecisionOutput) return;
@@ -2467,9 +2478,8 @@ export default function CryptoSignalWebApp() {
     }
 
     setPaperAccount((prev) => {
-      const recentVolumes = (candles || []).slice(-20).map((c) => Number(c.volume)).filter((v) => Number.isFinite(v));
-      const avgVolume20 = recentVolumes.length ? recentVolumes.reduce((sum, v) => sum + v, 0) / recentVolumes.length : null;
-      const latestVolume = Number(currentCandle?.volume ?? candles?.[candles.length - 1]?.volume);
+      const avgVolume20 = paperAvgVolume20;
+      const latestVolume = paperCurrentVolume;
       let nextFeedback = {
         status: "WATCHING",
         statusLabel: "已進入等待確認模式",
@@ -2521,16 +2531,7 @@ export default function CryptoSignalWebApp() {
         createdPosition: Boolean(result.position),
         createdPendingOrder: Boolean(result.pendingOrder),
       });
-      const executedState = result.result === "PENDING_CREATED"
-        ? applyMarketTickToPaperState(result.state, {
-          price: paperCurrentPrice,
-          candleClose: currentCandle?.close,
-          rsi: analysis?.rsi,
-          macd: analysis?.macd,
-          ma20: analysis?.ma20,
-          candleTime: currentCandle?.openTime,
-        })
-        : result.state;
+      const executedState = result.state;
 
       const prevOpenCount = prev.openPositions.filter((position) => position.symbol === paperMarketSymbol && position.timeframe === timeframe).length;
       const nextOpenCount = executedState.openPositions.filter((position) => position.symbol === paperMarketSymbol && position.timeframe === timeframe).length;
@@ -2654,13 +2655,10 @@ export default function CryptoSignalWebApp() {
       getSimulationButtonState(analysis?.aiDecisionOutput, paperCurrentPrice, {
         rsi: analysis?.rsi,
         macd: analysis?.macd,
-        currentVolume: Number(currentCandle?.volume ?? candles?.[candles.length - 1]?.volume),
-        avgVolume20: (() => {
-          const recentVolumes = (candles || []).slice(-20).map((c) => Number(c.volume)).filter((v) => Number.isFinite(v));
-          return recentVolumes.length ? recentVolumes.reduce((sum, v) => sum + v, 0) / recentVolumes.length : null;
-        })(),
+        currentVolume: paperCurrentVolume,
+        avgVolume20: paperAvgVolume20,
       }),
-    [analysis?.aiDecisionOutput, paperCurrentPrice, analysis?.rsi, analysis?.macd, currentCandle?.volume, candles]
+    [analysis?.aiDecisionOutput, paperCurrentPrice, analysis?.rsi, analysis?.macd, paperCurrentVolume, paperAvgVolume20]
   );
 
   return (
