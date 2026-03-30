@@ -5,6 +5,9 @@ const TRAP_BLOCK_CONFIDENCE = new Set(["MEDIUM", "HIGH", "中", "高"]);
 const LEVEL_CHANGE_TOLERANCE_RATIO = 0.001;
 const MAX_CANCELLED_ORDERS_HISTORY = 50;
 const DECISION_STALE_MS = 30 * 60 * 1000;
+const DEFAULT_PENDING_EXPIRY_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_SHORT_BREAKDOWN_ATR_RATIO = 0.2;
+const DEFAULT_PENDING_DRIFT_ATR_RATIO = 2;
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -113,20 +116,29 @@ function resolvePlannedEntryPrice(decision, side) {
 
 function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr }) {
   if (!Number.isFinite(entryPrice) || !Number.isFinite(currentPrice)) {
-    return { entryPrice, wasAdjusted: false, distance: undefined };
+    return { entryPrice, wasAdjusted: false, distance: undefined, isRejected: false };
   }
   const atrValue = normalizeNumber(atr);
   const distance = Math.abs(entryPrice - currentPrice);
+  if (side === "SHORT") {
+    if (entryPrice > currentPrice) {
+      return { entryPrice, wasAdjusted: false, distance, isRejected: false, mode: "pullback_short" };
+    }
+    if (!Number.isFinite(atrValue) || atrValue <= 0) {
+      return { entryPrice, wasAdjusted: false, distance, isRejected: true, rejectionReason: "SHORT_BREAKDOWN_ATR_REQUIRED" };
+    }
+    if (distance <= atrValue * DEFAULT_SHORT_BREAKDOWN_ATR_RATIO) {
+      return { entryPrice, wasAdjusted: false, distance, isRejected: false, mode: "breakdown_short" };
+    }
+    return { entryPrice, wasAdjusted: false, distance, isRejected: true, rejectionReason: "SHORT_ENTRY_UNREALISTIC" };
+  }
   if (!Number.isFinite(atrValue) || atrValue <= 0) {
-    return { entryPrice, wasAdjusted: false, distance };
+    return { entryPrice, wasAdjusted: false, distance, isRejected: false };
   }
   if (distance <= atrValue * 0.5) {
-    return { entryPrice, wasAdjusted: false, distance };
+    return { entryPrice, wasAdjusted: false, distance, isRejected: false };
   }
-  const adjustedEntry = side === "SHORT"
-    ? currentPrice - atrValue * 0.3
-    : currentPrice + atrValue * 0.3;
-  return { entryPrice: adjustedEntry, wasAdjusted: true, distance };
+  return { entryPrice: currentPrice + atrValue * 0.3, wasAdjusted: true, distance, isRejected: false };
 }
 
 function isDecisionContextStale(decision) {
@@ -346,27 +358,6 @@ function hasActiveTrapSignal(decisionSnapshot) {
   return trapSignal && trapSignal !== "NONE";
 }
 
-function getOrderRsiThreshold(order) {
-  const customThreshold = normalizeNumber(
-    order?.decisionSnapshot?.executionPlan?.confirmationRsiThreshold ??
-      order?.decisionSnapshot?.executionPlan?.rsiThreshold ??
-      order?.confirmationRsiThreshold
-  );
-  if (Number.isFinite(customThreshold)) return customThreshold;
-  return order.side === "SHORT" ? 45 : 55;
-}
-
-function hasConfirmation(order, { candleClose, rsi, macd, ma20 }) {
-  const threshold = getOrderRsiThreshold(order);
-  if (!Number.isFinite(candleClose) || !Number.isFinite(rsi) || !Number.isFinite(macd) || !Number.isFinite(ma20)) {
-    return false;
-  }
-  if (order.side === "LONG") {
-    return rsi >= threshold && macd > 0 && candleClose > ma20;
-  }
-  return rsi <= threshold && macd < 0 && candleClose < ma20;
-}
-
 function resolveMacdValue(value) {
   if (Number.isFinite(value)) return value;
   if (value && typeof value === "object") {
@@ -386,6 +377,34 @@ function isPreEntryInvalidated(order, tickPrice) {
   return tickPrice >= invalidation;
 }
 
+function resolveExpiryTimestamp(decision, createdAtIso) {
+  const createdAt = new Date(createdAtIso).getTime();
+  const configuredExpiryMinutes = normalizeNumber(
+    decision?.executionPlan?.pendingExpiryMinutes ??
+    decision?.executionPlan?.expiryMinutes ??
+    decision?.pendingExpiryMinutes
+  );
+  const ttlMs = Number.isFinite(configuredExpiryMinutes) && configuredExpiryMinutes > 0
+    ? configuredExpiryMinutes * 60 * 1000
+    : DEFAULT_PENDING_EXPIRY_MS;
+  const expiresAtMs = Number.isFinite(createdAt) ? createdAt + ttlMs : Date.now() + ttlMs;
+  return new Date(expiresAtMs).toISOString();
+}
+
+function isOrderExpired(order, timestamp) {
+  const expiresAtMs = new Date(order?.expiresAt || "").getTime();
+  const nowMs = new Date(timestamp).getTime();
+  if (!Number.isFinite(expiresAtMs) || !Number.isFinite(nowMs)) return false;
+  return nowMs >= expiresAtMs;
+}
+
+function isOrderPriceDrifted(order, tickPrice) {
+  const atr = normalizeNumber(order?.placementSnapshot?.atr);
+  const triggerPrice = normalizeNumber(order?.triggerPrice);
+  if (!Number.isFinite(atr) || atr <= 0 || !Number.isFinite(triggerPrice) || !Number.isFinite(tickPrice)) return false;
+  return Math.abs(tickPrice - triggerPrice) > atr * DEFAULT_PENDING_DRIFT_ATR_RATIO;
+}
+
 function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20, candleTime, timestamp = nowIso() }) {
   let nextState = {
     ...state,
@@ -396,13 +415,19 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
 
   nextState.pendingOrders = nextState.pendingOrders.map((order) => {
     if (order.status !== "PENDING") return order;
+    if (isOrderExpired(order, timestamp)) {
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "EXPIRED", timestamp));
+      return { ...order, status: "CANCELLED" };
+    }
+    if (isOrderPriceDrifted(order, tickPrice)) {
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "PRICE_DRIFTED", timestamp));
+      return { ...order, status: "CANCELLED" };
+    }
     if (isPreEntryInvalidated(order, tickPrice)) {
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp));
       return { ...order, status: "CANCELLED" };
     }
-    if (hasActiveTrapSignal(order.decisionSnapshot)) return order;
     if (!shouldFillOrder(order, tickPrice)) return order;
-    if (!hasConfirmation(order, { candleClose, rsi, macd, ma20 })) return order;
 
     const entryPrice = asSafeNumber(candleClose ?? tickPrice, order.triggerPrice);
     const normalizedLevels = normalizeDirectionalLevels({
@@ -546,6 +571,13 @@ export function simulateDecisionExecution({
     atr: decision?.executionPlan?.atr ?? decision?.atr,
   });
   const triggerPrice = normalizeNumber(constrainedEntry.entryPrice);
+  if (constrainedEntry.isRejected) {
+    return {
+      state,
+      result: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
+      eligibilityInfo: effectiveEligibility,
+    };
+  }
   const invalidationPrice = normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice);
   const contextKey = buildDecisionContextKey(decision, symbol, timeframe);
   const normalizedLevels = normalizeDirectionalLevels({
@@ -575,11 +607,25 @@ export function simulateDecisionExecution({
     quantity: asSafeNumber(quantity, DEFAULT_POSITION_SIZE),
     createdAt: nowIso(),
     status: "PENDING",
+    expiresAt: resolveExpiryTimestamp(decision, nowIso()),
     waitReason: effectiveEligibility.reason,
     entryReason: decision.entryReason || null,
     entryMode: plannedEntry.mode,
     entryAdjusted: constrainedEntry.wasAdjusted,
-    simulationLabel: effectiveEligibility.overrideApplied ? "非建議交易（模擬）" : null,
+    simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
+    placementSnapshot: {
+      createdAt: nowIso(),
+      symbol,
+      timeframe,
+      side,
+      triggerPrice,
+      invalidationPrice,
+      atr: normalizeNumber(decision?.executionPlan?.atr ?? decision?.atr),
+      rsi: normalizeNumber(decision?.rsi),
+      volumeState: decision?.volumeState ?? null,
+      decisionAction: decision?.action ?? decision?.executionPlan?.action ?? null,
+      setupType: decision?.setupType ?? decision?.executionPlan?.setupType ?? null,
+    },
     decisionSnapshot: decision,
     decisionContextKey: contextKey,
   };
@@ -610,7 +656,7 @@ export function simulateDecisionExecution({
       entryReason: decision.entryReason || null,
       entryMode: plannedEntry.mode,
       entryAdjusted: constrainedEntry.wasAdjusted,
-      simulationLabel: effectiveEligibility.overrideApplied ? "非建議交易（模擬）" : null,
+      simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
       decisionSnapshot: decision,
       decisionContextKey: contextKey,
       hitTargets: [],
@@ -646,21 +692,7 @@ export function reconcilePendingOrdersWithDecision({
   if (!state || !decision || !symbol || !timeframe) return state;
 
   const side = resolveSideFromDecision(decision);
-  const triggerPrice = normalizeNumber(decision.executionPlan?.triggerPrice ?? decision.triggerPrice);
-  const invalidationPrice = normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice);
-  const normalizedLevels = normalizeDirectionalLevels({
-    side,
-    referencePrice: triggerPrice,
-    stopLoss: decision.executionPlan?.stopLoss ?? decision.stopLoss,
-    takeProfit1: decision.executionPlan?.takeProfit1 ?? decision.takeProfit1,
-    takeProfit2: decision.executionPlan?.takeProfit2 ?? decision.takeProfit2,
-    takeProfit3: decision.executionPlan?.takeProfit3 ?? decision.takeProfit3,
-  });
-  const stopLoss = normalizedLevels.stopLoss;
-  const takeProfit1 = normalizedLevels.takeProfit1;
-  const takeProfit2 = normalizedLevels.takeProfit2;
-  const takeProfit3 = normalizedLevels.takeProfit3;
-  const setupType = String(decision.setupType || decision.executionPlan?.setupType || "").toLowerCase();
+  const decisionAtr = normalizeNumber(decision?.executionPlan?.atr ?? decision?.atr);
   const markPrice = normalizeNumber(currentPrice);
 
   const nextPending = [];
@@ -675,29 +707,18 @@ export function reconcilePendingOrdersWithDecision({
     }
 
     let cancelReason = null;
+    const referenceAtr = normalizeNumber(order?.placementSnapshot?.atr ?? decisionAtr);
 
-    if (!side) {
-      cancelReason = "DECISION_HOLD";
-    } else if (order.side !== side) {
-      cancelReason = "DECISION_CHANGED";
-    } else if (isTrapBlockingEntry(decision, side)) {
-      cancelReason = "TRAP_BLOCKED";
-    } else if (setupType === "no_setup" || setupType === "no-trade") {
+    if (isOrderExpired(order, timestamp)) {
+      cancelReason = "EXPIRED";
+    } else if (Number.isFinite(markPrice) && isOrderPriceDrifted(order, markPrice)) {
+      cancelReason = "PRICE_DRIFTED";
+    } else if (isPreEntryInvalidated(order, markPrice)) {
       cancelReason = "SETUP_INVALIDATED";
-    } else {
-      const levelsChanged =
-        hasMaterialNumberChange(order.triggerPrice, triggerPrice) ||
-        hasMaterialNumberChange(order.invalidationPrice, invalidationPrice) ||
-        hasMaterialNumberChange(order.stopLoss, stopLoss) ||
-        hasMaterialNumberChange(order.takeProfit1, takeProfit1) ||
-        hasMaterialNumberChange(order.takeProfit2, takeProfit2) ||
-        hasMaterialNumberChange(order.takeProfit3, takeProfit3);
-      if (levelsChanged) {
-        cancelReason = "SETUP_INVALIDATED";
-      } else if (invalidationPrice != null && Number.isFinite(markPrice)) {
-        const invalidForLong = side === "LONG" && markPrice <= invalidationPrice;
-        const invalidForShort = side === "SHORT" && markPrice >= invalidationPrice;
-        if (invalidForLong || invalidForShort) cancelReason = "SETUP_INVALIDATED";
+    } else if (side && order.side !== side && Number.isFinite(referenceAtr) && referenceAtr > 0) {
+      const movedDistance = Math.abs(asSafeNumber(markPrice) - asSafeNumber(order.triggerPrice));
+      if (movedDistance > referenceAtr * DEFAULT_PENDING_DRIFT_ATR_RATIO) {
+        cancelReason = "STRUCTURE_CHANGED";
       }
     }
 
