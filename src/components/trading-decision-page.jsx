@@ -288,13 +288,25 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
                 <ReferenceLine yAxisId="left" y={analysis?.executionPlan?.triggerPrice} stroke="#0284c7" strokeDasharray="5 5" label="Trigger" />
               ) : null}
               {activePendingOrder?.triggerPrice ? (
-                <ReferenceLine yAxisId="left" y={activePendingOrder.triggerPrice} stroke="#0ea5e9" strokeDasharray="2 6" label="Pending" />
+                <ReferenceLine
+                  yAxisId="left"
+                  y={activePendingOrder.triggerPrice}
+                  stroke="#0ea5e9"
+                  strokeDasharray="2 6"
+                  label={`Pending ${activePendingOrder.side === "SHORT" ? "SHORT" : "LONG"} x ${Number(activePendingOrder.quantity || 0)}`}
+                />
               ) : null}
               {activePendingOrder?.invalidationPrice ? (
                 <ReferenceLine yAxisId="left" y={activePendingOrder.invalidationPrice} stroke="#f97316" strokeDasharray="2 4" label="Inv" />
               ) : null}
               {activePosition?.entryPrice ? (
-                <ReferenceLine yAxisId="left" y={activePosition.entryPrice} stroke="#6366f1" strokeDasharray="5 3" label="Entry" />
+                <ReferenceLine
+                  yAxisId="left"
+                  y={activePosition.entryPrice}
+                  stroke="#6366f1"
+                  strokeDasharray="5 3"
+                  label={`${activePosition.side === "SHORT" ? "SHORT" : "LONG"} Position x ${Number(activePosition.quantity || 0)}`}
+                />
               ) : null}
               {activePosition?.stopLoss ? (
                 <ReferenceLine yAxisId="left" y={activePosition.stopLoss} stroke="#ef4444" strokeDasharray="3 3" label="Pos SL" />

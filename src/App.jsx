@@ -42,6 +42,10 @@ function loadPaperAccount() {
       pendingOrders: Array.isArray(parsed?.pendingOrders) ? parsed.pendingOrders : [],
       cancelledOrders: Array.isArray(parsed?.cancelledOrders) ? parsed.cancelledOrders : [],
       closedTrades: Array.isArray(parsed?.closedTrades) ? parsed.closedTrades : [],
+      simulationOrderConfig: {
+        mode: "fixed_quantity",
+        quantity: Number(parsed?.simulationOrderConfig?.quantity) > 0 ? Number(parsed.simulationOrderConfig.quantity) : 50,
+      },
     };
   } catch {
     return createInitialPaperAccountState();
@@ -2321,17 +2325,28 @@ export default function CryptoSignalWebApp() {
     if (!analysis?.aiDecisionOutput || !paperCurrentPrice) return;
 
     setPaperAccount((prev) => {
+      const selectedQuantity = Number(prev?.simulationOrderConfig?.quantity) > 0 ? Number(prev.simulationOrderConfig.quantity) : 50;
       const result = simulateDecisionExecution({
         state: prev,
         decision: analysis.aiDecisionOutput,
         symbol: paperMarketSymbol,
         timeframe,
         currentPrice: paperCurrentPrice,
-        quantity: 1,
+        quantity: selectedQuantity,
       });
 
       return result.state;
     });
+  };
+
+  const handleSimulationQuantityChange = (quantity) => {
+    setPaperAccount((prev) => ({
+      ...prev,
+      simulationOrderConfig: {
+        mode: "fixed_quantity",
+        quantity: Number(quantity) > 0 ? Number(quantity) : 1,
+      },
+    }));
   };
 
   const handleClosePosition = () => {
@@ -2363,6 +2378,8 @@ export default function CryptoSignalWebApp() {
           accountSnapshot={accountSnapshot}
           paperDigits={paperDigits}
           onExecuteSimulation={handleExecuteSimulation}
+          simulationOrderConfig={accountSnapshot.simulationOrderConfig}
+          onSimulationQuantityChange={handleSimulationQuantityChange}
           onClosePosition={handleClosePosition}
           onResetPaperAccount={handleResetPaperAccount}
           formatNumber={formatNumber}
