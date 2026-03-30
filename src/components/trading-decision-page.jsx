@@ -129,16 +129,17 @@ export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel,
 }
 
 export function DecisionCard({ analysis, formatNumber }) {
-  const tone = decisionTone(analysis?.bias);
+  const decisionData = analysis?.aiDecisionOutput || analysis;
+  const tone = decisionTone(decisionData?.action === "LONG" ? "LONG" : decisionData?.action === "SHORT" ? "SHORT" : analysis?.bias);
   const trapSummary = analysis?.trapDetection?.trapSignal === "NONE"
     ? "無明顯陷阱訊號"
     : `${trapSignalText(analysis?.trapDetection?.trapSignal)}（${analysis?.trapDetection?.trapConfidence || "-"}）`;
-  const summaryLine = analysis?.summary || analysis?.triggerEngine?.waitConditionSentence || analysis?.noEntryReason || "等待結構與訊號同步";
+  const summaryLine = decisionData?.summary || analysis?.triggerEngine?.waitConditionSentence || analysis?.noEntryReason || "等待結構與訊號同步";
   const metricSignals = [
-    { label: "信心", value: analysis?.confidenceLevelLabel || "-", tone: "bg-violet-100 text-violet-700 ring-violet-200" },
-    { label: "風險", value: analysis?.riskLevel || "-", tone: "bg-amber-100 text-amber-700 ring-amber-200" },
-    { label: "觸發", value: analysis?.executionPlan?.triggerPrice ? formatNumber(analysis?.executionPlan?.triggerPrice, 2) : analysis?.triggerEngine?.confirmationLabel || "-", tone: "bg-sky-100 text-sky-700 ring-sky-200" },
-    { label: "MTF 一致", value: analysis?.confluence || "-", tone: "bg-emerald-100 text-emerald-700 ring-emerald-200" },
+    { label: "信心", value: decisionData?.confidence || analysis?.confidenceLevelLabel || "-", tone: "bg-violet-100 text-violet-700 ring-violet-200" },
+    { label: "風險", value: decisionData?.risk || analysis?.riskLevel || "-", tone: "bg-amber-100 text-amber-700 ring-amber-200" },
+    { label: "觸發", value: decisionData?.executionPlan?.triggerPrice ? formatNumber(decisionData?.executionPlan?.triggerPrice, 2) : analysis?.triggerEngine?.confirmationLabel || "-", tone: "bg-sky-100 text-sky-700 ring-sky-200" },
+    { label: "MTF 一致", value: decisionData?.mtfBias ? `${decisionData.mtfBias.tf15m}/${decisionData.mtfBias.tf1h}/${decisionData.mtfBias.tf4h}` : analysis?.confluence || "-", tone: "bg-emerald-100 text-emerald-700 ring-emerald-200" },
   ];
 
   return (
@@ -175,7 +176,7 @@ export function DecisionCard({ analysis, formatNumber }) {
 }
 
 export function TradePlanCard({ analysis, digits, formatNumber }) {
-  const executionPlan = analysis?.executionPlan || {};
+  const executionPlan = analysis?.aiDecisionOutput?.executionPlan || analysis?.executionPlan || {};
   const isHold = executionPlan?.action === "HOLD" || analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
   const ruleSections = [
     { label: "目前動作", value: executionPlan?.currentActionLabel || "觀望，暫不進場" },
@@ -331,7 +332,7 @@ export function MarketContextCard({ analysis, currentCandle, digits, formatNumbe
   );
 }
 
-export function AIAnalysisAccordion({ analysis }) {
+export function AIAnalysisAccordion({ analysis, showRawOutput = false }) {
   const trapText = analysis?.trapDetection?.trapSignal === "NONE"
     ? "無明顯陷阱"
     : `${trapSignalText(analysis?.trapDetection?.trapSignal)}風險（${analysis?.trapDetection?.trapConfidence || "-"})`;
@@ -355,6 +356,14 @@ export function AIAnalysisAccordion({ analysis }) {
           <div><span className="font-semibold">陷阱失效：</span>{(analysis?.trapDetection?.trapInvalidationRules || []).join("、") || "-"}</div>
           <div><span className="font-semibold">風險警示：</span>{(analysis?.waitReasons || []).join("、") || "無"}</div>
           <pre className="whitespace-pre-wrap rounded-xl bg-slate-800 p-3 text-xs text-slate-100">{analysis?.aiSummary || "-"}</pre>
+          {showRawOutput ? (
+            <details className="rounded-xl border border-slate-200 bg-white p-3">
+              <summary className="cursor-pointer text-xs font-semibold tracking-[0.12em] text-slate-600">開發者模式：AiDecisionOutput JSON</summary>
+              <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-900 p-2.5 text-[11px] text-slate-100">
+                {JSON.stringify(analysis?.aiDecisionOutput || {}, null, 2)}
+              </pre>
+            </details>
+          ) : null}
         </CardContent>
       </details>
     </Card>
@@ -380,6 +389,7 @@ export default function TradingDecisionPage({
   currentCandle,
   formatNumber,
   digits,
+  showDevOutput = false,
 }) {
   const symbolLabel = symbolOptions.find((item) => item.value === symbol)?.label || symbol;
 
@@ -421,7 +431,7 @@ export default function TradingDecisionPage({
         <div className="min-w-0 space-y-6">
           <DecisionCard analysis={analysis} formatNumber={formatNumber} />
           <TradePlanCard analysis={analysis} digits={digits} formatNumber={formatNumber} />
-          <AIAnalysisAccordion analysis={analysis} />
+          <AIAnalysisAccordion analysis={analysis} showRawOutput={showDevOutput} />
         </div>
         <div className="min-w-0 space-y-6">
           <ChartPanel chartData={chartData} analysis={analysis} symbol={symbol} timeframeLabel={timeframeLabel} formatNumber={formatNumber} />
