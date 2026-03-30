@@ -214,6 +214,46 @@ function mapExecutionBlockedReason(resultCode, decision) {
   return reasonMap[resultCode] || "條件不足，暫不執行";
 }
 
+function buildExecutionDiagnostics({ decision, currentPrice, rsi, currentVolume, avgVolume20 }) {
+  const action = String(decision?.action || decision?.executionPlan?.action || "").toUpperCase();
+  const triggerPrice = Number(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
+  const rsiThreshold = action === "SHORT" ? 45 : 55;
+  const volumeThreshold = Number.isFinite(avgVolume20) ? avgVolume20 * 1.2 : null;
+  const unmetConditions = [];
+  const distances = [];
+
+  if ((action === "LONG" || action === "SHORT") && Number.isFinite(triggerPrice) && Number.isFinite(currentPrice)) {
+    const priceGap = action === "LONG" ? triggerPrice - currentPrice : currentPrice - triggerPrice;
+    if (priceGap > 0) {
+      const gapPct = triggerPrice !== 0 ? (Math.abs(priceGap) / Math.abs(triggerPrice)) * 100 : null;
+      unmetConditions.push(
+        `${action === "LONG" ? "價格未突破" : "價格未跌破"} ${formatNumber(triggerPrice)}（目前 ${formatNumber(currentPrice)}）`
+      );
+      distances.push(`價格差距：${formatNumber(priceGap)}${Number.isFinite(gapPct) ? `（${formatNumber(gapPct)}%）` : ""}`);
+    }
+  }
+
+  if (Number.isFinite(rsi)) {
+    const rsiGap = action === "SHORT" ? rsi - rsiThreshold : rsiThreshold - rsi;
+    if (rsiGap > 0) {
+      unmetConditions.push(
+        `RSI 未達 ${formatNumber(rsiThreshold, 0)}（目前 ${formatNumber(rsi, 1)}）`
+      );
+      distances.push(`RSI 差距：${formatNumber(rsiGap, 1)}`);
+    }
+  }
+
+  if (Number.isFinite(volumeThreshold) && Number.isFinite(currentVolume) && volumeThreshold > 0 && currentVolume < volumeThreshold) {
+    const volumeGapPct = ((volumeThreshold - currentVolume) / volumeThreshold) * 100;
+    unmetConditions.push(
+      `成交量未達 20MA * 1.2（門檻 ${formatNumber(volumeThreshold, 2)}，目前 ${formatNumber(currentVolume, 2)}）`
+    );
+    distances.push(`Volume 差距：${formatNumber(volumeGapPct, 1)}%`);
+  }
+
+  return { unmetConditions, distances };
+}
+
 function getSimulationButtonState(decision) {
   if (!decision) {
     return {
@@ -2388,18 +2428,26 @@ export default function CryptoSignalWebApp() {
     if (!analysis?.aiDecisionOutput || !paperCurrentPrice) {
       setSimulationExecutionStatus({
         status: "BLOCKED",
-        statusLabel: "模擬執行被阻擋",
+        statusLabel: "BLOCKED",
         reason: "尚未取得即時價格或 AI 決策",
+        unmetConditions: [],
+        distances: [],
         timestamp: new Date().toISOString(),
       });
       return;
     }
 
     setPaperAccount((prev) => {
+      const action = String(analysis.aiDecisionOutput?.action || analysis.aiDecisionOutput?.executionPlan?.action || "").toUpperCase();
+      const recentVolumes = (candles || []).slice(-20).map((c) => Number(c.volume)).filter((v) => Number.isFinite(v));
+      const avgVolume20 = recentVolumes.length ? recentVolumes.reduce((sum, v) => sum + v, 0) / recentVolumes.length : null;
+      const latestVolume = Number(currentCandle?.volume ?? candles?.[candles.length - 1]?.volume);
       let nextFeedback = {
         status: "BLOCKED",
-        statusLabel: "模擬執行被阻擋",
+        statusLabel: "BLOCKED",
         reason: "觸發條件尚未成立",
+        unmetConditions: [],
+        distances: [],
         timestamp: new Date().toISOString(),
       };
       const reconciledState = reconcilePendingOrdersWithDecision({
@@ -2433,37 +2481,55 @@ export default function CryptoSignalWebApp() {
 
       if (nextOpenCount > prevOpenCount) {
         nextFeedback = {
-          status: "POSITION_OPENED",
-          statusLabel: "已開啟模擬持倉",
+          status: "EXECUTED",
+          statusLabel: "EXECUTED",
           reason: "掛單觸發成功，已建立持倉",
+          unmetConditions: [],
+          distances: [],
           timestamp: new Date().toISOString(),
         };
       } else if (result.result === "PENDING_CREATED") {
         nextFeedback = {
-          status: "PENDING_CREATED",
-          statusLabel: "掛單已建立",
+          status: "EXECUTED",
+          statusLabel: "EXECUTED",
           reason: "已建立待觸發模擬掛單",
+          unmetConditions: [],
+          distances: [],
           timestamp: new Date().toISOString(),
         };
       } else if (cancelledCount > 0) {
         nextFeedback = {
-          status: "PENDING_CANCELLED",
-          statusLabel: "掛單已取消",
+          status: "BLOCKED",
+          statusLabel: "BLOCKED",
           reason: mapCancelReasonLabel(latestCancelled?.cancelReason),
+          unmetConditions: [],
+          distances: [],
           timestamp: latestCancelled?.cancelledAt || new Date().toISOString(),
         };
       } else if (String(analysis.aiDecisionOutput?.setupType || "").toLowerCase() === "no_setup") {
         nextFeedback = {
-          status: "NO_SETUP",
-          statusLabel: "無有效 setup，未執行",
+          status: "SKIPPED",
+          statusLabel: "SKIPPED",
           reason: "策略條件不足，系統未建立模擬單",
+          unmetConditions: [],
+          distances: [],
           timestamp: new Date().toISOString(),
         };
       } else {
+        const diagnostics = buildExecutionDiagnostics({
+          decision: analysis.aiDecisionOutput,
+          currentPrice: paperCurrentPrice,
+          rsi: analysis?.rsi,
+          currentVolume: latestVolume,
+          avgVolume20,
+        });
+        const skippedByAi = action === "HOLD" || ["SKIP_HOLD_NO_TRIGGER", "SKIP_NO_ACTIONABLE_SIDE"].includes(result.result);
         nextFeedback = {
-          status: "BLOCKED",
-          statusLabel: "模擬執行被阻擋",
+          status: skippedByAi ? "SKIPPED" : "BLOCKED",
+          statusLabel: skippedByAi ? "SKIPPED" : "BLOCKED",
           reason: mapExecutionBlockedReason(result.result, analysis.aiDecisionOutput),
+          unmetConditions: diagnostics.unmetConditions,
+          distances: diagnostics.distances,
           timestamp: new Date().toISOString(),
         };
       }

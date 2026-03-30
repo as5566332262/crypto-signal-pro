@@ -338,9 +338,34 @@ export default function PaperTradingSidebar({
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm">最近一次執行結果</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-1.5 text-xs text-slate-600">
-                <div>狀態：{simulationExecutionStatus?.statusLabel || "尚未執行"}</div>
-                <div>原因：{simulationExecutionStatus?.reason || "-"}</div>
+              <CardContent className="space-y-2 text-xs text-slate-600">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500">狀態</span>
+                  <span className="rounded-md bg-slate-100 px-2 py-0.5 font-semibold text-slate-800">
+                    {simulationExecutionStatus?.statusLabel || "-"}
+                  </span>
+                </div>
+                <div className="text-slate-700">原因：{simulationExecutionStatus?.reason || "-"}</div>
+                {simulationExecutionStatus?.unmetConditions?.length ? (
+                  <div>
+                    <div className="mb-1 text-slate-500">未成立條件</div>
+                    <ul className="list-disc space-y-0.5 pl-4 text-slate-700">
+                      {simulationExecutionStatus.unmetConditions.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {simulationExecutionStatus?.distances?.length ? (
+                  <div>
+                    <div className="mb-1 text-slate-500">距離觸發</div>
+                    <ul className="list-disc space-y-0.5 pl-4 text-slate-700">
+                      {simulationExecutionStatus.distances.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 <div>時間：{simulationExecutionStatus?.timestamp ? new Date(simulationExecutionStatus.timestamp).toLocaleString() : "-"}</div>
               </CardContent>
             </Card>
