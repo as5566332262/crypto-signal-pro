@@ -19,6 +19,15 @@ button,select{font:inherit} .app{max-width:1280px;margin:0 auto;padding:20px}
 .subgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px} .zone{background:#f8fafc;border-radius:16px;padding:14px}
 .card-data-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .metric-value{font-weight:800;font-size:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.position-card{padding:14px 18px;display:flex;flex-direction:column;gap:10px}
+.position-head{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:10px}
+.position-symbol{font-size:24px;font-weight:800;letter-spacing:.3px}
+.position-pnl{font-size:22px;font-weight:800;text-align:right}
+.position-pnl.profit{color:#16a34a}.position-pnl.loss{color:#dc2626}
+.position-price-line{font-size:20px;font-weight:700;color:#0f172a}
+.position-arrow{color:#64748b}
+.position-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;font-size:15px;font-weight:600;color:#1e293b}
+.position-label{font-size:12px;font-weight:600;color:#64748b;margin-right:4px}
 small{color:#64748b} @media (max-width:900px){.twocol{grid-template-columns:1fr}.app{padding:14px}}
 @media (max-width:900px){.sidebar,.twocol.sidebar-collapsed .sidebar{min-width:0}.sidebar-card{position:static;padding-top:18px}.sidebar-toggle{position:static;margin-bottom:10px}}
-@media (max-width:720px){.card-data-grid{grid-template-columns:1fr}.metric-value{white-space:normal}}
+@media (max-width:720px){.card-data-grid,.position-row{grid-template-columns:1fr}.metric-value{white-space:normal}.position-head{grid-template-columns:1fr auto}.position-pnl{grid-column:1/-1;text-align:left}}
