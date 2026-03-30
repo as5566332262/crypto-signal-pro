@@ -99,6 +99,26 @@ function shouldBypassSetupGate(options = {}) {
   return executionSource === "simulation_manual" || orderMode === "simulation";
 }
 
+function resolveManualSimulationSide(decision) {
+  const directionalHints = [
+    decision?.action,
+    decision?.executionPlan?.action,
+    decision?.executionPlan?.preferredSide,
+    decision?.preferredSide,
+    decision?.biasSide,
+    decision?.marketBias,
+    decision?.trendBias,
+  ]
+    .map((value) => String(value || "").toUpperCase())
+    .filter(Boolean);
+
+  for (const hint of directionalHints) {
+    if (hint === "LONG" || hint === "BUY" || hint === "BULLISH") return "LONG";
+    if (hint === "SHORT" || hint === "SELL" || hint === "BEARISH") return "SHORT";
+  }
+  return "LONG";
+}
+
 function resolveEntryMode(decision) {
   const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
   if (setupType === "breakout") return "breakout";
@@ -202,6 +222,32 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
   const invalidationPrice = normalizeNumber(decision?.executionPlan?.invalidationPrice ?? decision?.invalidationPrice);
   const markPrice = normalizeNumber(currentPrice);
 
+  if (bypassSetupGate) {
+    const readyResult = {
+      eligibility: "READY_TO_EXECUTE",
+      reasonCode: "SIMULATION_MANUAL_BYPASS",
+      reason: "手動模擬：略過 setup gate 直接建立倉位",
+      executionReadiness: {
+        readyToExecute: true,
+        triggerHit: true,
+        rsiConfirmed: true,
+        volumeConfirmed: true,
+        macdConfirmed: true,
+        unmetConditions: [],
+      },
+      bypassSetupGate: true,
+      bypassedMissingSide: !side,
+    };
+    console.debug("[paper-engine:getSimulationEligibility]", {
+      executionSource: options?.executionSource || null,
+      orderMode: options?.orderMode || null,
+      bypassSetupGate,
+      sideDetected: side || null,
+      result: readyResult,
+    });
+    return readyResult;
+  }
+
   if (!side) {
     return { eligibility: "BLOCKED", reasonCode: "SKIP_NO_ACTIONABLE_SIDE", reason: "缺少可執行方向" };
   }
@@ -221,23 +267,6 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
     if (invalidForLong || invalidForShort) {
       return { eligibility: "BLOCKED", reasonCode: "SETUP_ALREADY_INVALIDATED", reason: "策略已失效，不建立掛單" };
     }
-  }
-
-  if (bypassSetupGate) {
-    return {
-      eligibility: "READY_TO_EXECUTE",
-      reasonCode: "SIMULATION_MANUAL_BYPASS",
-      reason: "手動模擬：略過 setup gate 直接建立倉位",
-      executionReadiness: {
-        readyToExecute: true,
-        triggerHit: true,
-        rsiConfirmed: true,
-        volumeConfirmed: true,
-        macdConfirmed: true,
-        unmetConditions: [],
-      },
-      bypassSetupGate: true,
-    };
   }
 
   const executionReadiness = evaluateImmediateExecutionReadiness({
@@ -586,7 +615,23 @@ export function simulateDecisionExecution({
   }
 
   const executionOptions = { executionSource, orderMode };
+  const bypassSetupGate = shouldBypassSetupGate(executionOptions);
+  console.debug("[paper-engine:simulateDecisionExecution:before-validator]", {
+    symbol,
+    timeframe,
+    currentPrice,
+    quantity,
+    forceSimulation,
+    executionSource,
+    orderMode,
+    bypassSetupGate,
+  });
   const eligibilityInfo = getSimulationEligibility(decision, currentPrice, signalContext, executionOptions);
+  console.debug("[paper-engine:simulateDecisionExecution:validator-result]", {
+    executionSource,
+    orderMode,
+    eligibilityInfo,
+  });
   let effectiveEligibility = eligibilityInfo;
   if (
     forceSimulation &&
@@ -607,13 +652,12 @@ export function simulateDecisionExecution({
     return { state, result: effectiveEligibility.reasonCode, eligibilityInfo: effectiveEligibility };
   }
 
-  const side = resolveSideFromDecision(decision);
+  const side = resolveSideFromDecision(decision) || (bypassSetupGate ? resolveManualSimulationSide(decision) : null);
   if (!side) {
     return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility };
   }
-  const bypassSetupGate = shouldBypassSetupGate(executionOptions);
   const plannedEntry = resolvePlannedEntryPrice(decision, side);
-  const fallbackEntryPrice = normalizeNumber(currentPrice) ?? plannedEntry.entryPrice ?? decision?.price;
+  const fallbackEntryPrice = normalizeNumber(currentPrice) ?? plannedEntry.entryPrice ?? normalizeNumber(decision?.price);
   const constrainedEntry = applyEntryDistanceConstraint({
     side,
     entryPrice: bypassSetupGate ? fallbackEntryPrice : plannedEntry.entryPrice,
@@ -628,9 +672,15 @@ export function simulateDecisionExecution({
       eligibilityInfo: effectiveEligibility,
     };
   }
+  const atrValue = normalizeNumber(decision.executionPlan?.atr ?? decision?.atr);
+  const fallbackInvalidation =
+    Number.isFinite(triggerPrice) && Number.isFinite(atrValue) && atrValue > 0
+      ? (side === "LONG" ? triggerPrice - atrValue * 1.5 : triggerPrice + atrValue * 1.5)
+      : undefined;
   const invalidationPrice =
     normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice) ??
-    normalizeNumber(decision.executionPlan?.stopLoss ?? decision.stopLoss);
+    normalizeNumber(decision.executionPlan?.stopLoss ?? decision.stopLoss) ??
+    fallbackInvalidation;
   const contextKey = buildDecisionContextKey(decision, symbol, timeframe);
   const normalizedLevels = normalizeDirectionalLevels({
     side,
