@@ -60,13 +60,13 @@ function CustomTooltip({ active, payload, label, symbol, formatNumber }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-3 text-sm shadow-lg">
       <div className="mb-2 font-medium">{label}</div>
-      <div>Open: {formatNumber(row.open, digits)}</div>
-      <div>High: {formatNumber(row.high, digits)}</div>
-      <div>Low: {formatNumber(row.low, digits)}</div>
-      <div>Close: {formatNumber(row.close, digits)}</div>
+      <div>開盤: {formatNumber(row.open, digits)}</div>
+      <div>最高: {formatNumber(row.high, digits)}</div>
+      <div>最低: {formatNumber(row.low, digits)}</div>
+      <div>收盤: {formatNumber(row.close, digits)}</div>
       <div>MA20: {formatNumber(row.ma20, digits)}</div>
       <div>MA50: {formatNumber(row.ma50, digits)}</div>
-      <div>Volume: {formatNumber(row.volume, 2)}</div>
+      <div>成交量: {formatNumber(row.volume, 2)}</div>
     </div>
   );
 }
@@ -75,26 +75,26 @@ export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel,
   return (
     <Card className="rounded-3xl border-0 shadow-md">
       <CardHeader className="pb-3">
-        <CardTitle className="text-xl">Trading Decision Panel</CardTitle>
+        <CardTitle className="text-xl">交易決策面板</CardTitle>
       </CardHeader>
       <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <div className="rounded-2xl bg-slate-100 p-3">
-          <div className="text-xs text-slate-500">Symbol / Price</div>
+          <div className="text-xs text-slate-500">幣種 / 價格</div>
           <div className="mt-1 text-lg font-semibold">{symbolLabel} · {formatNumber(currentPrice, digits)}</div>
         </div>
         <div className="rounded-2xl bg-slate-100 p-3">
-          <div className="text-xs text-slate-500">Market Regime</div>
+          <div className="text-xs text-slate-500">市場狀態</div>
           <div className="mt-1 text-lg font-semibold">{regime || "-"}</div>
         </div>
         <div className="rounded-2xl bg-slate-100 p-3">
-          <div className="text-xs text-slate-500">AI Action / Confidence</div>
+          <div className="text-xs text-slate-500">AI決策 / 信心</div>
           <div className="mt-1 flex items-center gap-2 text-lg font-semibold">
             <Badge className={`rounded-full ${valueTone(actionLabel)}`}>{actionLabel || "-"}</Badge>
             <span>{confidenceLabel || "-"}</span>
           </div>
         </div>
         <div className="rounded-2xl bg-slate-100 p-3 sm:col-span-2 xl:col-span-3">
-          <div className="text-xs text-slate-500">Last Updated</div>
+          <div className="text-xs text-slate-500">更新時間</div>
           <div className="mt-1 font-medium">{lastUpdated || "-"}</div>
         </div>
       </CardContent>
@@ -105,17 +105,17 @@ export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel,
 export function DecisionCard({ analysis }) {
   return (
     <Card className="rounded-3xl shadow-sm">
-      <CardHeader><CardTitle>Decision</CardTitle></CardHeader>
+      <CardHeader><CardTitle>決策</CardTitle></CardHeader>
       <CardContent className="space-y-3 text-sm">
         <div className="flex items-center justify-between rounded-xl bg-slate-100 p-3">
-          <span>Final action</span>
+          <span>最終決策</span>
           <Badge className={`rounded-full ${valueTone(analysis?.bias)}`}>{analysis?.finalDecisionLabel || "-"}</Badge>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Confidence</div><div className="font-semibold">{analysis?.confidenceLevelLabel || "-"}</div></div>
-          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Risk</div><div className="font-semibold">{analysis?.riskLevel || "-"}</div></div>
-          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">MTF Alignment</div><div className="font-semibold">{analysis?.confluence || "-"}</div></div>
-          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Primary Trigger</div><div className="font-semibold">{analysis?.triggerEngine?.confirmationLabel || "-"}</div></div>
+          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">信心</div><div className="font-semibold">{analysis?.confidenceLevelLabel || "-"}</div></div>
+          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">風險</div><div className="font-semibold">{analysis?.riskLevel || "-"}</div></div>
+          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">多週期一致性</div><div className="font-semibold">{analysis?.confluence || "-"}</div></div>
+          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">觸發條件</div><div className="font-semibold">{analysis?.triggerEngine?.confirmationLabel || "-"}</div></div>
         </div>
         <div className="rounded-xl border border-slate-200 p-3 text-slate-600">{analysis?.explanation || "-"}</div>
       </CardContent>
@@ -127,27 +127,27 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
   const isHold = analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
   return (
     <Card className="rounded-3xl shadow-sm">
-      <CardHeader><CardTitle>Trade Plan</CardTitle></CardHeader>
+      <CardHeader><CardTitle>進場計畫</CardTitle></CardHeader>
       <CardContent className="space-y-3 text-sm">
         {isHold ? (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-800">
-            <div className="font-semibold">Wait Conditions</div>
+            <div className="font-semibold">等待條件</div>
             <div className="mt-1">{analysis?.triggerEngine?.waitConditionSentence || analysis?.noEntryReason || "等待結構與動能同步"}</div>
           </div>
         ) : (
           <>
             <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Entry Zone</div><div className="font-semibold">{analysis?.tradePlan?.entryZone || "-"}</div></div>
-              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Stop Loss</div><div className="font-semibold">{formatNumber(analysis?.stopLoss, digits)}</div></div>
-              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">TP1 / TP2 / TP3</div><div className="font-semibold">{formatNumber(analysis?.takeProfit1, digits)} / {formatNumber(analysis?.takeProfit2, digits)} / -</div></div>
-              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Risk-Reward</div><div className="font-semibold">{formatNumber(analysis?.tradePlan?.rr1, 2)} / {formatNumber(analysis?.tradePlan?.rr2, 2)}</div></div>
+              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">進場區</div><div className="font-semibold">{analysis?.tradePlan?.entryZone || "-"}</div></div>
+              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">止損</div><div className="font-semibold">{formatNumber(analysis?.stopLoss, digits)}</div></div>
+              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">目標1 / 目標2 / 目標3</div><div className="font-semibold">{formatNumber(analysis?.takeProfit1, digits)} / {formatNumber(analysis?.takeProfit2, digits)} / -</div></div>
+              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">風險報酬比</div><div className="font-semibold">{formatNumber(analysis?.tradePlan?.rr1, 2)} / {formatNumber(analysis?.tradePlan?.rr2, 2)}</div></div>
             </div>
-            <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Invalidation</div><div className="font-semibold">{analysis?.tradePlan?.invalidation || "-"}</div></div>
+            <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">失效條件</div><div className="font-semibold">{analysis?.tradePlan?.invalidation || "-"}</div></div>
           </>
         )}
         <div className="rounded-xl border border-slate-200 p-3">
-          <div className="text-slate-500">Position / Leverage</div>
-          <div className="font-semibold">1x simulated unit · no leverage</div>
+          <div className="text-slate-500">倉位 / 槓桿</div>
+          <div className="font-semibold">1x 模擬單位 · 無槓桿</div>
         </div>
       </CardContent>
     </Card>
@@ -157,7 +157,7 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
 export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, formatNumber }) {
   return (
     <Card className="rounded-3xl shadow-sm">
-      <CardHeader><CardTitle>Chart</CardTitle></CardHeader>
+      <CardHeader><CardTitle>圖表</CardTitle></CardHeader>
       <CardContent>
         <div className="h-[360px] w-full rounded-2xl bg-slate-100 p-2">
           <ResponsiveContainer width="100%" height="100%">
@@ -171,7 +171,7 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
               <ReferenceArea yAxisId="left" y1={analysis?.levels?.structureSupportZone?.low} y2={analysis?.levels?.structureSupportZone?.high} fill="#16a34a" fillOpacity={0.08} />
               <ReferenceArea yAxisId="left" y1={analysis?.levels?.structureResistanceZone?.low} y2={analysis?.levels?.structureResistanceZone?.high} fill="#dc2626" fillOpacity={0.08} />
 
-              <ReferenceLine yAxisId="left" y={analysis?.price} stroke="#0f172a" strokeDasharray="4 4" label="Now" />
+              <ReferenceLine yAxisId="left" y={analysis?.price} stroke="#0f172a" strokeDasharray="4 4" label="現價" />
               <ReferenceLine yAxisId="left" y={analysis?.stopLoss} stroke="#ef4444" strokeDasharray="3 3" label="SL" />
               <ReferenceLine yAxisId="left" y={analysis?.takeProfit1} stroke="#22c55e" strokeDasharray="3 3" label="TP1" />
               <ReferenceLine yAxisId="left" y={analysis?.takeProfit2} stroke="#16a34a" strokeDasharray="3 3" label="TP2" />
@@ -187,7 +187,7 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
             </ComposedChart>
           </ResponsiveContainer>
         </div>
-        <div className="mt-2 text-xs text-slate-500">{timeframeLabel} · clean view with execution overlays.</div>
+        <div className="mt-2 text-xs text-slate-500">{timeframeLabel} · 含執行標記的清晰視圖。</div>
       </CardContent>
     </Card>
   );
@@ -196,14 +196,14 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
 export function MarketContextCard({ analysis, currentCandle, digits, formatNumber }) {
   return (
     <Card className="rounded-3xl shadow-sm">
-      <CardHeader><CardTitle>Market Context</CardTitle></CardHeader>
+      <CardHeader><CardTitle>市場結構</CardTitle></CardHeader>
       <CardContent className="grid gap-3 text-sm sm:grid-cols-2">
-        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Structure</div><div className="font-semibold">{analysis?.structure || "-"}</div></div>
-        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Breakout State</div><div className="font-semibold">{analysis?.breakoutState || "-"}</div></div>
-        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Volume State</div><div className="font-semibold">{analysis?.volumeState || "-"}</div></div>
-        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Fake Breakout Risk</div><div className="font-semibold">{analysis?.fakeBreakout?.risk || "-"}</div></div>
-        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">ATR</div><div className="font-semibold">{formatNumber(analysis?.atr, digits)}</div></div>
-        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">Current Candle</div><div className="font-semibold">{formatNumber(currentCandle?.low, digits)} ~ {formatNumber(currentCandle?.high, digits)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">結構</div><div className="font-semibold">{analysis?.structure || "-"}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">突破狀態</div><div className="font-semibold">{analysis?.breakoutState || "-"}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">量能狀態</div><div className="font-semibold">{analysis?.volumeState || "-"}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">假突破風險</div><div className="font-semibold">{analysis?.fakeBreakout?.risk || "-"}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">ATR 波動</div><div className="font-semibold">{formatNumber(analysis?.atr, digits)}</div></div>
+        <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">目前 K 線</div><div className="font-semibold">{formatNumber(currentCandle?.low, digits)} ~ {formatNumber(currentCandle?.high, digits)}</div></div>
       </CardContent>
     </Card>
   );
@@ -214,14 +214,14 @@ export function AIAnalysisAccordion({ analysis }) {
     <Card className="rounded-3xl shadow-sm">
       <details className="group">
         <summary className="flex cursor-pointer list-none items-center justify-between px-6 py-4">
-          <div className="text-lg font-semibold">AI Analysis</div>
+          <div className="text-lg font-semibold">AI 分析</div>
           <ChevronDown className="h-4 w-4 transition group-open:rotate-180" />
         </summary>
         <CardContent className="space-y-3 pt-0 text-sm">
-          <div><span className="font-semibold">Multi-timeframe:</span> {(analysis?.higherBiases || []).map((item) => `${item.interval}:${item.bias}`).join(" · ") || "-"}</div>
-          <div><span className="font-semibold">Indicator summary:</span> RSI {analysis?.rsi?.toFixed?.(2) || "-"}, MACD {analysis?.macd?.histogram?.toFixed?.(4) || "-"}</div>
-          <div><span className="font-semibold">Market structure:</span> {analysis?.structure || "-"} / {analysis?.breakoutState || "-"}</div>
-          <div><span className="font-semibold">Risk warnings:</span> {(analysis?.waitReasons || []).join("、") || "無"}</div>
+          <div><span className="font-semibold">多週期：</span>{(analysis?.higherBiases || []).map((item) => `${item.interval}:${item.bias}`).join(" · ") || "-"}</div>
+          <div><span className="font-semibold">指標摘要：</span>RSI {analysis?.rsi?.toFixed?.(2) || "-"}, MACD {analysis?.macd?.histogram?.toFixed?.(4) || "-"}</div>
+          <div><span className="font-semibold">市場結構：</span>{analysis?.structure || "-"} / {analysis?.breakoutState || "-"}</div>
+          <div><span className="font-semibold">風險警示：</span>{(analysis?.waitReasons || []).join("、") || "無"}</div>
           <pre className="whitespace-pre-wrap rounded-xl bg-slate-900 p-3 text-xs text-slate-100">{analysis?.aiSummary || "-"}</pre>
         </CardContent>
       </details>
@@ -264,10 +264,10 @@ export default function TradingDecisionPage({
             <SelectContent>{intervalOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
           </Select>
           <Button className="rounded-2xl" onClick={() => loadData(symbol, timeframe)} disabled={isLoading}>
-            <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />Refresh
+            <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />重新整理
           </Button>
           <Button variant={autoRefresh ? "default" : "outline"} className="rounded-2xl" onClick={() => setAutoRefresh((v) => !v)}>
-            Auto Refresh: {autoRefresh ? "On" : "Off"}
+            自動更新：{autoRefresh ? "開啟" : "關閉"}
           </Button>
         </CardContent>
       </Card>

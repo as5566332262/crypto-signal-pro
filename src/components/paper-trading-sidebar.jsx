@@ -8,14 +8,14 @@ export function PaperAccountCard({ accountSnapshot, formatNumber }) {
   return (
     <Card className="rounded-2xl">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">Paper Account</CardTitle>
+        <CardTitle className="text-sm">模擬帳戶</CardTitle>
       </CardHeader>
       <CardContent className="space-y-1 text-xs text-slate-600">
-        <div>Balance: {formatNumber(accountSnapshot.balance, 2)} USDT</div>
-        <div>Equity: {formatNumber(accountSnapshot.equity, 2)} USDT</div>
-        <div>Used Margin: {formatNumber(accountSnapshot.usedMargin || 0, 2)} USDT</div>
-        <div>Realized PnL: {formatNumber(accountSnapshot.realizedPnL, 2)} USDT</div>
-        <div>Unrealized PnL: {formatNumber(accountSnapshot.unrealizedPnL, 2)} USDT</div>
+        <div>餘額: {formatNumber(accountSnapshot.balance, 2)} USDT</div>
+        <div>淨值: {formatNumber(accountSnapshot.equity, 2)} USDT</div>
+        <div>已用保證金: {formatNumber(accountSnapshot.usedMargin || 0, 2)} USDT</div>
+        <div>已實現損益: {formatNumber(accountSnapshot.realizedPnL, 2)} USDT</div>
+        <div>未實現損益: {formatNumber(accountSnapshot.unrealizedPnL, 2)} USDT</div>
       </CardContent>
     </Card>
   );
@@ -25,20 +25,20 @@ export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber, 
   return (
     <Card className="rounded-2xl">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">OpenPositionsCard</CardTitle>
+        <CardTitle className="text-sm">持倉資訊</CardTitle>
       </CardHeader>
       <CardContent className="space-y-1 text-xs text-slate-600">
-        <div>Open positions: {accountSnapshot.openPosition ? 1 : 0}</div>
-        <div>Active simulated orders: {activeOrders}</div>
+        <div>目前持倉: {accountSnapshot.openPosition ? 1 : 0}</div>
+        <div>模擬委託中: {activeOrders}</div>
         {accountSnapshot.openPosition ? (
           <>
-            <div>Side: {accountSnapshot.openPosition.side}</div>
-            <div>Entry: {formatNumber(accountSnapshot.openPosition.entryPrice, paperDigits)}</div>
+            <div>方向: {accountSnapshot.openPosition.side}</div>
+            <div>進場: {formatNumber(accountSnapshot.openPosition.entryPrice, paperDigits)}</div>
             <div>SL: {formatNumber(accountSnapshot.openPosition.stopLoss, paperDigits)}</div>
             <div>TP: {formatNumber(accountSnapshot.openPosition.target1, paperDigits)} / {formatNumber(accountSnapshot.openPosition.target2, paperDigits)}</div>
           </>
         ) : (
-          <div>No active position</div>
+          <div>目前無持倉</div>
         )}
       </CardContent>
     </Card>
@@ -49,7 +49,7 @@ export function TradeHistoryDrawer({ tradeHistory, paperDigits, formatNumber }) 
   return (
     <Card className="rounded-2xl">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">TradeHistoryDrawer</CardTitle>
+        <CardTitle className="text-sm">交易紀錄</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs">
         {tradeHistory.length ? (
@@ -57,11 +57,11 @@ export function TradeHistoryDrawer({ tradeHistory, paperDigits, formatNumber }) 
             <div key={`${trade.openedAt}-${index}`} className="rounded-lg bg-slate-50 p-2 text-slate-600">
               <div className="font-medium text-slate-700">{trade.symbol} {trade.side} · {trade.result}</div>
               <div>{formatNumber(trade.entryPrice, paperDigits)} → {formatNumber(trade.exitPrice, paperDigits)}</div>
-              <div>PnL: {formatNumber(trade.pnl, 2)} USDT</div>
+              <div>損益: {formatNumber(trade.pnl, 2)} USDT</div>
             </div>
           ))
         ) : (
-          <div className="text-slate-500">No trade history</div>
+          <div className="text-slate-500">無交易紀錄</div>
         )}
       </CardContent>
     </Card>
@@ -84,7 +84,7 @@ export default function PaperTradingSidebar({
   return (
     <aside className={`border-r border-slate-200 bg-white p-3 transition-all duration-200 ${sidebarOpen ? "w-80" : "w-[72px]"}`}>
       <div className="flex items-center justify-between gap-2">
-        {sidebarOpen ? <div className="text-sm font-semibold text-slate-700">Paper Trading</div> : <Wallet className="mx-auto h-5 w-5 text-slate-600" />}
+        {sidebarOpen ? <div className="text-sm font-semibold text-slate-700">模擬交易</div> : <Wallet className="mx-auto h-5 w-5 text-slate-600" />}
         <Button variant="ghost" size="icon" onClick={onToggleSidebar}>
           {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
         </Button>
@@ -94,7 +94,7 @@ export default function PaperTradingSidebar({
         <div className="mt-4 space-y-3">
           <Card className="rounded-2xl">
             <CardContent className="space-y-2 p-3">
-              <div className="text-xs font-medium text-slate-500">Symbol</div>
+              <div className="text-xs font-medium text-slate-500">幣種</div>
               <Select value={paperSymbol} onValueChange={setPaperSymbol}>
                 <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -109,9 +109,9 @@ export default function PaperTradingSidebar({
           <TradeHistoryDrawer tradeHistory={accountSnapshot.tradeHistory} paperDigits={paperDigits} formatNumber={formatNumber} />
 
           <div className="grid grid-cols-1 gap-2">
-            <Button className="rounded-2xl" onClick={onExecuteSimulation}>Execute simulation</Button>
-            <Button className="rounded-2xl" variant="outline" onClick={onClosePosition}>Close position</Button>
-            <Button variant="outline" className="rounded-2xl" onClick={onResetPaperAccount}>Reset simulation</Button>
+            <Button className="rounded-2xl" onClick={onExecuteSimulation}>執行模擬</Button>
+            <Button className="rounded-2xl" variant="outline" onClick={onClosePosition}>平倉</Button>
+            <Button variant="outline" className="rounded-2xl" onClick={onResetPaperAccount}>重置模擬</Button>
           </div>
         </div>
       ) : null}
