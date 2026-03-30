@@ -74,6 +74,53 @@ function buildDecisionContextKey(decision, symbol, timeframe) {
   return [symbol, timeframe, action, trigger, invalidation, summary].join("|");
 }
 
+function resolveSideFromDecision(decision) {
+  const action = String(decision?.action ?? decision?.executionPlan?.action ?? "").toUpperCase();
+  if (action === "LONG" || action === "BUY") return "LONG";
+  if (action === "SHORT" || action === "SELL") return "SHORT";
+  return null;
+}
+
+function normalizeDirectionalLevels({ side, referencePrice, stopLoss, takeProfit1, takeProfit2, takeProfit3 }) {
+  const entry = normalizeNumber(referencePrice);
+  const normalizedStopLoss = normalizeNumber(stopLoss);
+  const normalizedTp1 = normalizeNumber(takeProfit1);
+  const normalizedTp2 = normalizeNumber(takeProfit2);
+  const normalizedTp3 = normalizeNumber(takeProfit3);
+
+  if (!side || !Number.isFinite(entry)) {
+    return {
+      stopLoss: normalizedStopLoss,
+      takeProfit1: normalizedTp1,
+      takeProfit2: normalizedTp2,
+      takeProfit3: normalizedTp3,
+    };
+  }
+
+  const isValidStop = (value) => (
+    side === "LONG"
+      ? Number.isFinite(value) && value < entry
+      : Number.isFinite(value) && value > entry
+  );
+
+  const isValidTakeProfit = (value) => (
+    side === "LONG"
+      ? Number.isFinite(value) && value > entry
+      : Number.isFinite(value) && value < entry
+  );
+
+  const sortedTakeProfits = [normalizedTp1, normalizedTp2, normalizedTp3]
+    .filter((value) => isValidTakeProfit(value))
+    .sort((a, b) => (side === "LONG" ? a - b : b - a));
+
+  return {
+    stopLoss: isValidStop(normalizedStopLoss) ? normalizedStopLoss : undefined,
+    takeProfit1: sortedTakeProfits[0],
+    takeProfit2: sortedTakeProfits[1],
+    takeProfit3: sortedTakeProfits[2],
+  };
+}
+
 export function createInitialPaperAccountState() {
   return {
     balance: DEFAULT_BALANCE,
@@ -146,6 +193,7 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
     realizedPnl,
     pnlPercent,
     closeReason,
+    entryReason: position.entryReason,
   };
 
   const nextOpen = state.openPositions.filter((item) => item.id !== positionId);
@@ -192,6 +240,14 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp = now
     if (!shouldFillOrder(order, tickPrice, candleClose)) return order;
 
     const entryPrice = asSafeNumber(candleClose ?? tickPrice, order.triggerPrice);
+    const normalizedLevels = normalizeDirectionalLevels({
+      side: order.side,
+      referencePrice: entryPrice,
+      stopLoss: order.stopLoss,
+      takeProfit1: order.takeProfit1,
+      takeProfit2: order.takeProfit2,
+      takeProfit3: order.takeProfit3,
+    });
     const quantity = asSafeNumber(order.quantity, DEFAULT_POSITION_SIZE);
     const notional = quantity * entryPrice;
     const position = {
@@ -206,13 +262,14 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp = now
       quantity,
       notional,
       leverage: DEFAULT_LEVERAGE,
-      stopLoss: order.stopLoss,
-      takeProfit1: order.takeProfit1,
-      takeProfit2: order.takeProfit2,
-      takeProfit3: order.takeProfit3,
+      stopLoss: normalizedLevels.stopLoss,
+      takeProfit1: normalizedLevels.takeProfit1,
+      takeProfit2: normalizedLevels.takeProfit2,
+      takeProfit3: normalizedLevels.takeProfit3,
       invalidationPrice: order.invalidationPrice,
       openedAt: timestamp,
       unrealizedPnl: 0,
+      entryReason: order.entryReason || null,
       decisionSnapshot: order.decisionSnapshot,
       decisionContextKey: order.decisionContextKey,
       hitTargets: [],
@@ -281,14 +338,22 @@ export function simulateDecisionExecution({
     return { state, result: "NO_DECISION" };
   }
 
-  const action = decision.action || decision.executionPlan?.action || "HOLD";
-  const side = action === "LONG" ? "LONG" : action === "SHORT" ? "SHORT" : null;
+  const side = resolveSideFromDecision(decision);
   const triggerPrice = normalizeNumber(decision.executionPlan?.triggerPrice ?? decision.triggerPrice);
   const invalidationPrice = normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice);
   const contextKey = buildDecisionContextKey(decision, symbol, timeframe);
+  const normalizedLevels = normalizeDirectionalLevels({
+    side,
+    referencePrice: triggerPrice,
+    stopLoss: decision.executionPlan?.stopLoss ?? decision.stopLoss,
+    takeProfit1: decision.executionPlan?.takeProfit1 ?? decision.takeProfit1,
+    takeProfit2: decision.executionPlan?.takeProfit2 ?? decision.takeProfit2,
+    takeProfit3: decision.executionPlan?.takeProfit3 ?? decision.takeProfit3,
+  });
 
   if (!side) {
     if (!triggerPrice) return { state, result: "SKIP_HOLD_NO_TRIGGER" };
+    return { state, result: "SKIP_NO_ACTIONABLE_SIDE" };
   }
 
   if (side && isTrapBlockingEntry(decision, side)) {
@@ -316,16 +381,17 @@ export function simulateDecisionExecution({
     id: createId("order"),
     symbol,
     timeframe,
-    side: side || "LONG",
+    side,
     triggerPrice,
     invalidationPrice,
-    stopLoss: normalizeNumber(decision.executionPlan?.stopLoss ?? decision.stopLoss),
-    takeProfit1: normalizeNumber(decision.executionPlan?.takeProfit1 ?? decision.takeProfit1),
-    takeProfit2: normalizeNumber(decision.executionPlan?.takeProfit2 ?? decision.takeProfit2),
-    takeProfit3: normalizeNumber(decision.executionPlan?.takeProfit3 ?? decision.takeProfit3),
+    stopLoss: normalizedLevels.stopLoss,
+    takeProfit1: normalizedLevels.takeProfit1,
+    takeProfit2: normalizedLevels.takeProfit2,
+    takeProfit3: normalizedLevels.takeProfit3,
     quantity: asSafeNumber(quantity, DEFAULT_POSITION_SIZE),
     createdAt: nowIso(),
     status: "PENDING",
+    entryReason: decision.entryReason || null,
     decisionSnapshot: decision,
     decisionContextKey: contextKey,
   };
@@ -348,14 +414,21 @@ export function reconcilePendingOrdersWithDecision({
 }) {
   if (!state || !decision || !symbol || !timeframe) return state;
 
-  const action = decision.action || decision.executionPlan?.action || "HOLD";
-  const side = action === "LONG" ? "LONG" : action === "SHORT" ? "SHORT" : null;
+  const side = resolveSideFromDecision(decision);
   const triggerPrice = normalizeNumber(decision.executionPlan?.triggerPrice ?? decision.triggerPrice);
   const invalidationPrice = normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice);
-  const stopLoss = normalizeNumber(decision.executionPlan?.stopLoss ?? decision.stopLoss);
-  const takeProfit1 = normalizeNumber(decision.executionPlan?.takeProfit1 ?? decision.takeProfit1);
-  const takeProfit2 = normalizeNumber(decision.executionPlan?.takeProfit2 ?? decision.takeProfit2);
-  const takeProfit3 = normalizeNumber(decision.executionPlan?.takeProfit3 ?? decision.takeProfit3);
+  const normalizedLevels = normalizeDirectionalLevels({
+    side,
+    referencePrice: triggerPrice,
+    stopLoss: decision.executionPlan?.stopLoss ?? decision.stopLoss,
+    takeProfit1: decision.executionPlan?.takeProfit1 ?? decision.takeProfit1,
+    takeProfit2: decision.executionPlan?.takeProfit2 ?? decision.takeProfit2,
+    takeProfit3: decision.executionPlan?.takeProfit3 ?? decision.takeProfit3,
+  });
+  const stopLoss = normalizedLevels.stopLoss;
+  const takeProfit1 = normalizedLevels.takeProfit1;
+  const takeProfit2 = normalizedLevels.takeProfit2;
+  const takeProfit3 = normalizedLevels.takeProfit3;
   const setupType = String(decision.setupType || decision.executionPlan?.setupType || "").toLowerCase();
   const markPrice = normalizeNumber(currentPrice);
 

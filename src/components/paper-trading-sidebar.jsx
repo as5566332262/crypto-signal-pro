@@ -22,6 +22,15 @@ function reasonLabel(reason) {
   return reasonMap[reason] || reason || "-";
 }
 
+function formatEntryReason(entryReason) {
+  if (!entryReason) return ["-"];
+  return [
+    `Breakout/Breakdown：${entryReason.breakoutBreakdownCondition || "-"}`,
+    `Timeframe：${entryReason.timeframeCondition || "-"}`,
+    `Indicator：${entryReason.indicatorCondition || "-"}`,
+  ];
+}
+
 function StatRow({ label, value, emphasize = false }) {
   return (
     <div className="flex items-center justify-between gap-2">
@@ -92,7 +101,7 @@ export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber }
   return (
     <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">持倉資訊</CardTitle>
+        <CardTitle className="text-sm">持倉中（Open Position）</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs text-slate-600">
         <div>目前持倉: {positions.length}</div>
@@ -117,6 +126,12 @@ export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber }
                 <StatRow label="TP1" value={formatNumber(position.takeProfit1, paperDigits)} />
                 <StatRow label="TP2" value={formatNumber(position.takeProfit2, paperDigits)} />
                 <StatRow label="TP3" value={formatNumber(position.takeProfit3, paperDigits)} />
+                <div className="space-y-1">
+                  <div className="text-slate-500">進場依據</div>
+                  {formatEntryReason(position.entryReason).map((line) => (
+                    <div key={line} className="text-slate-700">{line}</div>
+                  ))}
+                </div>
                 <StatRow label="開倉時間" value={new Date(position.openedAt).toLocaleString()} />
               </div>
             );
@@ -133,7 +148,7 @@ export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber }) 
   return (
     <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">掛單中</CardTitle>
+        <CardTitle className="text-sm">掛單中（Pending）</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs">
         {pendingOrders.length ? (
@@ -148,6 +163,12 @@ export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber }) 
               <StatRow label="TP2" value={formatNumber(order.takeProfit2, paperDigits)} />
               <StatRow label="TP3" value={formatNumber(order.takeProfit3, paperDigits)} />
               <StatRow label="失效價格" value={formatNumber(order.invalidationPrice, paperDigits)} />
+              <div className="space-y-1">
+                <div className="text-slate-500">進場依據</div>
+                {formatEntryReason(order.entryReason).map((line) => (
+                  <div key={line} className="text-slate-700">{line}</div>
+                ))}
+              </div>
               <StatRow label="建立時間" value={new Date(order.createdAt).toLocaleString()} />
             </div>
           ))
@@ -188,7 +209,7 @@ export function TradeHistoryDrawer({ closedTrades, paperDigits, formatNumber }) 
   return (
     <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">交易紀錄</CardTitle>
+        <CardTitle className="text-sm">已平倉（History）</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs">
         {closedTrades.length ? (
@@ -202,6 +223,12 @@ export function TradeHistoryDrawer({ closedTrades, paperDigits, formatNumber }) 
                 <StatRow label="出場價" value={formatNumber(trade.exitPrice, paperDigits)} />
                 <StatRow label="已實現損益" value={`${pnlPositive ? "+" : ""}${formatNumber(trade.realizedPnl, 2)} USDT`} emphasize />
                 <StatRow label="平倉原因" value={reasonLabel(trade.closeReason)} />
+                <div className="space-y-1">
+                  <div className="text-slate-500">進場依據</div>
+                  {formatEntryReason(trade.entryReason).map((line) => (
+                    <div key={line} className="text-slate-700">{line}</div>
+                  ))}
+                </div>
                 <StatRow label="開倉時間" value={new Date(trade.openedAt).toLocaleString()} />
                 <StatRow label="平倉時間" value={new Date(trade.closedAt).toLocaleString()} />
               </div>
@@ -284,8 +311,8 @@ export default function PaperTradingSidebar({
             onSimulationQuantityChange={onSimulationQuantityChange}
           />
           <PaperAccountCard accountSnapshot={accountSnapshot} formatNumber={formatNumber} />
-          <OpenPositionsCard accountSnapshot={accountSnapshot} paperDigits={paperDigits} formatNumber={formatNumber} />
           <PendingOrdersCard pendingOrders={accountSnapshot.pendingOrders || []} paperDigits={paperDigits} formatNumber={formatNumber} />
+          <OpenPositionsCard accountSnapshot={accountSnapshot} paperDigits={paperDigits} formatNumber={formatNumber} />
           <CancelledOrdersCard cancelledOrders={accountSnapshot.cancelledOrders || []} paperDigits={paperDigits} formatNumber={formatNumber} />
           <TradeHistoryDrawer closedTrades={accountSnapshot.closedTrades || []} paperDigits={paperDigits} formatNumber={formatNumber} />
           <DebugStateCard accountSnapshot={accountSnapshot} />
