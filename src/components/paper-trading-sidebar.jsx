@@ -22,24 +22,6 @@ function reasonLabel(reason) {
   return reasonMap[reason] || reason || "-";
 }
 
-function formatEntryReason(entryReason) {
-  if (!entryReason) return ["-"];
-  return [
-    `Breakout/Breakdown：${entryReason.breakoutBreakdownCondition || "-"}`,
-    `Timeframe：${entryReason.timeframeCondition || "-"}`,
-    `Indicator：${entryReason.indicatorCondition || "-"}`,
-  ];
-}
-
-function StatRow({ label, value, emphasize = false }) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-slate-500">{label}</span>
-      <span className={`text-right ${emphasize ? "font-semibold text-slate-900" : "text-slate-700"}`}>{value}</span>
-    </div>
-  );
-}
-
 export function PaperAccountCard({ accountSnapshot, formatNumber }) {
   return (
     <Card className="rounded-2xl border-slate-200">
@@ -95,196 +77,188 @@ function SimulationOrderConfigCard({ simulationOrderConfig, onSimulationQuantity
   );
 }
 
-export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber }) {
-  const positions = accountSnapshot.openPositions || [];
+function TradingStateTerminal({
+  openPositions,
+  pendingOrders,
+  closedTrades,
+  cancelledOrders,
+  paperDigits,
+  formatNumber,
+  onClosePosition,
+  onCancelPendingOrder,
+}) {
+  const [activeTab, setActiveTab] = React.useState("positions");
+  const tabItems = [
+    { key: "positions", label: "持有倉位", count: openPositions.length },
+    { key: "pending", label: "當前委託", count: pendingOrders.length },
+    { key: "closed", label: "已平倉", count: closedTrades.length },
+    { key: "cancelled", label: "已取消", count: cancelledOrders.length },
+  ];
+
+  const takeProfitLabel = (item) =>
+    [item.takeProfit1, item.takeProfit2, item.takeProfit3].filter((value) => value !== undefined && value !== null).map((value) => formatNumber(value, paperDigits)).join(" / ") || "-";
+
+  const formatDate = (value) => (value ? new Date(value).toLocaleString() : "-");
+
+  const showCloseAll = activeTab === "positions" && openPositions.length > 1;
+  const showCancelAll = activeTab === "pending" && pendingOrders.length > 1;
 
   return (
     <Card className="rounded-2xl border-slate-200">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">持倉中（Open Position）</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2 text-xs text-slate-600">
-        <div>目前持倉: {positions.length}</div>
-        {positions.length ? (
-          positions.slice(0, 3).map((position) => {
-            const positionValue = Number(position.currentPrice || 0) * Number(position.quantity || 0);
-            const pnlPositive = Number(position.unrealizedPnl || 0) >= 0;
-            return (
-              <div key={position.id} className="space-y-1.5 rounded-lg border border-indigo-100 bg-indigo-50/40 p-2">
-                <div className="font-semibold text-indigo-700">狀態：持倉中</div>
-                <div className="font-semibold text-slate-800">{position.symbol} {sideLabel(position.side)}</div>
-                <StatRow label="進場價" value={formatNumber(position.entryPrice, paperDigits)} />
-                <StatRow label="現價" value={formatNumber(position.currentPrice, paperDigits)} />
-                <StatRow label="數量" value={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`} />
-                <StatRow label="倉位價值" value={`${formatNumber(positionValue, 2)} USDT`} />
-                <StatRow
-                  label="未實現損益"
-                  value={`${pnlPositive ? "+" : ""}${formatNumber(position.unrealizedPnl, 2)} USDT`}
-                  emphasize
-                />
-                <StatRow label="止損" value={formatNumber(position.stopLoss, paperDigits)} />
-                <StatRow label="TP1" value={formatNumber(position.takeProfit1, paperDigits)} />
-                <StatRow label="TP2" value={formatNumber(position.takeProfit2, paperDigits)} />
-                <StatRow label="TP3" value={formatNumber(position.takeProfit3, paperDigits)} />
-                <div className="space-y-1">
-                  <div className="text-slate-500">進場依據</div>
-                  {formatEntryReason(position.entryReason).map((line) => (
-                    <div key={line} className="text-slate-700">{line}</div>
-                  ))}
-                </div>
-                <StatRow label="開倉時間" value={new Date(position.openedAt).toLocaleString()} />
-              </div>
-            );
-          })
-        ) : (
-          <div>目前無持倉</div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber, onCancelPendingOrder }) {
-  return (
-    <Card className="rounded-2xl border-slate-200">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">掛單中（Pending Orders）</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2 text-xs">
-        {pendingOrders.length ? (
-          pendingOrders.map((order) => (
-            <div key={order.id} className="space-y-1.5 rounded-lg border border-sky-100 bg-sky-50/40 p-2 text-slate-600">
-              <div className="font-semibold text-sky-700">狀態：掛單中（等待觸發）</div>
-              <div className="font-semibold text-slate-800">{order.symbol} {sideLabel(order.side)}</div>
-              <StatRow label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
-              <StatRow label="數量" value={`${formatNumber(order.quantity, 2)} ${order.symbol.replace("USDT", "")}`} />
-              <StatRow label="止損" value={formatNumber(order.stopLoss, paperDigits)} />
-              <StatRow label="TP1" value={formatNumber(order.takeProfit1, paperDigits)} />
-              <StatRow label="TP2" value={formatNumber(order.takeProfit2, paperDigits)} />
-              <StatRow label="TP3" value={formatNumber(order.takeProfit3, paperDigits)} />
-              <StatRow label="失效價格" value={formatNumber(order.invalidationPrice, paperDigits)} />
-              <div className="text-slate-700">原因：{order.waitReason || `尚未觸發，等待價格${order.side === "SHORT" ? "跌破" : "突破"} ${formatNumber(order.triggerPrice, paperDigits)}`}</div>
-              <div className="space-y-1">
-                <div className="text-slate-500">進場依據</div>
-                {formatEntryReason(order.entryReason).map((line) => (
-                  <div key={line} className="text-slate-700">{line}</div>
-                ))}
-              </div>
-              <StatRow label="建立時間" value={new Date(order.createdAt).toLocaleString()} />
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
-                onClick={() => onCancelPendingOrder?.(order.id)}
-              >
-                取消掛單
+      <CardHeader className="space-y-3 pb-2">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-sm">交易狀態面板</CardTitle>
+          <div className="flex items-center gap-1.5">
+            {showCloseAll ? (
+              <Button variant="outline" size="sm" className="h-7 rounded-lg px-2 text-xs" onClick={() => openPositions.forEach((position) => onClosePosition?.(position.id))}>
+                全部平倉
               </Button>
-            </div>
-          ))
-        ) : (
-          <div className="text-slate-500">無待觸發掛單</div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-export function CancelledOrdersCard({ cancelledOrders, paperDigits, formatNumber }) {
-  return (
-    <Card className="rounded-2xl border-slate-200">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">已取消掛單</CardTitle>
+            ) : null}
+            {showCancelAll ? (
+              <Button variant="outline" size="sm" className="h-7 rounded-lg border-rose-200 px-2 text-xs text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => pendingOrders.forEach((order) => onCancelPendingOrder?.(order.id))}>
+                全部取消
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        <div className="flex gap-1 overflow-x-auto pb-1">
+          {tabItems.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              className={`shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                activeTab === tab.key ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              {tab.label} ({tab.count})
+            </button>
+          ))}
+        </div>
       </CardHeader>
-      <CardContent className="space-y-2 text-xs">
-        {cancelledOrders.length ? (
-          cancelledOrders.map((order) => (
-            <div key={`${order.id}-${order.cancelledAt || order.createdAt}`} className="rounded-lg bg-slate-50 p-2 text-slate-600">
-              <div className="font-medium text-slate-700">{order.symbol} · {sideLabel(order.side)}</div>
-              <div>觸發價: {formatNumber(order.triggerPrice, paperDigits)}</div>
-              <div>數量: {formatNumber(order.quantity, 2)}</div>
-              <div>取消原因: {order.cancelReason || "-"}</div>
-              <div>建立: {order.createdAt ? new Date(order.createdAt).toLocaleString() : "-"}</div>
-              <div>取消: {order.cancelledAt ? new Date(order.cancelledAt).toLocaleString() : "-"}</div>
+      <CardContent className="p-3 pt-0 text-xs text-slate-600">
+        {activeTab === "positions" ? (
+          openPositions.length ? (
+            <div className="overflow-x-auto">
+              <table className="min-w-[980px] divide-y divide-slate-200">
+                <thead className="text-[11px] text-slate-500">
+                  <tr>
+                    <th className="px-2 py-2 text-left">幣種</th><th className="px-2 py-2 text-left">方向</th><th className="px-2 py-2 text-left">進場價</th><th className="px-2 py-2 text-left">現價</th><th className="px-2 py-2 text-left">數量</th><th className="px-2 py-2 text-left">未實現損益</th><th className="px-2 py-2 text-left">止損</th><th className="px-2 py-2 text-left">止盈</th><th className="px-2 py-2 text-left">開倉時間</th><th className="px-2 py-2 text-left">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {openPositions.map((position) => {
+                    const pnlPositive = Number(position.unrealizedPnl || 0) >= 0;
+                    return (
+                      <tr key={position.id} className="hover:bg-slate-50/70">
+                        <td className="px-2 py-2 font-medium text-slate-700">{position.symbol}</td>
+                        <td className="px-2 py-2">{sideLabel(position.side)}</td>
+                        <td className="px-2 py-2">{formatNumber(position.entryPrice, paperDigits)}</td>
+                        <td className="px-2 py-2">{formatNumber(position.currentPrice, paperDigits)}</td>
+                        <td className="px-2 py-2">{formatNumber(position.quantity, 2)}</td>
+                        <td className={`px-2 py-2 font-semibold ${pnlPositive ? "text-emerald-600" : "text-rose-600"}`}>{`${pnlPositive ? "+" : ""}${formatNumber(position.unrealizedPnl, 2)} USDT`}</td>
+                        <td className="px-2 py-2">{formatNumber(position.stopLoss, paperDigits)}</td>
+                        <td className="px-2 py-2">{takeProfitLabel(position)}</td>
+                        <td className="px-2 py-2">{formatDate(position.openedAt)}</td>
+                        <td className="px-2 py-2">
+                          <Button variant="outline" size="sm" className="h-7 rounded-lg px-2" onClick={() => onClosePosition?.(position.id)}>平倉</Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          ))
-        ) : (
-          <div className="text-slate-500">無取消掛單紀錄</div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+          ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">目前無持倉</div>
+        ) : null}
 
-export function TradeHistoryDrawer({ closedTrades, paperDigits, formatNumber }) {
-  return (
-    <Card className="rounded-2xl border-slate-200">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">已平倉（Closed History）</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2 text-xs">
-        {closedTrades.length ? (
-          closedTrades.map((trade) => {
-            const pnlPositive = Number(trade.realizedPnl || 0) >= 0;
-            return (
-              <div key={trade.id} className="space-y-1.5 rounded-lg bg-slate-50 p-2 text-slate-600">
-                <div className="font-medium text-slate-700">{trade.symbol} {sideLabel(trade.side)}</div>
-                <StatRow label="數量" value={formatNumber(trade.quantity, 2)} />
-                <StatRow label="進場價" value={formatNumber(trade.entryPrice, paperDigits)} />
-                <StatRow label="出場價" value={formatNumber(trade.exitPrice, paperDigits)} />
-                <StatRow label="已實現損益" value={`${pnlPositive ? "+" : ""}${formatNumber(trade.realizedPnl, 2)} USDT`} emphasize />
-                <StatRow label="平倉原因" value={reasonLabel(trade.closeReason)} />
-                <div className="space-y-1">
-                  <div className="text-slate-500">進場依據</div>
-                  {formatEntryReason(trade.entryReason).map((line) => (
-                    <div key={line} className="text-slate-700">{line}</div>
+        {activeTab === "pending" ? (
+          pendingOrders.length ? (
+            <div className="overflow-x-auto">
+              <table className="min-w-[960px] divide-y divide-slate-200">
+                <thead className="text-[11px] text-slate-500">
+                  <tr>
+                    <th className="px-2 py-2 text-left">幣種</th><th className="px-2 py-2 text-left">方向</th><th className="px-2 py-2 text-left">觸發價</th><th className="px-2 py-2 text-left">數量</th><th className="px-2 py-2 text-left">止損</th><th className="px-2 py-2 text-left">止盈</th><th className="px-2 py-2 text-left">失效價</th><th className="px-2 py-2 text-left">建立時間</th><th className="px-2 py-2 text-left">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {pendingOrders.map((order) => (
+                    <tr key={order.id} className="hover:bg-slate-50/70">
+                      <td className="px-2 py-2 font-medium text-slate-700">{order.symbol}</td>
+                      <td className="px-2 py-2">{sideLabel(order.side)}</td>
+                      <td className="px-2 py-2">{formatNumber(order.triggerPrice, paperDigits)}</td>
+                      <td className="px-2 py-2">{formatNumber(order.quantity, 2)}</td>
+                      <td className="px-2 py-2">{formatNumber(order.stopLoss, paperDigits)}</td>
+                      <td className="px-2 py-2">{takeProfitLabel(order)}</td>
+                      <td className="px-2 py-2">{formatNumber(order.invalidationPrice, paperDigits)}</td>
+                      <td className="px-2 py-2">{formatDate(order.createdAt)}</td>
+                      <td className="px-2 py-2">
+                        <Button variant="outline" size="sm" className="h-7 rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => onCancelPendingOrder?.(order.id)}>取消掛單</Button>
+                      </td>
+                    </tr>
                   ))}
-                </div>
-                <StatRow label="開倉時間" value={new Date(trade.openedAt).toLocaleString()} />
-                <StatRow label="平倉時間" value={new Date(trade.closedAt).toLocaleString()} />
-              </div>
-            );
-          })
-        ) : (
-          <div className="text-slate-500">無交易紀錄</div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+                </tbody>
+              </table>
+            </div>
+          ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">無待觸發掛單</div>
+        ) : null}
 
-export function OpenPositionsSection({ openPositions, paperDigits, formatNumber, onClosePosition }) {
-  return (
-    <Card className="rounded-2xl border-slate-200">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">持倉中（Open Positions）</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2 text-xs text-slate-600">
-        {openPositions.length ? (
-          openPositions.map((position) => {
-            const positionValue = Number(position.currentPrice || 0) * Number(position.quantity || 0);
-            const pnlPositive = Number(position.unrealizedPnl || 0) >= 0;
-            return (
-              <div key={position.id} className="space-y-1.5 rounded-lg border border-indigo-100 bg-indigo-50/40 p-2">
-                <div className="font-semibold text-slate-800">{position.symbol} {sideLabel(position.side)}</div>
-                <StatRow label="進場價" value={formatNumber(position.entryPrice, paperDigits)} />
-                <StatRow label="現價" value={formatNumber(position.currentPrice, paperDigits)} />
-                <StatRow label="數量" value={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`} />
-                <StatRow label="未實現損益" value={`${pnlPositive ? "+" : ""}${formatNumber(position.unrealizedPnl, 2)} USDT`} emphasize />
-                <StatRow label="倉位價值" value={`${formatNumber(positionValue, 2)} USDT`} />
-                <StatRow label="止損" value={formatNumber(position.stopLoss, paperDigits)} />
-                <StatRow label="TP1" value={formatNumber(position.takeProfit1, paperDigits)} />
-                <StatRow label="TP2" value={formatNumber(position.takeProfit2, paperDigits)} />
-                <StatRow label="TP3" value={formatNumber(position.takeProfit3, paperDigits)} />
-                <StatRow label="開倉時間" value={new Date(position.openedAt).toLocaleString()} />
-                <Button variant="outline" size="sm" className="h-7 rounded-lg px-2" onClick={() => onClosePosition?.(position.id)}>
-                  平倉
-                </Button>
-              </div>
-            );
-          })
-        ) : (
-          <div>目前無持倉</div>
-        )}
+        {activeTab === "closed" ? (
+          closedTrades.length ? (
+            <div className="overflow-x-auto">
+              <table className="min-w-[860px] divide-y divide-slate-200">
+                <thead className="text-[11px] text-slate-500">
+                  <tr>
+                    <th className="px-2 py-2 text-left">幣種</th><th className="px-2 py-2 text-left">方向</th><th className="px-2 py-2 text-left">進場價</th><th className="px-2 py-2 text-left">出場價</th><th className="px-2 py-2 text-left">數量</th><th className="px-2 py-2 text-left">已實現損益</th><th className="px-2 py-2 text-left">平倉原因</th><th className="px-2 py-2 text-left">時間</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {closedTrades.map((trade) => {
+                    const pnlPositive = Number(trade.realizedPnl || 0) >= 0;
+                    return (
+                      <tr key={trade.id} className="hover:bg-slate-50/70">
+                        <td className="px-2 py-2 font-medium text-slate-700">{trade.symbol}</td>
+                        <td className="px-2 py-2">{sideLabel(trade.side)}</td>
+                        <td className="px-2 py-2">{formatNumber(trade.entryPrice, paperDigits)}</td>
+                        <td className="px-2 py-2">{formatNumber(trade.exitPrice, paperDigits)}</td>
+                        <td className="px-2 py-2">{formatNumber(trade.quantity, 2)}</td>
+                        <td className={`px-2 py-2 font-semibold ${pnlPositive ? "text-emerald-600" : "text-rose-600"}`}>{`${pnlPositive ? "+" : ""}${formatNumber(trade.realizedPnl, 2)} USDT`}</td>
+                        <td className="px-2 py-2">{reasonLabel(trade.closeReason)}</td>
+                        <td className="px-2 py-2">{formatDate(trade.closedAt)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">無交易紀錄</div>
+        ) : null}
+
+        {activeTab === "cancelled" ? (
+          cancelledOrders.length ? (
+            <div className="overflow-x-auto">
+              <table className="min-w-[760px] divide-y divide-slate-200">
+                <thead className="text-[11px] text-slate-500">
+                  <tr>
+                    <th className="px-2 py-2 text-left">幣種</th><th className="px-2 py-2 text-left">方向</th><th className="px-2 py-2 text-left">觸發價</th><th className="px-2 py-2 text-left">數量</th><th className="px-2 py-2 text-left">取消原因</th><th className="px-2 py-2 text-left">建立/取消時間</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {cancelledOrders.map((order) => (
+                    <tr key={`${order.id}-${order.cancelledAt || order.createdAt}`} className="hover:bg-slate-50/70">
+                      <td className="px-2 py-2 font-medium text-slate-700">{order.symbol}</td>
+                      <td className="px-2 py-2">{sideLabel(order.side)}</td>
+                      <td className="px-2 py-2">{formatNumber(order.triggerPrice, paperDigits)}</td>
+                      <td className="px-2 py-2">{formatNumber(order.quantity, 2)}</td>
+                      <td className="px-2 py-2">{order.cancelReason || "-"}</td>
+                      <td className="px-2 py-2">{`${formatDate(order.createdAt)} / ${formatDate(order.cancelledAt)}`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">無取消掛單紀錄</div>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -362,20 +336,16 @@ export default function PaperTradingSidebar({
             onSimulationQuantityChange={onSimulationQuantityChange}
           />
           <PaperAccountCard accountSnapshot={accountSnapshot} formatNumber={formatNumber} />
-          <PendingOrdersCard
-            pendingOrders={accountSnapshot.pendingOrders || []}
-            paperDigits={paperDigits}
-            formatNumber={formatNumber}
-            onCancelPendingOrder={onCancelPendingOrder}
-          />
-          <OpenPositionsSection
+          <TradingStateTerminal
             openPositions={accountSnapshot.openPositions || []}
+            pendingOrders={accountSnapshot.pendingOrders || []}
+            closedTrades={accountSnapshot.closedTrades || []}
+            cancelledOrders={accountSnapshot.cancelledOrders || []}
             paperDigits={paperDigits}
             formatNumber={formatNumber}
             onClosePosition={onClosePosition}
+            onCancelPendingOrder={onCancelPendingOrder}
           />
-          <TradeHistoryDrawer closedTrades={accountSnapshot.closedTrades || []} paperDigits={paperDigits} formatNumber={formatNumber} />
-          <CancelledOrdersCard cancelledOrders={accountSnapshot.cancelledOrders || []} paperDigits={paperDigits} formatNumber={formatNumber} />
           <DebugStateCard accountSnapshot={accountSnapshot} />
 
           <div className="grid grid-cols-1 gap-2">
