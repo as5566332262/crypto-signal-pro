@@ -2,6 +2,8 @@ const DEFAULT_BALANCE = 5000;
 const DEFAULT_LEVERAGE = 1;
 const DEFAULT_POSITION_SIZE = 1;
 const TRAP_BLOCK_CONFIDENCE = new Set(["MEDIUM", "HIGH", "中", "高"]);
+const LEVEL_CHANGE_TOLERANCE_RATIO = 0.001;
+const MAX_CANCELLED_ORDERS_HISTORY = 50;
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -81,7 +83,26 @@ export function createInitialPaperAccountState() {
     unrealizedPnl: 0,
     openPositions: [],
     pendingOrders: [],
+    cancelledOrders: [],
     closedTrades: [],
+  };
+}
+
+function hasMaterialNumberChange(previousValue, nextValue, toleranceRatio = LEVEL_CHANGE_TOLERANCE_RATIO) {
+  const prev = normalizeNumber(previousValue);
+  const next = normalizeNumber(nextValue);
+  if (prev == null && next == null) return false;
+  if (prev == null || next == null) return true;
+  const baseline = Math.max(Math.abs(prev), Math.abs(next), 1);
+  return Math.abs(prev - next) / baseline > toleranceRatio;
+}
+
+function cancelPendingOrder(order, reason, timestamp = nowIso()) {
+  return {
+    ...order,
+    status: "CANCELLED",
+    cancelReason: reason,
+    cancelledAt: timestamp,
   };
 }
 
@@ -151,11 +172,17 @@ function isPreEntryInvalidated(order, tickPrice) {
 }
 
 function maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp = nowIso() }) {
-  let nextState = { ...state, pendingOrders: [...state.pendingOrders], openPositions: [...state.openPositions] };
+  let nextState = {
+    ...state,
+    pendingOrders: [...state.pendingOrders],
+    cancelledOrders: [...(state.cancelledOrders || [])],
+    openPositions: [...state.openPositions],
+  };
 
   nextState.pendingOrders = nextState.pendingOrders.map((order) => {
     if (order.status !== "PENDING") return order;
     if (isPreEntryInvalidated(order, tickPrice)) {
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp));
       return { ...order, status: "CANCELLED" };
     }
     if (!shouldFillOrder(order, tickPrice, candleClose)) return order;
@@ -190,6 +217,7 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp = now
   });
 
   nextState.pendingOrders = nextState.pendingOrders.filter((order) => order.status === "PENDING");
+  nextState.cancelledOrders = nextState.cancelledOrders.slice(0, MAX_CANCELLED_ORDERS_HISTORY);
   return recalculateAccountState(nextState);
 }
 
@@ -303,6 +331,80 @@ export function simulateDecisionExecution({
   });
 
   return { state: nextState, result: "PENDING_CREATED", pendingOrder };
+}
+
+export function reconcilePendingOrdersWithDecision({
+  state,
+  decision,
+  symbol,
+  timeframe,
+  currentPrice,
+  timestamp = nowIso(),
+}) {
+  if (!state || !decision || !symbol || !timeframe) return state;
+
+  const action = decision.action || decision.executionPlan?.action || "HOLD";
+  const side = action === "LONG" ? "LONG" : action === "SHORT" ? "SHORT" : null;
+  const triggerPrice = normalizeNumber(decision.executionPlan?.triggerPrice ?? decision.triggerPrice);
+  const invalidationPrice = normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice);
+  const stopLoss = normalizeNumber(decision.executionPlan?.stopLoss ?? decision.stopLoss);
+  const takeProfit1 = normalizeNumber(decision.executionPlan?.takeProfit1 ?? decision.takeProfit1);
+  const takeProfit2 = normalizeNumber(decision.executionPlan?.takeProfit2 ?? decision.takeProfit2);
+  const takeProfit3 = normalizeNumber(decision.executionPlan?.takeProfit3 ?? decision.takeProfit3);
+  const setupType = String(decision.setupType || decision.executionPlan?.setupType || "").toLowerCase();
+  const markPrice = normalizeNumber(currentPrice);
+
+  const nextPending = [];
+  const cancelledOrders = [...(state.cancelledOrders || [])];
+
+  for (const order of state.pendingOrders || []) {
+    if (order.status !== "PENDING") continue;
+
+    if (order.symbol !== symbol || order.timeframe !== timeframe) {
+      nextPending.push(order);
+      continue;
+    }
+
+    let cancelReason = null;
+
+    if (!side) {
+      cancelReason = "DECISION_HOLD";
+    } else if (order.side !== side) {
+      cancelReason = "DECISION_CHANGED";
+    } else if (isTrapBlockingEntry(decision, side)) {
+      cancelReason = "TRAP_BLOCKED";
+    } else if (setupType === "no_setup" || setupType === "no-trade") {
+      cancelReason = "SETUP_INVALIDATED";
+    } else {
+      const levelsChanged =
+        hasMaterialNumberChange(order.triggerPrice, triggerPrice) ||
+        hasMaterialNumberChange(order.invalidationPrice, invalidationPrice) ||
+        hasMaterialNumberChange(order.stopLoss, stopLoss) ||
+        hasMaterialNumberChange(order.takeProfit1, takeProfit1) ||
+        hasMaterialNumberChange(order.takeProfit2, takeProfit2) ||
+        hasMaterialNumberChange(order.takeProfit3, takeProfit3);
+      if (levelsChanged) {
+        cancelReason = "SETUP_INVALIDATED";
+      } else if (invalidationPrice != null && Number.isFinite(markPrice)) {
+        const invalidForLong = side === "LONG" && markPrice <= invalidationPrice;
+        const invalidForShort = side === "SHORT" && markPrice >= invalidationPrice;
+        if (invalidForLong || invalidForShort) cancelReason = "SETUP_INVALIDATED";
+      }
+    }
+
+    if (cancelReason) {
+      cancelledOrders.unshift(cancelPendingOrder(order, cancelReason, timestamp));
+      continue;
+    }
+
+    nextPending.push(order);
+  }
+
+  return recalculateAccountState({
+    ...state,
+    pendingOrders: nextPending,
+    cancelledOrders: cancelledOrders.slice(0, MAX_CANCELLED_ORDERS_HISTORY),
+  });
 }
 
 export function applyMarketTickToPaperState(state, { price, candleClose, timestamp = nowIso() }) {

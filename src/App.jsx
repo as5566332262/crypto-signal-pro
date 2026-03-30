@@ -3,6 +3,7 @@ import {
   applyMarketTickToPaperState,
   closePositionManually,
   createInitialPaperAccountState,
+  reconcilePendingOrdersWithDecision,
   resetPaperTradingState,
   simulateDecisionExecution,
 } from "@/lib/paper-trading-engine";
@@ -39,6 +40,7 @@ function loadPaperAccount() {
       ...parsed,
       openPositions: Array.isArray(parsed?.openPositions) ? parsed.openPositions : [],
       pendingOrders: Array.isArray(parsed?.pendingOrders) ? parsed.pendingOrders : [],
+      cancelledOrders: Array.isArray(parsed?.cancelledOrders) ? parsed.cancelledOrders : [],
       closedTrades: Array.isArray(parsed?.closedTrades) ? parsed.closedTrades : [],
     };
   } catch {
@@ -2286,6 +2288,19 @@ export default function CryptoSignalWebApp() {
       })
     );
   }, [paperCurrentPrice, currentCandle?.close]);
+
+  useEffect(() => {
+    if (!analysis?.aiDecisionOutput) return;
+    setPaperAccount((prev) =>
+      reconcilePendingOrdersWithDecision({
+        state: prev,
+        decision: analysis.aiDecisionOutput,
+        symbol: paperMarketSymbol,
+        timeframe,
+        currentPrice: paperCurrentPrice,
+      })
+    );
+  }, [analysis?.aiDecisionOutput, paperCurrentPrice, paperMarketSymbol, timeframe]);
 
   const accountSnapshot = useMemo(() => {
     const wins = paperAccount.closedTrades.filter((trade) => trade.realizedPnl >= 0).length;
