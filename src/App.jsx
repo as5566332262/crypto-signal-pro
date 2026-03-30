@@ -213,6 +213,8 @@ function mapExecutionBlockedReason(resultCode, decision) {
     SETUP_ALREADY_INVALIDATED: "無有效 setup，未執行",
     STALE_CONTEXT: "決策內容已過期，請先重新整理",
     STRUCTURE_INVALID: "結構條件不足，暫不建立掛單",
+    EXTREMELY_LOW_CONFIDENCE: "信心過低，模擬執行暫停",
+    MISSING_EXECUTION_PLAN: "缺少 execution plan，無法建立掛單",
     NO_DECISION: "尚未產生可執行決策",
   };
   return reasonMap[resultCode] || "條件不足，暫不執行";
@@ -258,25 +260,13 @@ function buildExecutionDiagnostics({ decision, currentPrice, rsi, currentVolume,
   return { unmetConditions, distances };
 }
 
-function getSimulationButtonState(decision) {
-  if (!decision) {
-    return {
-      disabled: true,
-      disabledReason: "尚未取得 AI 決策",
-    };
-  }
+function getSimulationButtonState(decision, currentPrice) {
+  const eligibilityInfo = getSimulationEligibility(decision, currentPrice);
+  const waitingPending = eligibilityInfo.eligibility === "READY_TO_PLACE_PENDING";
 
-  const eligibilityInfo = getSimulationEligibility(decision);
-  if (eligibilityInfo.eligibility === "BLOCKED") {
-    return {
-      disabled: true,
-      disabledReason: eligibilityInfo.reason,
-      eligibility: eligibilityInfo.eligibility,
-    };
-  }
   return {
     disabled: false,
-    disabledReason: "",
+    disabledReason: waitingPending ? "目前不可立即進場，但可建立條件掛單" : "",
     eligibility: eligibilityInfo.eligibility,
   };
 }
@@ -2500,7 +2490,7 @@ export default function CryptoSignalWebApp() {
         nextFeedback = {
           status: "PENDING",
           statusLabel: "已建立條件掛單",
-          reason: `目前尚未觸發，但 setup 有效，等待價格${result.pendingOrder?.side === "SHORT" ? "跌破" : "突破"} ${formatNumber(result.pendingOrder?.triggerPrice, digits)}`,
+          reason: "已建立條件掛單，等待觸發後進場",
           pendingOrder: result.pendingOrder,
           unmetConditions: [],
           distances: [],
@@ -2536,7 +2526,7 @@ export default function CryptoSignalWebApp() {
         nextFeedback = {
           status: skippedByAi ? "SKIPPED" : "BLOCKED",
           statusLabel: skippedByAi ? "模擬執行被阻擋" : "模擬執行被阻擋",
-          reason: mapExecutionBlockedReason(result.result, analysis.aiDecisionOutput),
+          reason: `模擬執行被阻擋：${mapExecutionBlockedReason(result.result, analysis.aiDecisionOutput)}`,
           unmetConditions: diagnostics.unmetConditions,
           distances: diagnostics.distances,
           timestamp: new Date().toISOString(),
@@ -2577,8 +2567,8 @@ export default function CryptoSignalWebApp() {
   };
 
   const simulationButtonState = useMemo(
-    () => getSimulationButtonState(analysis?.aiDecisionOutput),
-    [analysis?.aiDecisionOutput]
+    () => getSimulationButtonState(analysis?.aiDecisionOutput, paperCurrentPrice),
+    [analysis?.aiDecisionOutput, paperCurrentPrice]
   );
 
   return (
