@@ -143,31 +143,30 @@ function TradingStateTerminal({
       <CardContent className="p-3 pt-0 text-xs text-slate-600">
         {activeTab === "positions" ? (
           openPositions.length ? (
-            <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+            <div className="max-h-[420px] space-y-2.5 overflow-y-auto pr-1">
               {openPositions.map((position) => {
                 const pnlPositive = Number(position.unrealizedPnl || 0) >= 0;
-                const positionValue = Number(position.currentPrice || 0) * Number(position.quantity || 0);
                 return (
                   <div key={position.id} className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="mb-3 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
-                      <div className="truncate text-sm font-semibold text-slate-800">{position.symbol}</div>
-                      <span className={`justify-self-center shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${position.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
-                        {sideLabel(position.side)}
-                      </span>
-                      <div className={`justify-self-end whitespace-nowrap text-base font-extrabold tracking-wide ${pnlPositive ? "text-emerald-600" : "text-rose-600"}`}>
+                    <div className="mb-3 space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <div className="truncate text-sm font-semibold text-slate-800">{position.symbol}</div>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${position.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                          {sideLabel(position.side)}
+                        </span>
+                      </div>
+                      <div className={`whitespace-nowrap text-base font-extrabold tracking-wide ${pnlPositive ? "text-emerald-600" : "text-rose-600"}`}>
                         {pnlPositive ? "+" : ""}
                         {formatNumber(position.unrealizedPnl, 2)} USDT
                       </div>
                     </div>
                     <div className="space-y-2.5">
-                      <div className="text-sm font-semibold text-slate-800">
+                      <div className="whitespace-nowrap text-sm font-semibold text-slate-800">
                         {formatNumber(position.entryPrice, paperDigits)} <span className="px-1 text-slate-400">→</span> {formatNumber(position.currentPrice, paperDigits)}
                       </div>
-                      <InfoPairRow
-                        leftLabel="數量"
-                        leftValue={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`}
-                        rightLabel="倉位價值"
-                        rightValue={`${formatNumber(positionValue, 2)} USDT`}
+                      <InfoSingleRow
+                        label="數量"
+                        value={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`}
                       />
                       <InfoPairRow
                         leftLabel="止損"
@@ -175,7 +174,9 @@ function TradingStateTerminal({
                         rightLabel="TP1"
                         rightValue={position.takeProfit1 ? formatNumber(position.takeProfit1, paperDigits) : "-"}
                       />
-                      <InfoSingleRow label="開倉時間" value={formatDate(position.openedAt)} />
+                      <div className="whitespace-nowrap text-[13px] font-medium text-slate-700">
+                        開倉：<span className="font-semibold text-slate-800">{formatDate(position.openedAt)}</span>
+                      </div>
                     </div>
                     <div className="mt-3 pt-1">
                       <Button variant="outline" size="sm" className="h-7 w-full rounded-lg px-2" onClick={() => onClosePosition?.(position.id)}>
