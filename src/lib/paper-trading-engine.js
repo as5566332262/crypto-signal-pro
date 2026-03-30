@@ -116,6 +116,8 @@ export function getSimulationEligibility(decision, currentPrice) {
   const confirmationStrength = String(
     decision?.triggerEngine?.confirmationStrength ?? decision?.entryTiming ?? ""
   ).toUpperCase();
+  const confidence = normalizeConfidence(decision?.confidence ?? decision?.confidenceLevel);
+  const hasExecutionPlan = Boolean(decision?.executionPlan);
 
   if (isDecisionContextStale(decision)) {
     return { eligibility: "BLOCKED", reasonCode: "STALE_CONTEXT", reason: "決策內容已過期，請先重新整理資料" };
@@ -124,8 +126,14 @@ export function getSimulationEligibility(decision, currentPrice) {
   if (!side) {
     return { eligibility: "BLOCKED", reasonCode: "SKIP_NO_ACTIONABLE_SIDE", reason: "缺少可執行方向" };
   }
-  if (setupType === "no_setup" || setupType === "no-trade") {
-    return { eligibility: "BLOCKED", reasonCode: "NO_SETUP", reason: "無有效 setup，未執行" };
+  if (setupType === "no_setup" || setupType === "no-trade" || confirmationStrength === "NO_SETUP" || confirmationStrength === "TOO_LATE") {
+    return { eligibility: "BLOCKED", reasonCode: "STRUCTURE_INVALID", reason: "結構條件不足，暫不建立掛單" };
+  }
+  if (confidence === "LOW" || confidence === "VERY_LOW" || confidence === "低" || confidence === "極低") {
+    return { eligibility: "BLOCKED", reasonCode: "EXTREMELY_LOW_CONFIDENCE", reason: "信心過低，模擬執行暫停" };
+  }
+  if (!hasExecutionPlan) {
+    return { eligibility: "BLOCKED", reasonCode: "MISSING_EXECUTION_PLAN", reason: "缺少 execution plan，無法建立掛單" };
   }
   if (!Number.isFinite(triggerPrice)) {
     return { eligibility: "BLOCKED", reasonCode: "MISSING_TRIGGER", reason: "缺少觸發價格，無法建立掛單" };
@@ -153,9 +161,6 @@ export function getSimulationEligibility(decision, currentPrice) {
     return { eligibility: "READY_TO_EXECUTE", reasonCode: "TRIGGER_READY", reason: "觸發條件已成立，可立即進場" };
   }
 
-  if (action === "HOLD" && (confirmationStrength === "NO_SETUP" || confirmationStrength === "TOO_LATE")) {
-    return { eligibility: "BLOCKED", reasonCode: "STRUCTURE_INVALID", reason: "結構條件不足，暫不建立掛單" };
-  }
 
   return {
     eligibility: "READY_TO_PLACE_PENDING",

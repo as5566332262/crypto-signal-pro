@@ -331,7 +331,7 @@ export default function PaperTradingSidebar({
             </Button>
             {simulationButtonState?.disabledReason ? (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                目前無法執行：{simulationButtonState.disabledReason}
+                {simulationButtonState.disabledReason}
               </div>
             ) : null}
 
