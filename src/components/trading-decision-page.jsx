@@ -93,10 +93,10 @@ function CustomTooltip({ active, payload, label, symbol, formatNumber }) {
 export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel, confidenceLabel, lastUpdated, digits, formatNumber }) {
   return (
     <Card className="rounded-3xl border border-slate-200 bg-slate-950 text-slate-100 shadow-md">
-      <CardHeader className="pb-2">
+      <CardHeader className="px-5 pt-5 pb-3 sm:px-6">
         <CardTitle className="text-base tracking-wide text-slate-300">交易終端狀態列</CardTitle>
       </CardHeader>
-      <CardContent className="grid gap-x-6 gap-y-3 border-t border-slate-800 pt-3 sm:grid-cols-2 lg:grid-cols-5">
+      <CardContent className="grid gap-x-6 gap-y-3 border-t border-slate-800 px-5 pt-4 pb-5 sm:grid-cols-2 sm:px-6 lg:grid-cols-5">
         <div>
           <div className="text-[11px] uppercase tracking-wider text-slate-400">幣種</div>
           <div className="mt-1 text-sm font-semibold">{symbolLabel}</div>
@@ -129,8 +129,8 @@ export function DecisionCard({ analysis }) {
   const tone = decisionTone(analysis?.bias);
   return (
     <Card className="rounded-3xl border-2 border-slate-900 shadow-md">
-      <CardHeader><CardTitle className="text-xl">決策中心</CardTitle></CardHeader>
-      <CardContent className="space-y-4 text-sm">
+      <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle className="text-xl">決策中心</CardTitle></CardHeader>
+      <CardContent className="space-y-4 px-5 pb-5 text-sm sm:px-6">
         <div className={`rounded-2xl border bg-gradient-to-r p-4 ${tone.glow}`}>
           <div className="text-sm font-medium text-slate-600">最終決策</div>
           <div className="mt-2 flex items-center justify-between gap-4">
@@ -162,8 +162,8 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
   const isHold = analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
   return (
     <Card className="rounded-3xl shadow-sm">
-      <CardHeader><CardTitle>執行計畫</CardTitle></CardHeader>
-      <CardContent className="space-y-3 text-sm">
+      <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle>執行計畫</CardTitle></CardHeader>
+      <CardContent className="space-y-3 px-5 pb-5 text-sm sm:px-6">
         {isHold ? (
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-800">
             <div className="font-semibold">目前不進場</div>
@@ -197,11 +197,11 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
 export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, formatNumber }) {
   return (
     <Card className="rounded-3xl shadow-sm">
-      <CardHeader className="pb-3">
+      <CardHeader className="px-5 pt-5 pb-3 sm:px-6">
         <CardTitle>價格圖表</CardTitle>
         <div className="text-xs text-slate-500">已預留：Entry / SL / TP / 持倉標記覆蓋層</div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-5 pb-5 sm:px-6">
         <div className="rounded-2xl border border-slate-200 bg-white p-2">
           <div className="mb-2 flex flex-wrap gap-2 px-1 text-[11px] text-slate-500">
             <Badge className="rounded-full bg-slate-100 text-slate-700">Entry Line（預留）</Badge>
@@ -247,8 +247,8 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
 export function MarketContextCard({ analysis, currentCandle, digits, formatNumber }) {
   return (
     <Card className="rounded-3xl shadow-sm">
-      <CardHeader><CardTitle>市場結構</CardTitle></CardHeader>
-      <CardContent className="grid gap-3 text-sm sm:grid-cols-2">
+      <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle>市場結構</CardTitle></CardHeader>
+      <CardContent className="grid gap-3 px-5 pb-5 text-sm sm:grid-cols-2 sm:px-6">
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">結構</div><div className="font-semibold">{analysis?.structure || "-"}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">突破狀態</div><div className="font-semibold">{analysis?.breakoutState || "-"}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">量能狀態</div><div className="font-semibold">{analysis?.volumeState || "-"}</div></div>
@@ -265,7 +265,7 @@ export function AIAnalysisAccordion({ analysis }) {
   return (
     <Card className="rounded-3xl border border-slate-200/80 bg-slate-50 shadow-sm">
       <details className="group">
-        <summary className="flex cursor-pointer list-none items-center justify-between px-6 py-4">
+        <summary className="flex cursor-pointer list-none items-center justify-between px-5 pt-5 pb-4 sm:px-6">
           <div>
             <div className="text-base font-semibold text-slate-800">AI 分析</div>
             <div className="mt-0.5 text-xs text-slate-500">{oneLineSummary}</div>
