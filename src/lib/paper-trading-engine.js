@@ -149,7 +149,39 @@ function isDecisionContextStale(decision) {
   return Date.now() - parsed > DECISION_STALE_MS;
 }
 
-export function getSimulationEligibility(decision, currentPrice) {
+function evaluateImmediateExecutionReadiness({ decision, side, triggerPrice, markPrice, signalContext = {} }) {
+  const triggerHit = Number.isFinite(markPrice)
+    ? (side === "LONG" ? markPrice >= triggerPrice : markPrice <= triggerPrice)
+    : false;
+  const rsi = normalizeNumber(signalContext?.rsi);
+  const macdHistogram = normalizeNumber(signalContext?.macdHistogram ?? signalContext?.macd?.histogram);
+  const currentVolume = normalizeNumber(signalContext?.currentVolume);
+  const avgVolume20 = normalizeNumber(signalContext?.avgVolume20);
+  const rsiThreshold = side === "SHORT" ? 45 : 55;
+  const rsiConfirmed = !Number.isFinite(rsi) || (side === "SHORT" ? rsi <= rsiThreshold : rsi >= rsiThreshold);
+  const volumeThreshold = Number.isFinite(avgVolume20) && avgVolume20 > 0 ? avgVolume20 * 1.2 : null;
+  const volumeConfirmed =
+    !Number.isFinite(volumeThreshold) || !Number.isFinite(currentVolume) ? true : currentVolume >= volumeThreshold;
+  const macdConfirmed =
+    !Number.isFinite(macdHistogram) || (side === "SHORT" ? macdHistogram < 0 : macdHistogram > 0);
+
+  const unmetConditions = [];
+  if (!triggerHit) unmetConditions.push("TRIGGER_NOT_HIT");
+  if (!rsiConfirmed) unmetConditions.push("RSI_NOT_CONFIRMED");
+  if (!volumeConfirmed) unmetConditions.push("VOLUME_NOT_CONFIRMED");
+  if (!macdConfirmed) unmetConditions.push("MACD_NOT_CONFIRMED");
+
+  return {
+    readyToExecute: triggerHit && rsiConfirmed && volumeConfirmed && macdConfirmed,
+    triggerHit,
+    rsiConfirmed,
+    volumeConfirmed,
+    macdConfirmed,
+    unmetConditions,
+  };
+}
+
+export function getSimulationEligibility(decision, currentPrice, signalContext = {}) {
   if (!decision) {
     return {
       eligibility: "BLOCKED",
@@ -159,32 +191,12 @@ export function getSimulationEligibility(decision, currentPrice) {
   }
 
   const side = resolveSideFromDecision(decision);
-  const action = String(decision?.action ?? decision?.executionPlan?.action ?? "").toUpperCase();
-  const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
   const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
   const invalidationPrice = normalizeNumber(decision?.executionPlan?.invalidationPrice ?? decision?.invalidationPrice);
   const markPrice = normalizeNumber(currentPrice);
-  const confirmationStrength = String(
-    decision?.triggerEngine?.confirmationStrength ?? decision?.entryTiming ?? ""
-  ).toUpperCase();
-  const confidence = normalizeConfidence(decision?.confidence ?? decision?.confidenceLevel);
-  const hasExecutionPlan = Boolean(decision?.executionPlan);
-
-  if (isDecisionContextStale(decision)) {
-    return { eligibility: "BLOCKED", reasonCode: "STALE_CONTEXT", reason: "決策內容已過期，請先重新整理資料" };
-  }
 
   if (!side) {
     return { eligibility: "BLOCKED", reasonCode: "SKIP_NO_ACTIONABLE_SIDE", reason: "缺少可執行方向" };
-  }
-  if (setupType === "no_setup" || setupType === "no-trade" || confirmationStrength === "NO_SETUP" || confirmationStrength === "TOO_LATE") {
-    return { eligibility: "BLOCKED", reasonCode: "STRUCTURE_INVALID", reason: "結構條件不足，暫不建立掛單" };
-  }
-  if (confidence === "LOW" || confidence === "VERY_LOW" || confidence === "低" || confidence === "極低") {
-    return { eligibility: "BLOCKED", reasonCode: "EXTREMELY_LOW_CONFIDENCE", reason: "信心過低，模擬執行暫停" };
-  }
-  if (!hasExecutionPlan) {
-    return { eligibility: "BLOCKED", reasonCode: "MISSING_EXECUTION_PLAN", reason: "缺少 execution plan，無法建立掛單" };
   }
   if (!Number.isFinite(triggerPrice)) {
     return { eligibility: "BLOCKED", reasonCode: "MISSING_TRIGGER", reason: "缺少觸發價格，無法建立掛單" };
@@ -204,19 +216,27 @@ export function getSimulationEligibility(decision, currentPrice) {
     }
   }
 
-  const triggerHit = Number.isFinite(markPrice)
-    ? (side === "LONG" ? markPrice >= triggerPrice : markPrice <= triggerPrice)
-    : false;
-
-  if (triggerHit && action !== "HOLD") {
-    return { eligibility: "READY_TO_EXECUTE", reasonCode: "TRIGGER_READY", reason: "觸發條件已成立，可立即進場" };
+  const executionReadiness = evaluateImmediateExecutionReadiness({
+    decision,
+    side,
+    triggerPrice,
+    markPrice,
+    signalContext,
+  });
+  if (executionReadiness.readyToExecute) {
+    return {
+      eligibility: "READY_TO_EXECUTE",
+      reasonCode: "TRIGGER_READY",
+      reason: "觸發與確認條件皆成立，可立即進場",
+      executionReadiness,
+    };
   }
-
 
   return {
     eligibility: "READY_TO_PLACE_PENDING",
-    reasonCode: "WAITING_TRIGGER",
-    reason: `目前尚未觸發，等待價格${side === "LONG" ? "突破" : "跌破"} ${triggerPrice}`,
+    reasonCode: "WAITING_CONFIRMATION",
+    reason: "已建立條件掛單，等待條件成立後進場",
+    executionReadiness,
   };
 }
 
@@ -533,12 +553,13 @@ export function simulateDecisionExecution({
   currentPrice,
   quantity = DEFAULT_POSITION_SIZE,
   forceSimulation = false,
+  signalContext = {},
 }) {
   if (!decision || !state) {
     return { state, result: "NO_DECISION" };
   }
 
-  const eligibilityInfo = getSimulationEligibility(decision, currentPrice);
+  const eligibilityInfo = getSimulationEligibility(decision, currentPrice, signalContext);
   let effectiveEligibility = eligibilityInfo;
   if (
     forceSimulation &&

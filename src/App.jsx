@@ -266,8 +266,8 @@ function buildExecutionDiagnostics({ decision, currentPrice, rsi, currentVolume,
   return { unmetConditions, distances };
 }
 
-function getSimulationButtonState(decision, currentPrice) {
-  const eligibilityInfo = getSimulationEligibility(decision, currentPrice);
+function getSimulationButtonState(decision, currentPrice, signalContext = {}) {
+  const eligibilityInfo = getSimulationEligibility(decision, currentPrice, signalContext);
   const waitingPending = eligibilityInfo.eligibility === "READY_TO_PLACE_PENDING";
 
   return {
@@ -2489,6 +2489,12 @@ export default function CryptoSignalWebApp() {
         currentPrice: paperCurrentPrice,
         quantity: selectedQuantity,
         forceSimulation: String(analysis?.finalDecision || "").toUpperCase() === "NO_TRADE",
+        signalContext: {
+          rsi: analysis?.rsi,
+          macd: analysis?.macd,
+          currentVolume: latestVolume,
+          avgVolume20,
+        },
       });
       const executedState = result.result === "PENDING_CREATED"
         ? applyMarketTickToPaperState(result.state, {
@@ -2519,7 +2525,7 @@ export default function CryptoSignalWebApp() {
         nextFeedback = {
           status: "PENDING",
           statusLabel: simulatedNonRecommended ? "模擬掛單（非建議）" : "已建立條件掛單",
-          reason: simulatedNonRecommended ? "已建立模擬掛單（非建議）" : "已建立條件掛單，等待觸發後進場",
+          reason: simulatedNonRecommended ? "已建立模擬掛單（非建議）" : "已建立條件掛單，等待條件成立後進場",
           pendingOrder: result.pendingOrder,
           unmetConditions: [],
           distances: [],
@@ -2604,8 +2610,17 @@ export default function CryptoSignalWebApp() {
   };
 
   const simulationButtonState = useMemo(
-    () => getSimulationButtonState(analysis?.aiDecisionOutput, paperCurrentPrice),
-    [analysis?.aiDecisionOutput, paperCurrentPrice]
+    () =>
+      getSimulationButtonState(analysis?.aiDecisionOutput, paperCurrentPrice, {
+        rsi: analysis?.rsi,
+        macd: analysis?.macd,
+        currentVolume: Number(currentCandle?.volume ?? candles?.[candles.length - 1]?.volume),
+        avgVolume20: (() => {
+          const recentVolumes = (candles || []).slice(-20).map((c) => Number(c.volume)).filter((v) => Number.isFinite(v));
+          return recentVolumes.length ? recentVolumes.reduce((sum, v) => sum + v, 0) / recentVolumes.length : null;
+        })(),
+      }),
+    [analysis?.aiDecisionOutput, paperCurrentPrice, analysis?.rsi, analysis?.macd, currentCandle?.volume, candles]
   );
 
   return (
