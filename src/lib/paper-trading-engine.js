@@ -4,6 +4,7 @@ const DEFAULT_POSITION_SIZE = 50;
 const TRAP_BLOCK_CONFIDENCE = new Set(["MEDIUM", "HIGH", "中", "高"]);
 const LEVEL_CHANGE_TOLERANCE_RATIO = 0.001;
 const MAX_CANCELLED_ORDERS_HISTORY = 50;
+const DECISION_STALE_MS = 30 * 60 * 1000;
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -78,7 +79,89 @@ function resolveSideFromDecision(decision) {
   const action = String(decision?.action ?? decision?.executionPlan?.action ?? "").toUpperCase();
   if (action === "LONG" || action === "BUY") return "LONG";
   if (action === "SHORT" || action === "SELL") return "SHORT";
+  const preferredSide = String(
+    decision?.executionPlan?.preferredSide ??
+      decision?.preferredSide ??
+      decision?.biasSide ??
+      ""
+  ).toUpperCase();
+  if (preferredSide === "LONG") return "LONG";
+  if (preferredSide === "SHORT") return "SHORT";
   return null;
+}
+
+function isDecisionContextStale(decision) {
+  const generatedAt = decision?.generatedAt ?? decision?.timestamp ?? decision?.decisionAt;
+  if (!generatedAt) return false;
+  const parsed = new Date(generatedAt).getTime();
+  if (!Number.isFinite(parsed)) return false;
+  return Date.now() - parsed > DECISION_STALE_MS;
+}
+
+export function getSimulationEligibility(decision, currentPrice) {
+  if (!decision) {
+    return {
+      eligibility: "BLOCKED",
+      reasonCode: "NO_DECISION",
+      reason: "尚未產生可執行決策",
+    };
+  }
+
+  const side = resolveSideFromDecision(decision);
+  const action = String(decision?.action ?? decision?.executionPlan?.action ?? "").toUpperCase();
+  const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
+  const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
+  const invalidationPrice = normalizeNumber(decision?.executionPlan?.invalidationPrice ?? decision?.invalidationPrice);
+  const markPrice = normalizeNumber(currentPrice);
+  const confirmationStrength = String(
+    decision?.triggerEngine?.confirmationStrength ?? decision?.entryTiming ?? ""
+  ).toUpperCase();
+
+  if (isDecisionContextStale(decision)) {
+    return { eligibility: "BLOCKED", reasonCode: "STALE_CONTEXT", reason: "決策內容已過期，請先重新整理資料" };
+  }
+
+  if (!side) {
+    return { eligibility: "BLOCKED", reasonCode: "SKIP_NO_ACTIONABLE_SIDE", reason: "缺少可執行方向" };
+  }
+  if (setupType === "no_setup" || setupType === "no-trade") {
+    return { eligibility: "BLOCKED", reasonCode: "NO_SETUP", reason: "無有效 setup，未執行" };
+  }
+  if (!Number.isFinite(triggerPrice)) {
+    return { eligibility: "BLOCKED", reasonCode: "MISSING_TRIGGER", reason: "缺少觸發價格，無法建立掛單" };
+  }
+  if (!Number.isFinite(invalidationPrice)) {
+    return { eligibility: "BLOCKED", reasonCode: "MISSING_INVALIDATION", reason: "缺少失效價格，無法定義風險" };
+  }
+  if (isTrapBlockingEntry(decision, side)) {
+    return { eligibility: "BLOCKED", reasonCode: "BLOCKED_BY_TRAP", reason: "誘多 / 誘空風險阻擋執行" };
+  }
+
+  if (Number.isFinite(markPrice)) {
+    const invalidForLong = side === "LONG" && markPrice <= invalidationPrice;
+    const invalidForShort = side === "SHORT" && markPrice >= invalidationPrice;
+    if (invalidForLong || invalidForShort) {
+      return { eligibility: "BLOCKED", reasonCode: "SETUP_ALREADY_INVALIDATED", reason: "策略已失效，不建立掛單" };
+    }
+  }
+
+  const triggerHit = Number.isFinite(markPrice)
+    ? (side === "LONG" ? markPrice >= triggerPrice : markPrice <= triggerPrice)
+    : false;
+
+  if (triggerHit && action !== "HOLD") {
+    return { eligibility: "READY_TO_EXECUTE", reasonCode: "TRIGGER_READY", reason: "觸發條件已成立，可立即進場" };
+  }
+
+  if (action === "HOLD" && (confirmationStrength === "NO_SETUP" || confirmationStrength === "TOO_LATE")) {
+    return { eligibility: "BLOCKED", reasonCode: "STRUCTURE_INVALID", reason: "結構條件不足，暫不建立掛單" };
+  }
+
+  return {
+    eligibility: "READY_TO_PLACE_PENDING",
+    reasonCode: "WAITING_TRIGGER",
+    reason: `目前尚未觸發，等待價格${side === "LONG" ? "突破" : "跌破"} ${triggerPrice}`,
+  };
 }
 
 function normalizeDirectionalLevels({ side, referencePrice, stopLoss, takeProfit1, takeProfit2, takeProfit3 }) {
@@ -338,6 +421,11 @@ export function simulateDecisionExecution({
     return { state, result: "NO_DECISION" };
   }
 
+  const eligibilityInfo = getSimulationEligibility(decision, currentPrice);
+  if (eligibilityInfo.eligibility === "BLOCKED") {
+    return { state, result: eligibilityInfo.reasonCode, eligibilityInfo };
+  }
+
   const side = resolveSideFromDecision(decision);
   const triggerPrice = normalizeNumber(decision.executionPlan?.triggerPrice ?? decision.triggerPrice);
   const invalidationPrice = normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice);
@@ -351,30 +439,8 @@ export function simulateDecisionExecution({
     takeProfit3: decision.executionPlan?.takeProfit3 ?? decision.takeProfit3,
   });
 
-  if (!side) {
-    if (!triggerPrice) return { state, result: "SKIP_HOLD_NO_TRIGGER" };
-    return { state, result: "SKIP_NO_ACTIONABLE_SIDE" };
-  }
-
-  if (side && isTrapBlockingEntry(decision, side)) {
-    return { state, result: "BLOCKED_BY_TRAP" };
-  }
-
   if (isDuplicateContext(state, symbol, timeframe, contextKey)) {
     return { state, result: "DUPLICATE_SETUP" };
-  }
-
-  if (triggerPrice == null) {
-    return { state, result: "MISSING_TRIGGER" };
-  }
-
-  const markPrice = asSafeNumber(currentPrice);
-  if (invalidationPrice != null) {
-    const invalidForLong = side === "LONG" && markPrice <= invalidationPrice;
-    const invalidForShort = side === "SHORT" && markPrice >= invalidationPrice;
-    if (invalidForLong || invalidForShort) {
-      return { state, result: "SETUP_ALREADY_INVALIDATED" };
-    }
   }
 
   const pendingOrder = {
@@ -391,17 +457,58 @@ export function simulateDecisionExecution({
     quantity: asSafeNumber(quantity, DEFAULT_POSITION_SIZE),
     createdAt: nowIso(),
     status: "PENDING",
+    waitReason: eligibilityInfo.reason,
     entryReason: decision.entryReason || null,
     decisionSnapshot: decision,
     decisionContextKey: contextKey,
   };
+
+  if (eligibilityInfo.eligibility === "READY_TO_EXECUTE") {
+    const timestamp = nowIso();
+    const entryPrice = asSafeNumber(currentPrice, triggerPrice);
+    const quantityValue = asSafeNumber(quantity, DEFAULT_POSITION_SIZE);
+    const position = {
+      id: createId("pos"),
+      symbol,
+      timeframe,
+      side,
+      status: "OPEN",
+      entryPrice,
+      triggerPrice,
+      currentPrice: entryPrice,
+      quantity: quantityValue,
+      notional: quantityValue * entryPrice,
+      leverage: DEFAULT_LEVERAGE,
+      stopLoss: normalizedLevels.stopLoss,
+      takeProfit1: normalizedLevels.takeProfit1,
+      takeProfit2: normalizedLevels.takeProfit2,
+      takeProfit3: normalizedLevels.takeProfit3,
+      invalidationPrice,
+      openedAt: timestamp,
+      unrealizedPnl: 0,
+      entryReason: decision.entryReason || null,
+      decisionSnapshot: decision,
+      decisionContextKey: contextKey,
+      hitTargets: [],
+    };
+
+    return {
+      state: recalculateAccountState({
+        ...state,
+        openPositions: [position, ...state.openPositions],
+      }),
+      result: "EXECUTED_IMMEDIATELY",
+      position,
+      eligibilityInfo,
+    };
+  }
 
   const nextState = recalculateAccountState({
     ...state,
     pendingOrders: [pendingOrder, ...state.pendingOrders],
   });
 
-  return { state: nextState, result: "PENDING_CREATED", pendingOrder };
+  return { state: nextState, result: "PENDING_CREATED", pendingOrder, eligibilityInfo };
 }
 
 export function reconcilePendingOrdersWithDecision({

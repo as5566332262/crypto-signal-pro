@@ -148,13 +148,13 @@ export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber }) 
   return (
     <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">掛單中（Pending）</CardTitle>
+        <CardTitle className="text-sm">條件掛單（等待觸發）</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs">
         {pendingOrders.length ? (
           pendingOrders.slice(0, 6).map((order) => (
             <div key={order.id} className="space-y-1.5 rounded-lg border border-sky-100 bg-sky-50/40 p-2 text-slate-600">
-              <div className="font-semibold text-sky-700">狀態：掛單中</div>
+              <div className="font-semibold text-sky-700">狀態：掛單中（等待觸發）</div>
               <div className="font-semibold text-slate-800">{order.symbol} {sideLabel(order.side)}</div>
               <StatRow label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
               <StatRow label="數量" value={`${formatNumber(order.quantity, 2)} ${order.symbol.replace("USDT", "")}`} />
@@ -163,6 +163,7 @@ export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber }) 
               <StatRow label="TP2" value={formatNumber(order.takeProfit2, paperDigits)} />
               <StatRow label="TP3" value={formatNumber(order.takeProfit3, paperDigits)} />
               <StatRow label="失效價格" value={formatNumber(order.invalidationPrice, paperDigits)} />
+              <div className="text-slate-700">原因：{order.waitReason || `尚未觸發，等待價格${order.side === "SHORT" ? "跌破" : "突破"} ${formatNumber(order.triggerPrice, paperDigits)}`}</div>
               <div className="space-y-1">
                 <div className="text-slate-500">進場依據</div>
                 {formatEntryReason(order.entryReason).map((line) => (
@@ -346,6 +347,13 @@ export default function PaperTradingSidebar({
                   </span>
                 </div>
                 <div className="text-slate-700">原因：{simulationExecutionStatus?.reason || "-"}</div>
+                {simulationExecutionStatus?.pendingOrder ? (
+                  <div className="rounded-lg border border-sky-200 bg-sky-50 p-2 text-slate-700">
+                    <div>掛單方向：{sideLabel(simulationExecutionStatus.pendingOrder.side)}</div>
+                    <div>觸發價格：{formatNumber(simulationExecutionStatus.pendingOrder.triggerPrice, paperDigits)}</div>
+                    <div>失效價格：{formatNumber(simulationExecutionStatus.pendingOrder.invalidationPrice, paperDigits)}</div>
+                  </div>
+                ) : null}
                 {simulationExecutionStatus?.unmetConditions?.length ? (
                   <div>
                     <div className="mb-1 text-slate-500">未成立條件</div>

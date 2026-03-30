@@ -3,6 +3,7 @@ import {
   applyMarketTickToPaperState,
   closePositionManually,
   createInitialPaperAccountState,
+  getSimulationEligibility,
   reconcilePendingOrdersWithDecision,
   resetPaperTradingState,
   simulateDecisionExecution,
@@ -208,7 +209,10 @@ function mapExecutionBlockedReason(resultCode, decision) {
     BLOCKED_BY_TRAP: "誘多 / 誘空風險阻擋執行",
     DUPLICATE_SETUP: "同一 setup 已存在掛單或持倉",
     MISSING_TRIGGER: "觸發條件尚未成立",
+    MISSING_INVALIDATION: "缺少失效價格，風險無法定義",
     SETUP_ALREADY_INVALIDATED: "無有效 setup，未執行",
+    STALE_CONTEXT: "決策內容已過期，請先重新整理",
+    STRUCTURE_INVALID: "結構條件不足，暫不建立掛單",
     NO_DECISION: "尚未產生可執行決策",
   };
   return reasonMap[resultCode] || "條件不足，暫不執行";
@@ -262,17 +266,19 @@ function getSimulationButtonState(decision) {
     };
   }
 
-  const action = String(decision?.action || decision?.executionPlan?.action || "").toUpperCase();
-  const triggerPrice = Number(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
-  const setupType = String(decision?.setupType || decision?.executionPlan?.setupType || "").toLowerCase();
-
-  if (setupType === "no_setup" || setupType === "no-trade") {
-    return { disabled: true, disabledReason: "無有效 setup，未執行" };
+  const eligibilityInfo = getSimulationEligibility(decision);
+  if (eligibilityInfo.eligibility === "BLOCKED") {
+    return {
+      disabled: true,
+      disabledReason: eligibilityInfo.reason,
+      eligibility: eligibilityInfo.eligibility,
+    };
   }
-  if ((action === "HOLD" || !action) && !Number.isFinite(triggerPrice)) {
-    return { disabled: true, disabledReason: "AI 決策目前為「不交易」" };
-  }
-  return { disabled: false, disabledReason: "" };
+  return {
+    disabled: false,
+    disabledReason: "",
+    eligibility: eligibilityInfo.eligibility,
+  };
 }
 
 function calculateATR(candles, period = 14) {
@@ -1630,6 +1636,7 @@ function buildAiDecisionOutput({
   return {
     symbol,
     action,
+    generatedAt: new Date().toISOString(),
     confidence: localizeConfidence(adjustedConfidenceLevel),
     risk: riskLevel,
     summary,
@@ -1637,6 +1644,7 @@ function buildAiDecisionOutput({
     mtfBias: mtfBiasObject,
     executionPlan: {
       action,
+      preferredSide: bias === "偏空" ? "SHORT" : bias === "偏多" ? "LONG" : undefined,
       currentActionLabel:
         action === "LONG" ? "偏多劇本：等待觸發後執行做多" : action === "SHORT" ? "偏空劇本：等待觸發後執行做空" : "目前動作：觀望，等待條件完成",
       rangeHigh,
@@ -2428,7 +2436,7 @@ export default function CryptoSignalWebApp() {
     if (!analysis?.aiDecisionOutput || !paperCurrentPrice) {
       setSimulationExecutionStatus({
         status: "BLOCKED",
-        statusLabel: "BLOCKED",
+        statusLabel: "模擬執行被阻擋",
         reason: "尚未取得即時價格或 AI 決策",
         unmetConditions: [],
         distances: [],
@@ -2444,7 +2452,7 @@ export default function CryptoSignalWebApp() {
       const latestVolume = Number(currentCandle?.volume ?? candles?.[candles.length - 1]?.volume);
       let nextFeedback = {
         status: "BLOCKED",
-        statusLabel: "BLOCKED",
+        statusLabel: "模擬執行被阻擋",
         reason: "觸發條件尚未成立",
         unmetConditions: [],
         distances: [],
@@ -2479,20 +2487,21 @@ export default function CryptoSignalWebApp() {
       const prevOpenCount = prev.openPositions.filter((position) => position.symbol === paperMarketSymbol && position.timeframe === timeframe).length;
       const nextOpenCount = executedState.openPositions.filter((position) => position.symbol === paperMarketSymbol && position.timeframe === timeframe).length;
 
-      if (nextOpenCount > prevOpenCount) {
+      if (result.result === "EXECUTED_IMMEDIATELY" || nextOpenCount > prevOpenCount) {
         nextFeedback = {
           status: "EXECUTED",
-          statusLabel: "EXECUTED",
-          reason: "掛單觸發成功，已建立持倉",
+          statusLabel: "已立即模擬進場",
+          reason: "觸發條件已成立，系統已建立持倉",
           unmetConditions: [],
           distances: [],
           timestamp: new Date().toISOString(),
         };
       } else if (result.result === "PENDING_CREATED") {
         nextFeedback = {
-          status: "EXECUTED",
-          statusLabel: "EXECUTED",
-          reason: "已建立待觸發模擬掛單",
+          status: "PENDING",
+          statusLabel: "已建立條件掛單",
+          reason: `目前尚未觸發，但 setup 有效，等待價格${result.pendingOrder?.side === "SHORT" ? "跌破" : "突破"} ${formatNumber(result.pendingOrder?.triggerPrice, digits)}`,
+          pendingOrder: result.pendingOrder,
           unmetConditions: [],
           distances: [],
           timestamp: new Date().toISOString(),
@@ -2500,7 +2509,7 @@ export default function CryptoSignalWebApp() {
       } else if (cancelledCount > 0) {
         nextFeedback = {
           status: "BLOCKED",
-          statusLabel: "BLOCKED",
+          statusLabel: "模擬執行被阻擋",
           reason: mapCancelReasonLabel(latestCancelled?.cancelReason),
           unmetConditions: [],
           distances: [],
@@ -2509,7 +2518,7 @@ export default function CryptoSignalWebApp() {
       } else if (String(analysis.aiDecisionOutput?.setupType || "").toLowerCase() === "no_setup") {
         nextFeedback = {
           status: "SKIPPED",
-          statusLabel: "SKIPPED",
+          statusLabel: "模擬執行被阻擋",
           reason: "策略條件不足，系統未建立模擬單",
           unmetConditions: [],
           distances: [],
@@ -2526,7 +2535,7 @@ export default function CryptoSignalWebApp() {
         const skippedByAi = action === "HOLD" || ["SKIP_HOLD_NO_TRIGGER", "SKIP_NO_ACTIONABLE_SIDE"].includes(result.result);
         nextFeedback = {
           status: skippedByAi ? "SKIPPED" : "BLOCKED",
-          statusLabel: skippedByAi ? "SKIPPED" : "BLOCKED",
+          statusLabel: skippedByAi ? "模擬執行被阻擋" : "模擬執行被阻擋",
           reason: mapExecutionBlockedReason(result.result, analysis.aiDecisionOutput),
           unmetConditions: diagnostics.unmetConditions,
           distances: diagnostics.distances,
