@@ -1,3 +1,5 @@
+import { mapDecisionTypeToExecutionIntent, runConfirmationEngine } from "@/lib/decision/confirmation-engine";
+
 const DEFAULT_BALANCE = 5000;
 const DEFAULT_LEVERAGE = 1;
 const DEFAULT_POSITION_SIZE = 50;
@@ -97,6 +99,27 @@ function shouldBypassSetupGate(options = {}) {
   const executionSource = String(options?.executionSource || "").toLowerCase();
   const orderMode = String(options?.orderMode || "").toLowerCase();
   return executionSource === "simulation_manual" || orderMode === "simulation";
+}
+
+function buildConfirmationPayload(decision, currentPrice, signalContext = {}) {
+  return {
+    aiDecisionOutput: decision,
+    currentPrice,
+    indicators: {
+      rsi: signalContext?.rsi,
+      macd: signalContext?.macd,
+      macdHistogram: signalContext?.macdHistogram,
+      currentVolume: signalContext?.currentVolume,
+      avgVolume20: signalContext?.avgVolume20,
+      candleClose: signalContext?.candleClose,
+      close: signalContext?.candleClose,
+      klineConfirmed: signalContext?.klineConfirmed,
+      breakoutConfirmed: signalContext?.breakoutConfirmed,
+      volumeConfirmed: signalContext?.volumeConfirmed,
+    },
+    structure: signalContext?.structure ?? decision?.structure ?? decision?.executionPlan?.structure ?? {},
+    mtf: signalContext?.mtf ?? decision?.mtf ?? decision?.multiTimeframe ?? {},
+  };
 }
 
 function resolveManualSimulationSide(decision) {
@@ -209,11 +232,15 @@ function evaluateImmediateExecutionReadiness({ decision, side, triggerPrice, mar
 
 export function getSimulationEligibility(decision, currentPrice, signalContext = {}, options = {}) {
   const bypassSetupGate = shouldBypassSetupGate(options);
+  const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
+  const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType);
   if (!decision) {
     return {
-      eligibility: "BLOCKED",
+      eligibility: bypassSetupGate ? "WATCH_ONLY" : "BLOCKED",
       reasonCode: "NO_DECISION",
-      reason: "尚未產生可執行決策",
+      reason: bypassSetupGate ? "尚未產生可執行決策，已轉為觀察模式" : "尚未產生可執行決策",
+      executionIntent: "WATCH_ONLY",
+      confirmationResult,
     };
   }
 
@@ -223,18 +250,17 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
   const markPrice = normalizeNumber(currentPrice);
 
   if (bypassSetupGate) {
-    const readyResult = {
-      eligibility: "READY_TO_EXECUTE",
-      reasonCode: "SIMULATION_MANUAL_BYPASS",
-      reason: "手動模擬：略過 setup gate 直接建立倉位",
-      executionReadiness: {
-        readyToExecute: true,
-        triggerHit: true,
-        rsiConfirmed: true,
-        volumeConfirmed: true,
-        macdConfirmed: true,
-        unmetConditions: [],
-      },
+    const manualResult = {
+      eligibility:
+        executionIntent === "EXECUTE_NOW"
+          ? "READY_TO_EXECUTE"
+          : executionIntent === "PLACE_PENDING"
+            ? "READY_TO_PLACE_PENDING"
+            : executionIntent,
+      reasonCode: "SIMULATION_MANUAL_ROUTED",
+      reason: "手動模擬：永不阻擋，僅調整為立即 / 掛單 / 觀察流程",
+      executionIntent,
+      confirmationResult,
       bypassSetupGate: true,
       bypassedMissingSide: !side,
     };
@@ -243,9 +269,9 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
       orderMode: options?.orderMode || null,
       bypassSetupGate,
       sideDetected: side || null,
-      result: readyResult,
+      result: manualResult,
     });
-    return readyResult;
+    return manualResult;
   }
 
   if (!side) {
@@ -281,14 +307,18 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
       eligibility: "READY_TO_EXECUTE",
       reasonCode: "TRIGGER_READY",
       reason: "觸發與確認條件皆成立，可立即進場",
+      executionIntent: "EXECUTE_NOW",
+      confirmationResult,
       executionReadiness,
     };
   }
 
   return {
-    eligibility: "READY_TO_PLACE_PENDING",
+    eligibility: executionIntent === "EXECUTE_NOW" ? "READY_TO_PLACE_PENDING" : executionIntent,
     reasonCode: "WAITING_CONFIRMATION",
     reason: "已建立條件掛單，等待條件成立後進場",
+    executionIntent: executionIntent === "EXECUTE_NOW" ? "PLACE_PENDING" : executionIntent,
+    confirmationResult,
     executionReadiness,
   };
 }
@@ -502,6 +532,25 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
     }
     if (!shouldFillOrder(order, tickPrice)) return order;
 
+    const confirmation = runConfirmationEngine(
+      buildConfirmationPayload(order.decisionSnapshot, tickPrice, {
+        rsi,
+        macd,
+        currentVolume: order?.placementSnapshot?.currentVolume,
+        avgVolume20: order?.placementSnapshot?.avgVolume20,
+        candleClose,
+        structure: order?.placementSnapshot?.structure,
+        mtf: order?.placementSnapshot?.mtf,
+      })
+    );
+    if (!confirmation.canExecute) {
+      return {
+        ...order,
+        lastConfirmation: confirmation,
+        waitReason: "等待 confirmation-engine 條件成立",
+      };
+    }
+
     const entryPrice = asSafeNumber(candleClose ?? tickPrice, order.triggerPrice);
     const normalizedLevels = normalizeDirectionalLevels({
       side: order.side,
@@ -610,12 +659,28 @@ export function simulateDecisionExecution({
   executionSource = "",
   orderMode = "",
 }) {
-  if (!decision || !state) {
+  if (!state) {
     return { state, result: "NO_DECISION" };
   }
 
   const executionOptions = { executionSource, orderMode };
   const bypassSetupGate = shouldBypassSetupGate(executionOptions);
+  if (!decision) {
+    return bypassSetupGate
+      ? {
+        state,
+        result: "WATCH_ONLY",
+        executionIntent: "WATCH_ONLY",
+        eligibilityInfo: {
+          eligibility: "WATCH_ONLY",
+          reasonCode: "NO_DECISION",
+          reason: "尚未產生可執行決策，已進入觀察模式",
+        },
+      }
+      : { state, result: "NO_DECISION" };
+  }
+  const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
+  const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType);
   console.debug("[paper-engine:simulateDecisionExecution:before-validator]", {
     symbol,
     timeframe,
@@ -648,7 +713,7 @@ export function simulateDecisionExecution({
     };
   }
 
-  if (effectiveEligibility.eligibility === "BLOCKED") {
+  if (effectiveEligibility.eligibility === "BLOCKED" && !bypassSetupGate) {
     return { state, result: effectiveEligibility.reasonCode, eligibilityInfo: effectiveEligibility };
   }
 
@@ -666,6 +731,19 @@ export function simulateDecisionExecution({
   });
   const triggerPrice = normalizeNumber(constrainedEntry.entryPrice ?? fallbackEntryPrice);
   if (constrainedEntry.isRejected) {
+    if (bypassSetupGate) {
+      return {
+        state,
+        result: "WATCH_AND_ARM",
+        executionIntent: "WATCH_AND_ARM",
+        confirmationResult,
+        eligibilityInfo: {
+          ...effectiveEligibility,
+          reasonCode: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
+          reason: "掛單距離不合理，已轉為等待確認模式",
+        },
+      };
+    }
     return {
       state,
       result: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
@@ -692,6 +770,19 @@ export function simulateDecisionExecution({
   });
 
   if (isDuplicateContext(state, symbol, timeframe, contextKey)) {
+    if (bypassSetupGate) {
+      return {
+        state,
+        result: "WATCH_AND_ARM",
+        executionIntent: "WATCH_AND_ARM",
+        confirmationResult,
+        eligibilityInfo: {
+          ...effectiveEligibility,
+          reasonCode: "DUPLICATE_SETUP",
+          reason: "同一 setup 已存在，保留既有單並持續監控",
+        },
+      };
+    }
     return { state, result: "DUPLICATE_SETUP" };
   }
 
@@ -725,6 +816,10 @@ export function simulateDecisionExecution({
       atr: normalizeNumber(decision?.executionPlan?.atr ?? decision?.atr),
       rsi: normalizeNumber(decision?.rsi),
       volumeState: decision?.volumeState ?? null,
+      currentVolume: normalizeNumber(signalContext?.currentVolume),
+      avgVolume20: normalizeNumber(signalContext?.avgVolume20),
+      structure: signalContext?.structure ?? decision?.structure ?? null,
+      mtf: signalContext?.mtf ?? decision?.mtf ?? null,
       decisionAction: decision?.action ?? decision?.executionPlan?.action ?? null,
       setupType: decision?.setupType ?? decision?.executionPlan?.setupType ?? null,
     },
@@ -732,7 +827,35 @@ export function simulateDecisionExecution({
     decisionContextKey: contextKey,
   };
 
-  if (effectiveEligibility.eligibility === "READY_TO_EXECUTE") {
+  if (executionIntent === "WATCH_ONLY") {
+    return {
+      state,
+      result: "WATCH_ONLY",
+      executionIntent,
+      confirmationResult,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        executionIntent,
+        confirmationResult,
+      },
+    };
+  }
+
+  if (executionIntent === "WATCH_AND_ARM") {
+    return {
+      state,
+      result: "WATCH_AND_ARM",
+      executionIntent,
+      confirmationResult,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        executionIntent,
+        confirmationResult,
+      },
+    };
+  }
+
+  if (effectiveEligibility.eligibility === "READY_TO_EXECUTE" || (executionIntent === "EXECUTE_NOW" && confirmationResult.canExecute)) {
     const timestamp = nowIso();
     const entryPrice = asSafeNumber(triggerPrice, currentPrice);
     const quantityValue = asSafeNumber(quantity, DEFAULT_POSITION_SIZE);
@@ -770,6 +893,8 @@ export function simulateDecisionExecution({
         openPositions: [position, ...state.openPositions],
       }),
       result: "EXECUTED_IMMEDIATELY",
+      executionIntent: "EXECUTE_NOW",
+      confirmationResult,
       position,
       eligibilityInfo: effectiveEligibility,
     };
@@ -780,7 +905,14 @@ export function simulateDecisionExecution({
     pendingOrders: [pendingOrder, ...state.pendingOrders],
   });
 
-  return { state: nextState, result: "PENDING_CREATED", pendingOrder, eligibilityInfo: effectiveEligibility };
+  return {
+    state: nextState,
+    result: "PENDING_CREATED",
+    executionIntent: "PLACE_PENDING",
+    confirmationResult,
+    pendingOrder,
+    eligibilityInfo: effectiveEligibility,
+  };
 }
 
 export function reconcilePendingOrdersWithDecision({
