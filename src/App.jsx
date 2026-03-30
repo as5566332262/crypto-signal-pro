@@ -211,6 +211,8 @@ function mapExecutionBlockedReason(resultCode, decision) {
     SKIP_HOLD_NO_TRIGGER: "AI 決策目前為「不交易」",
     SKIP_NO_ACTIONABLE_SIDE: "觸發條件尚未成立",
     BLOCKED_BY_TRAP: "誘多 / 誘空風險阻擋執行",
+    CONDITIONAL_CONFIRMATION_REQUIRED: "需等待進入區間後的轉強/轉弱 K 線確認，暫不進場",
+    WAITING_ENTRY_ZONE: "目前屬於等待/回踩/區間進場，已改為條件單流程",
     DUPLICATE_SETUP: "同一 setup 已存在掛單或持倉",
     MISSING_TRIGGER: "觸發條件尚未成立",
     MISSING_INVALIDATION: "缺少失效價格，風險無法定義",

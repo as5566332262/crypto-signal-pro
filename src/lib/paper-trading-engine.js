@@ -8,6 +8,24 @@ const DECISION_STALE_MS = 30 * 60 * 1000;
 const DEFAULT_PENDING_EXPIRY_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_SHORT_BREAKDOWN_ATR_RATIO = 0.2;
 const DEFAULT_PENDING_DRIFT_ATR_RATIO = 2;
+const CONDITIONAL_ENTRY_KEYWORDS = [
+  "回到進場區",
+  "等待反彈",
+  "等待回踩",
+  "進入壓力區",
+  "進入支撐區",
+  "壓力區",
+  "支撐區",
+  "轉強",
+  "轉弱",
+  "確認",
+  "pullback",
+  "retest",
+  "zone",
+  "wait",
+  "pending",
+];
+const CONFIRMATION_KEYWORDS = ["轉強", "轉弱", "確認", "confirmation", "confirm", "k 線", "k線", "candle"];
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -126,6 +144,43 @@ function resolveEntryMode(decision) {
   return "breakout";
 }
 
+function includesKeyword(value, keywords) {
+  const text = String(value || "").toLowerCase();
+  if (!text) return false;
+  return keywords.some((keyword) => text.includes(String(keyword).toLowerCase()));
+}
+
+function resolveDecisionExecutionIntent(decision) {
+  const finalDecision = String(decision?.finalDecision ?? decision?.decision ?? "").toUpperCase();
+  const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
+  const entryTiming = String(decision?.entryTiming ?? "").toUpperCase();
+  const plan = decision?.executionPlan || {};
+  const textFields = [
+    decision?.summary,
+    decision?.entryReason?.breakoutBreakdownCondition,
+    decision?.entryReason?.indicatorCondition,
+    plan?.currentActionLabel,
+    ...(plan?.nextConfirmationRules || []),
+    ...(plan?.retestConfirmationRules || []),
+    ...(decision?.waitConditions || []),
+  ];
+  const containsConditionalKeyword = textFields.some((field) => includesKeyword(field, CONDITIONAL_ENTRY_KEYWORDS));
+  const requiresCandleConfirmation = textFields.some((field) => includesKeyword(field, CONFIRMATION_KEYWORDS));
+  const isImmediateSetup = setupType === "breakout" || setupType === "momentum";
+  const hasWaitTiming =
+    entryTiming.includes("WAIT") || entryTiming.includes("PULLBACK") || entryTiming.includes("RETEST");
+  const isWaitDecision = finalDecision === "WAIT";
+
+  if (!isWaitDecision && isImmediateSetup && !hasWaitTiming && !containsConditionalKeyword) {
+    return { type: "IMMEDIATE", requiresCandleConfirmation: false };
+  }
+
+  return {
+    type: requiresCandleConfirmation ? "CONDITIONAL_WITH_CONFIRMATION" : "CONDITIONAL",
+    requiresCandleConfirmation,
+  };
+}
+
 function resolvePlannedEntryPrice(decision, side) {
   const mode = resolveEntryMode(decision);
   const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
@@ -221,32 +276,7 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
   const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
   const invalidationPrice = normalizeNumber(decision?.executionPlan?.invalidationPrice ?? decision?.invalidationPrice);
   const markPrice = normalizeNumber(currentPrice);
-
-  if (bypassSetupGate) {
-    const readyResult = {
-      eligibility: "READY_TO_EXECUTE",
-      reasonCode: "SIMULATION_MANUAL_BYPASS",
-      reason: "手動模擬：略過 setup gate 直接建立倉位",
-      executionReadiness: {
-        readyToExecute: true,
-        triggerHit: true,
-        rsiConfirmed: true,
-        volumeConfirmed: true,
-        macdConfirmed: true,
-        unmetConditions: [],
-      },
-      bypassSetupGate: true,
-      bypassedMissingSide: !side,
-    };
-    console.debug("[paper-engine:getSimulationEligibility]", {
-      executionSource: options?.executionSource || null,
-      orderMode: options?.orderMode || null,
-      bypassSetupGate,
-      sideDetected: side || null,
-      result: readyResult,
-    });
-    return readyResult;
-  }
+  const executionIntent = resolveDecisionExecutionIntent(decision);
 
   if (!side) {
     return { eligibility: "BLOCKED", reasonCode: "SKIP_NO_ACTIONABLE_SIDE", reason: "缺少可執行方向" };
@@ -269,6 +299,32 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
     }
   }
 
+  if (executionIntent.type === "CONDITIONAL_WITH_CONFIRMATION") {
+    return {
+      eligibility: "BLOCKED",
+      reasonCode: "CONDITIONAL_CONFIRMATION_REQUIRED",
+      reason: "策略要求區間進場後再等 K 線確認，暫不建立單一價格掛單",
+      executionIntent,
+    };
+  }
+
+  if (executionIntent.type === "CONDITIONAL") {
+    return {
+      eligibility: "READY_TO_PLACE_PENDING",
+      reasonCode: "WAITING_ENTRY_ZONE",
+      reason: "目前屬於等待/回踩/區間進場，先建立條件掛單",
+      executionIntent,
+      executionReadiness: {
+        readyToExecute: false,
+        triggerHit: false,
+        rsiConfirmed: false,
+        volumeConfirmed: false,
+        macdConfirmed: false,
+        unmetConditions: ["CONDITIONAL_ENTRY_NOT_IMMEDIATE"],
+      },
+    };
+  }
+
   const executionReadiness = evaluateImmediateExecutionReadiness({
     decision,
     side,
@@ -282,6 +338,7 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
       reasonCode: "TRIGGER_READY",
       reason: "觸發與確認條件皆成立，可立即進場",
       executionReadiness,
+      executionIntent,
     };
   }
 
@@ -290,6 +347,7 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
     reasonCode: "WAITING_CONFIRMATION",
     reason: "已建立條件掛單，等待條件成立後進場",
     executionReadiness,
+    executionIntent,
   };
 }
 
