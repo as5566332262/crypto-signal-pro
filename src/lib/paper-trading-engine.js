@@ -93,6 +93,12 @@ function resolveSideFromDecision(decision) {
   return null;
 }
 
+function shouldBypassSetupGate(options = {}) {
+  const executionSource = String(options?.executionSource || "").toLowerCase();
+  const orderMode = String(options?.orderMode || "").toLowerCase();
+  return executionSource === "simulation_manual" || orderMode === "simulation";
+}
+
 function resolveEntryMode(decision) {
   const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
   if (setupType === "breakout") return "breakout";
@@ -181,7 +187,8 @@ function evaluateImmediateExecutionReadiness({ decision, side, triggerPrice, mar
   };
 }
 
-export function getSimulationEligibility(decision, currentPrice, signalContext = {}) {
+export function getSimulationEligibility(decision, currentPrice, signalContext = {}, options = {}) {
+  const bypassSetupGate = shouldBypassSetupGate(options);
   if (!decision) {
     return {
       eligibility: "BLOCKED",
@@ -198,22 +205,39 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
   if (!side) {
     return { eligibility: "BLOCKED", reasonCode: "SKIP_NO_ACTIONABLE_SIDE", reason: "缺少可執行方向" };
   }
-  if (!Number.isFinite(triggerPrice)) {
+  if (!Number.isFinite(triggerPrice) && !bypassSetupGate) {
     return { eligibility: "BLOCKED", reasonCode: "MISSING_TRIGGER", reason: "缺少觸發價格，無法建立掛單" };
   }
-  if (!Number.isFinite(invalidationPrice)) {
+  if (!Number.isFinite(invalidationPrice) && !bypassSetupGate) {
     return { eligibility: "BLOCKED", reasonCode: "MISSING_INVALIDATION", reason: "缺少失效價格，無法定義風險" };
   }
-  if (isTrapBlockingEntry(decision, side)) {
+  if (isTrapBlockingEntry(decision, side) && !bypassSetupGate) {
     return { eligibility: "BLOCKED", reasonCode: "BLOCKED_BY_TRAP", reason: "誘多 / 誘空風險阻擋執行" };
   }
 
-  if (Number.isFinite(markPrice)) {
+  if (Number.isFinite(markPrice) && !bypassSetupGate) {
     const invalidForLong = side === "LONG" && markPrice <= invalidationPrice;
     const invalidForShort = side === "SHORT" && markPrice >= invalidationPrice;
     if (invalidForLong || invalidForShort) {
       return { eligibility: "BLOCKED", reasonCode: "SETUP_ALREADY_INVALIDATED", reason: "策略已失效，不建立掛單" };
     }
+  }
+
+  if (bypassSetupGate) {
+    return {
+      eligibility: "READY_TO_EXECUTE",
+      reasonCode: "SIMULATION_MANUAL_BYPASS",
+      reason: "手動模擬：略過 setup gate 直接建立倉位",
+      executionReadiness: {
+        readyToExecute: true,
+        triggerHit: true,
+        rsiConfirmed: true,
+        volumeConfirmed: true,
+        macdConfirmed: true,
+        unmetConditions: [],
+      },
+      bypassSetupGate: true,
+    };
   }
 
   const executionReadiness = evaluateImmediateExecutionReadiness({
@@ -554,12 +578,15 @@ export function simulateDecisionExecution({
   quantity = DEFAULT_POSITION_SIZE,
   forceSimulation = false,
   signalContext = {},
+  executionSource = "",
+  orderMode = "",
 }) {
   if (!decision || !state) {
     return { state, result: "NO_DECISION" };
   }
 
-  const eligibilityInfo = getSimulationEligibility(decision, currentPrice, signalContext);
+  const executionOptions = { executionSource, orderMode };
+  const eligibilityInfo = getSimulationEligibility(decision, currentPrice, signalContext, executionOptions);
   let effectiveEligibility = eligibilityInfo;
   if (
     forceSimulation &&
@@ -584,14 +611,16 @@ export function simulateDecisionExecution({
   if (!side) {
     return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility };
   }
+  const bypassSetupGate = shouldBypassSetupGate(executionOptions);
   const plannedEntry = resolvePlannedEntryPrice(decision, side);
+  const fallbackEntryPrice = normalizeNumber(currentPrice) ?? plannedEntry.entryPrice ?? decision?.price;
   const constrainedEntry = applyEntryDistanceConstraint({
     side,
-    entryPrice: plannedEntry.entryPrice,
+    entryPrice: bypassSetupGate ? fallbackEntryPrice : plannedEntry.entryPrice,
     currentPrice: normalizeNumber(currentPrice),
     atr: decision?.executionPlan?.atr ?? decision?.atr,
   });
-  const triggerPrice = normalizeNumber(constrainedEntry.entryPrice);
+  const triggerPrice = normalizeNumber(constrainedEntry.entryPrice ?? fallbackEntryPrice);
   if (constrainedEntry.isRejected) {
     return {
       state,
@@ -599,7 +628,9 @@ export function simulateDecisionExecution({
       eligibilityInfo: effectiveEligibility,
     };
   }
-  const invalidationPrice = normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice);
+  const invalidationPrice =
+    normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice) ??
+    normalizeNumber(decision.executionPlan?.stopLoss ?? decision.stopLoss);
   const contextKey = buildDecisionContextKey(decision, symbol, timeframe);
   const normalizedLevels = normalizeDirectionalLevels({
     side,

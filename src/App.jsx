@@ -267,7 +267,10 @@ function buildExecutionDiagnostics({ decision, currentPrice, rsi, currentVolume,
 }
 
 function getSimulationButtonState(decision, currentPrice, signalContext = {}) {
-  const eligibilityInfo = getSimulationEligibility(decision, currentPrice, signalContext);
+  const eligibilityInfo = getSimulationEligibility(decision, currentPrice, signalContext, {
+    executionSource: "simulation_manual",
+    orderMode: "simulation",
+  });
   const waitingPending = eligibilityInfo.eligibility === "READY_TO_PLACE_PENDING";
 
   return {
@@ -2489,6 +2492,8 @@ export default function CryptoSignalWebApp() {
         currentPrice: paperCurrentPrice,
         quantity: selectedQuantity,
         forceSimulation: String(analysis?.finalDecision || "").toUpperCase() === "NO_TRADE",
+        executionSource: "simulation_manual",
+        orderMode: "simulation",
         signalContext: {
           rsi: analysis?.rsi,
           macd: analysis?.macd,
