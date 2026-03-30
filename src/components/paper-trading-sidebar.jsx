@@ -168,12 +168,13 @@ function TradingStateTerminal({
                         label="數量"
                         value={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`}
                       />
-                      <InfoPairRow
-                        leftLabel="止損"
-                        leftValue={formatNumber(position.stopLoss, paperDigits)}
-                        rightLabel="止盈1"
-                        rightValue={position.takeProfit1 ? formatNumber(position.takeProfit1, paperDigits) : "-"}
-                      />
+                      <div className="flex flex-col gap-1.5">
+                        <InlineLabelValue label="止損" value={formatNumber(position.stopLoss, paperDigits)} />
+                        <InlineLabelValue
+                          label="止盈1"
+                          value={position.takeProfit1 ? formatNumber(position.takeProfit1, paperDigits) : "-"}
+                        />
+                      </div>
                       <div className="whitespace-nowrap text-[13px] font-medium text-slate-700">
                         開倉：<span className="font-semibold text-slate-800">{formatDate(position.openedAt)}</span>
                       </div>
