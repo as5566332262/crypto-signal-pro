@@ -6,16 +6,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 export function PaperAccountCard({ accountSnapshot, formatNumber }) {
   return (
-    <Card className="rounded-2xl">
+    <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">模擬帳戶</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-1 text-xs text-slate-600">
-        <div>餘額: {formatNumber(accountSnapshot.balance, 2)} USDT</div>
-        <div>淨值: {formatNumber(accountSnapshot.equity, 2)} USDT</div>
-        <div>已用保證金: {formatNumber(accountSnapshot.usedMargin || 0, 2)} USDT</div>
-        <div>已實現損益: {formatNumber(accountSnapshot.realizedPnL, 2)} USDT</div>
-        <div>未實現損益: {formatNumber(accountSnapshot.unrealizedPnL, 2)} USDT</div>
+      <CardContent className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+        <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">餘額</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.balance, 2)} USDT</div></div>
+        <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">淨值</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.equity, 2)} USDT</div></div>
+        <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">已用保證金</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.usedMargin || 0, 2)} USDT</div></div>
+        <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">已實現損益</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.realizedPnL, 2)} USDT</div></div>
+        <div className="col-span-2 rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">未實現損益</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.unrealizedPnL, 2)} USDT</div></div>
       </CardContent>
     </Card>
   );
@@ -23,19 +23,19 @@ export function PaperAccountCard({ accountSnapshot, formatNumber }) {
 
 export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber, activeOrders = 0 }) {
   return (
-    <Card className="rounded-2xl">
+    <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">持倉資訊</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-1 text-xs text-slate-600">
+      <CardContent className="space-y-2 text-xs text-slate-600">
         <div>目前持倉: {accountSnapshot.openPosition ? 1 : 0}</div>
         <div>模擬委託中: {activeOrders}</div>
         {accountSnapshot.openPosition ? (
           <>
-            <div>方向: {accountSnapshot.openPosition.side}</div>
-            <div>進場: {formatNumber(accountSnapshot.openPosition.entryPrice, paperDigits)}</div>
-            <div>SL: {formatNumber(accountSnapshot.openPosition.stopLoss, paperDigits)}</div>
-            <div>TP: {formatNumber(accountSnapshot.openPosition.target1, paperDigits)} / {formatNumber(accountSnapshot.openPosition.target2, paperDigits)}</div>
+            <div>方向: <span className="font-semibold text-slate-800">{accountSnapshot.openPosition.side}</span></div>
+            <div>進場: <span className="font-semibold text-slate-800">{formatNumber(accountSnapshot.openPosition.entryPrice, paperDigits)}</span></div>
+            <div>SL: <span className="font-semibold text-slate-800">{formatNumber(accountSnapshot.openPosition.stopLoss, paperDigits)}</span></div>
+            <div>TP: <span className="font-semibold text-slate-800">{formatNumber(accountSnapshot.openPosition.target1, paperDigits)} / {formatNumber(accountSnapshot.openPosition.target2, paperDigits)}</span></div>
           </>
         ) : (
           <div>目前無持倉</div>
@@ -47,7 +47,7 @@ export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber, 
 
 export function TradeHistoryDrawer({ tradeHistory, paperDigits, formatNumber }) {
   return (
-    <Card className="rounded-2xl">
+    <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">交易紀錄</CardTitle>
       </CardHeader>
@@ -82,7 +82,7 @@ export default function PaperTradingSidebar({
   formatNumber,
 }) {
   return (
-    <aside className={`border-r border-slate-200 bg-white p-3 transition-all duration-200 ${sidebarOpen ? "w-80" : "w-[72px]"}`}>
+    <aside className={`border-r border-slate-200 bg-slate-50/70 p-3 transition-all duration-200 ${sidebarOpen ? "w-80" : "w-[72px]"}`}>
       <div className="flex items-center justify-between gap-2">
         {sidebarOpen ? <div className="text-sm font-semibold text-slate-700">模擬交易</div> : <Wallet className="mx-auto h-5 w-5 text-slate-600" />}
         <Button variant="ghost" size="icon" onClick={onToggleSidebar}>
@@ -92,7 +92,7 @@ export default function PaperTradingSidebar({
 
       {sidebarOpen ? (
         <div className="mt-4 space-y-3">
-          <Card className="rounded-2xl">
+          <Card className="rounded-2xl border-slate-200">
             <CardContent className="space-y-2 p-3">
               <div className="text-xs font-medium text-slate-500">幣種</div>
               <Select value={paperSymbol} onValueChange={setPaperSymbol}>
@@ -109,9 +109,9 @@ export default function PaperTradingSidebar({
           <TradeHistoryDrawer tradeHistory={accountSnapshot.tradeHistory} paperDigits={paperDigits} formatNumber={formatNumber} />
 
           <div className="grid grid-cols-1 gap-2">
-            <Button className="rounded-2xl" onClick={onExecuteSimulation}>執行模擬</Button>
+            <Button className="rounded-2xl bg-slate-900 text-white hover:bg-slate-800" onClick={onExecuteSimulation}>執行模擬</Button>
             <Button className="rounded-2xl" variant="outline" onClick={onClosePosition}>平倉</Button>
-            <Button variant="outline" className="rounded-2xl" onClick={onResetPaperAccount}>重置模擬</Button>
+            <Button variant="ghost" className="rounded-2xl text-rose-600 hover:bg-rose-50 hover:text-rose-700" onClick={onResetPaperAccount}>重置模擬</Button>
           </div>
         </div>
       ) : null}
