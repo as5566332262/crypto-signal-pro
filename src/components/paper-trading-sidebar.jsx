@@ -81,8 +81,10 @@ export default function PaperTradingSidebar({
   onClosePosition,
   formatNumber,
 }) {
+  const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[280px]" : "w-full lg:w-[76px]";
+
   return (
-    <aside className={`border-r border-slate-200 bg-slate-50/70 p-3 transition-all duration-200 ${sidebarOpen ? "w-80" : "w-[72px]"}`}>
+    <aside className={`shrink-0 border-b border-slate-200 bg-slate-50/70 p-3 transition-all duration-200 lg:border-b-0 lg:border-r ${sidebarWidthClass}`}>
       <div className="flex items-center justify-between gap-2">
         {sidebarOpen ? <div className="text-sm font-semibold text-slate-700">模擬交易</div> : <Wallet className="mx-auto h-5 w-5 text-slate-600" />}
         <Button variant="ghost" size="icon" onClick={onToggleSidebar}>

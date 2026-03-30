@@ -2058,8 +2058,8 @@ export default function CryptoSignalWebApp() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="flex min-h-screen">
+    <div className="min-h-screen w-full bg-slate-50">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1920px] flex-col lg:flex-row">
         <PaperTradingSidebar
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
@@ -2074,7 +2074,7 @@ export default function CryptoSignalWebApp() {
           formatNumber={formatNumber}
         />
 
-        <main className="flex-1 p-4 md:p-8">
+        <main className="min-w-0 flex-1 px-4 py-4 sm:px-6 lg:px-8 lg:py-8">
           <TradingDecisionPage
             symbol={symbol}
             setSymbol={setSymbol}
