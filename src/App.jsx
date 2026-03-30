@@ -202,7 +202,7 @@ function mapExecutionBlockedReason(resultCode, decision) {
   const entryTiming = String(decision?.entryTiming || "").toUpperCase();
   const confidence = String(decision?.confidence || "").toUpperCase();
 
-  if (setupType === "no_setup" || setupType === "no-trade") return "目前不建議進場，已轉為條件單";
+  if (setupType === "no_setup" || setupType === "no-trade") return "目前僅觀察，尚未建立條件單";
   if (entryTiming === "WAIT_PULLBACK" || entryTiming === "WAIT_BREAKOUT") return "尚未進入進場區間";
   if (entryTiming === "TOO_LATE") return "觸發條件尚未成立";
   if (confidence === "LOW" || confidence === "低") return "信心不足，未建立模擬單";
@@ -214,7 +214,7 @@ function mapExecutionBlockedReason(resultCode, decision) {
     DUPLICATE_SETUP: "同一 setup 已存在掛單或持倉",
     MISSING_TRIGGER: "觸發條件尚未成立",
     MISSING_INVALIDATION: "缺少失效價格，風險無法定義",
-    SETUP_ALREADY_INVALIDATED: "目前不建議進場，已轉為條件單",
+    SETUP_ALREADY_INVALIDATED: "目前僅觀察，尚未建立條件單",
     STALE_CONTEXT: "決策內容已過期，請先重新整理",
     STRUCTURE_INVALID: "結構條件不足，暫不建立掛單",
     EXTREMELY_LOW_CONFIDENCE: "信心過低，模擬執行暫停",
@@ -223,7 +223,7 @@ function mapExecutionBlockedReason(resultCode, decision) {
     SHORT_ENTRY_UNREALISTIC: "空單掛單位置不合理（距現價過遠）",
     SHORT_BREAKDOWN_ATR_REQUIRED: "空單跌破掛單缺少 ATR，無法驗證距離",
   };
-  return reasonMap[resultCode] || "條件不足，已轉為觀察或條件模式";
+  return reasonMap[resultCode] || "條件不足，已轉為觀察模式";
 }
 
 function buildExecutionDiagnostics({ decision, currentPrice, rsi, currentVolume, avgVolume20 }) {
@@ -2514,12 +2514,25 @@ export default function CryptoSignalWebApp() {
           avgVolume20,
         },
       });
+      const pendingBefore = (reconciledState.pendingOrders || []).length;
+      const pendingAfter = (result.state?.pendingOrders || []).length;
+      const didCallCreatePendingOrder = result.executionIntent === "PLACE_PENDING";
+      const createdPendingOrder = Boolean(result.pendingOrder) && pendingAfter > pendingBefore;
+      const pendingType = result.confirmationResult?.decisionType || analysis.aiDecisionOutput?.entryTiming || null;
       console.debug("[simulation:service-result]", {
         ...manualExecutionMeta,
+        finalDecision: analysis?.finalDecision || null,
+        decisionType: result.confirmationResult?.decisionType || null,
+        executionIntent: result.executionIntent || null,
+        pendingType,
+        didCallCreatePendingOrder,
+        createPendingOrderResult: result.pendingCreation || null,
+        pendingOrdersBefore: pendingBefore,
+        pendingOrdersAfter: pendingAfter,
         result: result.result,
         eligibilityInfo: result.eligibilityInfo || null,
         createdPosition: Boolean(result.position),
-        createdPendingOrder: Boolean(result.pendingOrder),
+        createdPendingOrder,
       });
       const executedState = result.result === "PENDING_CREATED"
         ? applyMarketTickToPaperState(result.state, {
@@ -2545,13 +2558,22 @@ export default function CryptoSignalWebApp() {
           distances: [],
           timestamp: new Date().toISOString(),
         };
-      } else if (result.result === "PENDING_CREATED") {
+      } else if (result.result === "PENDING_CREATED" && createdPendingOrder) {
         const simulatedNonRecommended = Boolean(result?.eligibilityInfo?.overrideApplied);
         nextFeedback = {
           status: "PENDING",
           statusLabel: simulatedNonRecommended ? "模擬掛單（非建議）" : "已建立條件掛單",
           reason: simulatedNonRecommended ? "已建立模擬掛單（非建議）" : "已建立條件掛單，等待條件成立後進場",
           pendingOrder: result.pendingOrder,
+          unmetConditions: [],
+          distances: [],
+          timestamp: new Date().toISOString(),
+        };
+      } else if (result.result === "PENDING_CREATED") {
+        nextFeedback = {
+          status: "WATCHING",
+          statusLabel: "已進入等待確認模式",
+          reason: "偵測到掛單未成功寫入，已回退為觀察模式（尚未建立條件單）",
           unmetConditions: [],
           distances: [],
           timestamp: new Date().toISOString(),
@@ -2577,8 +2599,8 @@ export default function CryptoSignalWebApp() {
       } else if (result.result === "WATCH_ONLY" || String(analysis.aiDecisionOutput?.setupType || "").toLowerCase() === "no_setup") {
         nextFeedback = {
           status: "WATCHING",
-          statusLabel: "目前不建議進場，已轉為條件單",
-          reason: "目前不建議進場，已轉為條件單",
+          statusLabel: "目前不交易，已進入觀察模式",
+          reason: "目前僅觀察，尚未建立條件單",
           unmetConditions: [],
           distances: [],
           timestamp: new Date().toISOString(),
@@ -2592,14 +2614,26 @@ export default function CryptoSignalWebApp() {
           avgVolume20,
         });
         nextFeedback = {
-          status: "PENDING",
-          statusLabel: "已建立模擬掛單",
-          reason: `目前不建議立即進場，已轉為條件單：${mapExecutionBlockedReason(result.result, analysis.aiDecisionOutput)}`,
+          status: "WATCHING",
+          statusLabel: "目前不交易，已進入觀察模式",
+          reason: `等待結構與動能重新同步：${mapExecutionBlockedReason(result.result, analysis.aiDecisionOutput)}`,
           unmetConditions: diagnostics.unmetConditions,
           distances: diagnostics.distances,
           timestamp: new Date().toISOString(),
         };
       }
+
+      console.debug("[simulation:ui-feedback-source]", {
+        ...manualExecutionMeta,
+        finalDecision: analysis?.finalDecision || null,
+        decisionType: result.confirmationResult?.decisionType || null,
+        executionIntent: result.executionIntent || null,
+        uiStatus: nextFeedback.status,
+        uiStatusLabel: nextFeedback.statusLabel,
+        uiReason: nextFeedback.reason,
+        feedbackSource: result.result,
+        createdPendingOrder,
+      });
 
       setSimulationExecutionStatus(nextFeedback);
       console.debug("[simulation:position-write]", {
