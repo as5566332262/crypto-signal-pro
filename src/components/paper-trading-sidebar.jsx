@@ -22,6 +22,33 @@ function reasonLabel(reason) {
   return reasonMap[reason] || reason || "-";
 }
 
+function pendingTypeLabel(pendingType) {
+  if (pendingType === "PULLBACK_ENTRY") return "回踩掛單";
+  if (pendingType === "BREAKOUT_ENTRY") return "突破掛單";
+  return "條件掛單";
+}
+
+function pendingWaitReasonLabel(order) {
+  const waitReasonMap = {
+    WAIT_PRICE_IN_ZONE: "等待進區",
+    WAIT_KLINE_CONFIRMATION: "等 K 線",
+    WAIT_BREAKOUT_CONFIRMATION: "等突破確認",
+    TRIGGERED_WAIT_VOLUME: "已觸發待確認",
+    PULLBACK_READY: "回踩確認完成",
+    BREAKOUT_READY: "突破確認完成",
+  };
+  return waitReasonMap[order?.waitReasonCode] || order?.waitReason || "等待條件成立";
+}
+
+function pendingEntryZoneLabel(order, digits, formatNumber) {
+  const low = order?.decisionSnapshot?.executionPlan?.entryLow ?? order?.decisionSnapshot?.entryLow;
+  const high = order?.decisionSnapshot?.executionPlan?.entryHigh ?? order?.decisionSnapshot?.entryHigh;
+  if (Number.isFinite(Number(low)) || Number.isFinite(Number(high))) {
+    return `${formatNumber(low, digits)} ~ ${formatNumber(high, digits)}`;
+  }
+  return formatNumber(order?.triggerPrice, digits);
+}
+
 export function PaperAccountCard({ accountSnapshot, formatNumber }) {
   return (
     <Card className="rounded-2xl border-slate-200">
@@ -210,11 +237,18 @@ function TradingStateTerminal({
                       rightValue={`${formatNumber(order.quantity, 2)} ${order.symbol.replace("USDT", "")}`}
                     />
                     <InfoPairRow
+                      leftLabel="掛單類型"
+                      leftValue={pendingTypeLabel(order.pendingType)}
+                      rightLabel="狀態"
+                      rightValue={pendingWaitReasonLabel(order)}
+                    />
+                    <InfoPairRow
                       leftLabel="止損"
                       leftValue={formatNumber(order.stopLoss, paperDigits)}
                       rightLabel="失效價"
                       rightValue={formatNumber(order.invalidationPrice, paperDigits)}
                     />
+                    <InfoSingleRow label="掛單價格 / 進場區" value={pendingEntryZoneLabel(order, paperDigits, formatNumber)} />
                     <InfoSingleRow label="止盈1 / 止盈2 / 止盈3" value={takeProfitDetailLabel(order)} />
                     <InfoSingleRow label="建立時間" value={formatDate(order.createdAt)} />
                   </div>

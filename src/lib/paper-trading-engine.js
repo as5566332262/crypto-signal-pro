@@ -10,6 +10,10 @@ const DECISION_STALE_MS = 30 * 60 * 1000;
 const DEFAULT_PENDING_EXPIRY_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_SHORT_BREAKDOWN_ATR_RATIO = 0.2;
 const DEFAULT_PENDING_DRIFT_ATR_RATIO = 2;
+const PENDING_TYPES = {
+  PULLBACK_ENTRY: "PULLBACK_ENTRY",
+  BREAKOUT_ENTRY: "BREAKOUT_ENTRY",
+};
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -120,6 +124,34 @@ function buildConfirmationPayload(decision, currentPrice, signalContext = {}) {
     structure: signalContext?.structure ?? decision?.structure ?? decision?.executionPlan?.structure ?? {},
     mtf: signalContext?.mtf ?? decision?.mtf ?? decision?.multiTimeframe ?? {},
   };
+}
+
+function resolvePendingType({ decision, confirmationResult }) {
+  const decisionType = confirmationResult?.decisionType;
+  if (decisionType === "WAIT_PULLBACK") return PENDING_TYPES.PULLBACK_ENTRY;
+  if (decisionType === "WAIT_BREAKOUT") return PENDING_TYPES.BREAKOUT_ENTRY;
+  const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
+  return setupType === "pullback" ? PENDING_TYPES.PULLBACK_ENTRY : PENDING_TYPES.BREAKOUT_ENTRY;
+}
+
+function getPendingReadiness({ pendingType, confirmation }) {
+  const state = confirmation?.confirmationState || {};
+  if (pendingType === PENDING_TYPES.PULLBACK_ENTRY) {
+    const ready = Boolean(state.priceInZone && state.klineConfirmed);
+    if (ready) return { ready: true, waitReason: "回踩確認完成，準備成交", waitReasonCode: "PULLBACK_READY" };
+    if (!state.priceInZone) return { ready: false, waitReason: "等待進入回踩區間", waitReasonCode: "WAIT_PRICE_IN_ZONE" };
+    return { ready: false, waitReason: "已進入區間，等待 K 線確認", waitReasonCode: "WAIT_KLINE_CONFIRMATION" };
+  }
+
+  const breakoutConfirmed = Boolean(state.breakoutConfirmed);
+  const volumeConfirmed = Boolean(state.volumeConfirmed);
+  if (breakoutConfirmed && volumeConfirmed) {
+    return { ready: true, waitReason: "突破與量能確認完成，準備成交", waitReasonCode: "BREAKOUT_READY" };
+  }
+  if (!breakoutConfirmed) {
+    return { ready: false, waitReason: "等待突破確認", waitReasonCode: "WAIT_BREAKOUT_CONFIRMATION" };
+  }
+  return { ready: false, waitReason: "已觸發待確認，等待量能確認", waitReasonCode: "TRIGGERED_WAIT_VOLUME" };
 }
 
 function resolveManualSimulationSide(decision) {
@@ -448,14 +480,6 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
   });
 }
 
-function shouldFillOrder(order, tickPrice) {
-  const triggerPrice = asSafeNumber(order.triggerPrice);
-  if (!triggerPrice) return false;
-  if (!Number.isFinite(tickPrice)) return false;
-  if (order.side === "LONG") return tickPrice >= triggerPrice;
-  return tickPrice <= triggerPrice;
-}
-
 function hasActiveTrapSignal(decisionSnapshot) {
   const trapSignal = String(decisionSnapshot?.trapDetection?.trapSignal || "").toUpperCase();
   return trapSignal && trapSignal !== "NONE";
@@ -494,6 +518,70 @@ function resolveExpiryTimestamp(decision, createdAtIso) {
   return new Date(expiresAtMs).toISOString();
 }
 
+function createPendingOrder({
+  decision,
+  confirmationResult,
+  effectiveEligibility,
+  symbol,
+  timeframe,
+  side,
+  triggerPrice,
+  invalidationPrice,
+  normalizedLevels,
+  quantity,
+  plannedEntry,
+  constrainedEntry,
+  signalContext,
+  contextKey,
+}) {
+  const createdAt = nowIso();
+  const pendingType = resolvePendingType({ decision, confirmationResult });
+  const pendingReadiness = getPendingReadiness({ pendingType, confirmation: confirmationResult });
+  return {
+    id: createId("order"),
+    symbol,
+    timeframe,
+    side,
+    triggerPrice,
+    invalidationPrice,
+    stopLoss: normalizedLevels.stopLoss,
+    takeProfit1: normalizedLevels.takeProfit1,
+    takeProfit2: normalizedLevels.takeProfit2,
+    takeProfit3: normalizedLevels.takeProfit3,
+    quantity: asSafeNumber(quantity, DEFAULT_POSITION_SIZE),
+    createdAt,
+    status: "PENDING",
+    pendingType,
+    expiresAt: resolveExpiryTimestamp(decision, createdAt),
+    waitReason: pendingReadiness.waitReason || effectiveEligibility.reason,
+    waitReasonCode: pendingReadiness.waitReasonCode || null,
+    entryReason: decision.entryReason || null,
+    entryMode: plannedEntry.mode,
+    entryAdjusted: constrainedEntry.wasAdjusted,
+    simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
+    placementSnapshot: {
+      createdAt,
+      symbol,
+      timeframe,
+      side,
+      triggerPrice,
+      invalidationPrice,
+      atr: normalizeNumber(decision?.executionPlan?.atr ?? decision?.atr),
+      rsi: normalizeNumber(decision?.rsi),
+      volumeState: decision?.volumeState ?? null,
+      currentVolume: normalizeNumber(signalContext?.currentVolume),
+      avgVolume20: normalizeNumber(signalContext?.avgVolume20),
+      structure: signalContext?.structure ?? decision?.structure ?? null,
+      mtf: signalContext?.mtf ?? decision?.mtf ?? null,
+      decisionAction: decision?.action ?? decision?.executionPlan?.action ?? null,
+      setupType: decision?.setupType ?? decision?.executionPlan?.setupType ?? null,
+    },
+    decisionSnapshot: decision,
+    decisionContextKey: contextKey,
+    lastConfirmation: confirmationResult,
+  };
+}
+
 function isOrderExpired(order, timestamp) {
   const expiresAtMs = new Date(order?.expiresAt || "").getTime();
   const nowMs = new Date(timestamp).getTime();
@@ -508,7 +596,10 @@ function isOrderPriceDrifted(order, tickPrice) {
   return Math.abs(tickPrice - triggerPrice) > atr * DEFAULT_PENDING_DRIFT_ATR_RATIO;
 }
 
-function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20, candleTime, timestamp = nowIso() }) {
+function maybeFillPendingOrders(
+  state,
+  { tickPrice, candleClose, rsi, macd, ma20, candleTime, currentVolume, avgVolume20, timestamp = nowIso() }
+) {
   let nextState = {
     ...state,
     pendingOrders: [...state.pendingOrders],
@@ -530,24 +621,27 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp));
       return { ...order, status: "CANCELLED" };
     }
-    if (!shouldFillOrder(order, tickPrice)) return order;
-
     const confirmation = runConfirmationEngine(
       buildConfirmationPayload(order.decisionSnapshot, tickPrice, {
         rsi,
         macd,
-        currentVolume: order?.placementSnapshot?.currentVolume,
-        avgVolume20: order?.placementSnapshot?.avgVolume20,
+        currentVolume,
+        avgVolume20: avgVolume20 ?? order?.placementSnapshot?.avgVolume20,
         candleClose,
         structure: order?.placementSnapshot?.structure,
         mtf: order?.placementSnapshot?.mtf,
       })
     );
-    if (!confirmation.canExecute) {
+    const readiness = getPendingReadiness({
+      pendingType: order.pendingType || PENDING_TYPES.BREAKOUT_ENTRY,
+      confirmation,
+    });
+    if (!readiness.ready) {
       return {
         ...order,
         lastConfirmation: confirmation,
-        waitReason: "等待 confirmation-engine 條件成立",
+        waitReason: readiness.waitReason,
+        waitReasonCode: readiness.waitReasonCode,
       };
     }
 
@@ -583,6 +677,7 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
       entryCandleTime: candleTime ?? null,
       unrealizedPnl: 0,
       entryReason: order.entryReason || null,
+      pendingType: order.pendingType,
       decisionSnapshot: order.decisionSnapshot,
       decisionContextKey: order.decisionContextKey,
       hitTargets: [],
@@ -596,7 +691,14 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
       entryPrice,
       executedAt: timestamp,
     });
-    return { ...order, status: "FILLED", filledAt: timestamp };
+    return {
+      ...order,
+      status: "FILLED",
+      filledAt: timestamp,
+      waitReason: readiness.waitReason,
+      waitReasonCode: readiness.waitReasonCode,
+      lastConfirmation: confirmation,
+    };
   });
 
   nextState.pendingOrders = nextState.pendingOrders.filter((order) => order.status === "PENDING");
@@ -786,46 +888,22 @@ export function simulateDecisionExecution({
     return { state, result: "DUPLICATE_SETUP" };
   }
 
-  const pendingOrder = {
-    id: createId("order"),
+  const pendingOrder = createPendingOrder({
+    decision,
+    confirmationResult,
+    effectiveEligibility,
     symbol,
     timeframe,
     side,
     triggerPrice,
     invalidationPrice,
-    stopLoss: normalizedLevels.stopLoss,
-    takeProfit1: normalizedLevels.takeProfit1,
-    takeProfit2: normalizedLevels.takeProfit2,
-    takeProfit3: normalizedLevels.takeProfit3,
-    quantity: asSafeNumber(quantity, DEFAULT_POSITION_SIZE),
-    createdAt: nowIso(),
-    status: "PENDING",
-    expiresAt: resolveExpiryTimestamp(decision, nowIso()),
-    waitReason: effectiveEligibility.reason,
-    entryReason: decision.entryReason || null,
-    entryMode: plannedEntry.mode,
-    entryAdjusted: constrainedEntry.wasAdjusted,
-    simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
-    placementSnapshot: {
-      createdAt: nowIso(),
-      symbol,
-      timeframe,
-      side,
-      triggerPrice,
-      invalidationPrice,
-      atr: normalizeNumber(decision?.executionPlan?.atr ?? decision?.atr),
-      rsi: normalizeNumber(decision?.rsi),
-      volumeState: decision?.volumeState ?? null,
-      currentVolume: normalizeNumber(signalContext?.currentVolume),
-      avgVolume20: normalizeNumber(signalContext?.avgVolume20),
-      structure: signalContext?.structure ?? decision?.structure ?? null,
-      mtf: signalContext?.mtf ?? decision?.mtf ?? null,
-      decisionAction: decision?.action ?? decision?.executionPlan?.action ?? null,
-      setupType: decision?.setupType ?? decision?.executionPlan?.setupType ?? null,
-    },
-    decisionSnapshot: decision,
-    decisionContextKey: contextKey,
-  };
+    normalizedLevels,
+    quantity,
+    plannedEntry,
+    constrainedEntry,
+    signalContext,
+    contextKey,
+  });
 
   if (executionIntent === "WATCH_ONLY") {
     return {
@@ -973,7 +1051,7 @@ export function reconcilePendingOrdersWithDecision({
 
 export function applyMarketTickToPaperState(
   state,
-  { price, candleClose, rsi, macd, ma20, candleTime, timestamp = nowIso() }
+  { price, candleClose, rsi, macd, ma20, candleTime, currentVolume, avgVolume20, timestamp = nowIso() }
 ) {
   const tickPrice = asSafeNumber(price);
   if (!Number.isFinite(tickPrice)) return state;
@@ -990,6 +1068,8 @@ export function applyMarketTickToPaperState(
     macd: normalizedMacd,
     ma20: normalizedMa20,
     candleTime,
+    currentVolume: normalizeNumber(currentVolume),
+    avgVolume20: normalizeNumber(avgVolume20),
     timestamp,
   });
   const updatedPositions = nextState.openPositions.map((position) => ({
