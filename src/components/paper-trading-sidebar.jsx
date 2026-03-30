@@ -296,17 +296,31 @@ function InfoItem({ label, value, className = "", valueClassName = "" }) {
   );
 }
 
-function InfoPairRow({ leftLabel, leftValue, rightLabel, rightValue }) {
+function InlineLabelValue({ label, value, valueClassName = "" }) {
   return (
-    <div className="grid grid-cols-2 gap-x-3">
-      <InfoItem label={leftLabel} value={leftValue} />
-      <InfoItem label={rightLabel} value={rightValue} />
+    <div className="min-w-0 whitespace-nowrap text-[13px] font-medium text-slate-700">
+      <span className="text-slate-500">{label}：</span>
+      <span className={`font-semibold text-slate-800 ${valueClassName}`}>{value || "-"}</span>
     </div>
   );
 }
 
-function InfoSingleRow({ label, value }) {
-  return <InfoItem label={label} value={value} />;
+function InfoPairRow({ leftLabel, leftValue, rightLabel, rightValue }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-1.5">
+      <InlineLabelValue label={leftLabel} value={leftValue} />
+      <InlineLabelValue label={rightLabel} value={rightValue} />
+    </div>
+  );
+}
+
+function InfoSingleRow({ label, value, valueClassName = "" }) {
+  return (
+    <div className="flex items-center gap-1.5 text-[13px] font-medium text-slate-700">
+      <span className="text-slate-500">{label}：</span>
+      <span className={`font-semibold text-slate-800 ${valueClassName}`}>{value || "-"}</span>
+    </div>
+  );
 }
 
 function DebugStateCard({ accountSnapshot }) {
