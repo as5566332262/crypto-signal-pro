@@ -1493,7 +1493,99 @@ function detectTrapSignal({
   };
 }
 
-function analyzeMarket(candlesByInterval, primaryTimeframe) {
+function buildAiDecisionOutput({
+  symbol,
+  price,
+  finalDecision,
+  adjustedConfidenceLevel,
+  riskLevel,
+  marketRegime,
+  mtfBiasObject,
+  bias,
+  levels,
+  finalTradePlan,
+  triggerEngine,
+  trapDetection,
+  summary,
+  rsi,
+  macd,
+}) {
+  const action = finalDecision === "BUY" ? "LONG" : finalDecision === "SELL" ? "SHORT" : "HOLD";
+  const rangeHigh = Number((levels?.structureResistanceZone?.high ?? levels?.nearestResistance ?? price).toFixed(4));
+  const rangeLow = Number((levels?.structureSupportZone?.low ?? levels?.nearestSupport ?? price).toFixed(4));
+  const triggerPrice =
+    action === "LONG"
+      ? rangeHigh
+      : action === "SHORT"
+      ? rangeLow
+      : bias === "偏多"
+      ? rangeHigh
+      : rangeLow;
+  const invalidationPrice =
+    finalTradePlan?.stop ?? (action === "SHORT" ? levels?.structureResistanceZone?.high : levels?.structureSupportZone?.low);
+  const mtfAlignmentRules = [
+    `15m ${mtfBiasObject.tf15m}`,
+    `1h ${mtfBiasObject.tf1h}`,
+    `4h ${mtfBiasObject.tf4h}`,
+    action === "LONG" ? "4h 不可為 bearish" : action === "SHORT" ? "4h 不可為 bullish" : "等待 15m + 1h 方向一致",
+  ];
+
+  return {
+    symbol,
+    action,
+    confidence: localizeConfidence(adjustedConfidenceLevel),
+    risk: riskLevel,
+    summary,
+    marketRegime: localizeMarketRegime(marketRegime),
+    mtfBias: mtfBiasObject,
+    executionPlan: {
+      action,
+      currentActionLabel:
+        action === "LONG" ? "偏多劇本：等待觸發後執行做多" : action === "SHORT" ? "偏空劇本：等待觸發後執行做空" : "目前動作：觀望，等待條件完成",
+      rangeHigh,
+      rangeLow,
+      triggerPrice: triggerPrice != null ? Number(triggerPrice.toFixed(4)) : undefined,
+      breakoutConfirmationRules: [
+        action === "SHORT"
+          ? `15m 收盤跌破 ${formatNumber(rangeLow)}`
+          : `15m 收盤站上 ${formatNumber(rangeHigh)}`,
+        "突破/跌破當根成交量 > 近 20 根平均成交量",
+        action === "SHORT"
+          ? `MACD 柱體維持負值，RSI <= 45（目前 ${formatNumber(rsi, 2)}）`
+          : `MACD 柱體維持正值，RSI >= 55（目前 ${formatNumber(rsi, 2)}）`,
+      ],
+      retestConfirmationRules: [
+        action === "SHORT"
+          ? `回測 ${formatNumber(rangeLow)} 無法站回，且收盤再度跌破`
+          : `回踩 ${formatNumber(rangeHigh)} 後不破，且收盤重新站上`,
+        action === "SHORT" ? "回測時上影線放大、實體收弱" : "回踩時下影線承接、實體收強",
+      ],
+      mtfAlignmentRules,
+      nextConfirmationRules: [
+        triggerEngine?.nextAction || "滿足觸發條件後再執行",
+        `確認強度：${triggerEngine?.confirmationLabel || "-"}`,
+      ],
+      invalidationRules: [
+        `價格收盤重新回到觸發位反向（${formatNumber(triggerPrice)}）`,
+        ...(triggerEngine?.invalidationTriggers || []),
+        ...(trapDetection.trapSignal !== "NONE" ? trapDetection.trapInvalidationRules : []),
+        action === "SHORT"
+          ? `RSI 重新回到 50 上方（目前 ${formatNumber(rsi, 2)}）`
+          : `RSI 重新跌回 50 下方（目前 ${formatNumber(rsi, 2)}）`,
+        action === "SHORT" ? `MACD 柱體轉正（目前 ${formatNumber(macd?.histogram, 4)}）` : `MACD 柱體轉負（目前 ${formatNumber(macd?.histogram, 4)}）`,
+      ].filter(Boolean).slice(0, 6),
+      invalidationPrice: invalidationPrice != null ? Number(Number(invalidationPrice).toFixed(4)) : undefined,
+      stopLoss: finalTradePlan?.stop,
+      takeProfit1: finalTradePlan?.target1,
+      takeProfit2: finalTradePlan?.target2,
+      takeProfit3:
+        action === "LONG" ? levels?.secondResistance : action === "SHORT" ? levels?.secondSupport : undefined,
+    },
+    trapDetection,
+  };
+}
+
+function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
   const candles = candlesByInterval[primaryTimeframe] || [];
   if (!candles.length) return null;
 
@@ -1991,59 +2083,24 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     weight: Number(weight.toFixed(2)),
   }));
 
-  const action = finalDecision === "BUY" ? "LONG" : finalDecision === "SELL" ? "SHORT" : "HOLD";
-  const rangeHigh = Number((levels?.structureResistanceZone?.high ?? levels?.nearestResistance ?? price).toFixed(4));
-  const rangeLow = Number((levels?.structureSupportZone?.low ?? levels?.nearestSupport ?? price).toFixed(4));
-  const triggerPrice =
-    action === "LONG"
-      ? rangeHigh
-      : action === "SHORT"
-      ? rangeLow
-      : bias === "偏多"
-      ? rangeHigh
-      : rangeLow;
-  const invalidationPrice =
-    finalTradePlan?.stop ?? (action === "SHORT" ? levels?.structureResistanceZone?.high : levels?.structureSupportZone?.low);
-  const executionPlan = {
-    action,
-    currentActionLabel:
-      action === "LONG" ? "偏多劇本：等待觸發後執行做多" : action === "SHORT" ? "偏空劇本：等待觸發後執行做空" : "目前動作：觀望，等待條件完成",
-    rangeHigh,
-    rangeLow,
-    triggerPrice: triggerPrice != null ? Number(triggerPrice.toFixed(4)) : undefined,
-    breakoutConfirmationRules: [
-      action === "SHORT"
-        ? `15m 收盤跌破 ${formatNumber(rangeLow)}，且成交量 > 20MA 均量`
-        : `15m 收盤站上 ${formatNumber(rangeHigh)}，且成交量 > 20MA 均量`,
-      action === "SHORT"
-        ? `跌破 K 棒實體收在 ${formatNumber(rangeLow)} 下方，且 MACD 柱體維持負值`
-        : `突破 K 棒實體收在 ${formatNumber(rangeHigh)} 上方，且 MACD 柱體維持正值`,
-    ],
-    retestConfirmationRules: [
-      action === "SHORT"
-        ? `回測 ${formatNumber(rangeLow)} 無法站回，上影線轉弱`
-        : `回踩 ${formatNumber(rangeHigh)} 不破並收回上方`,
-      action === "SHORT" ? "回測時 RSI < 48" : "回測時 RSI > 52",
-    ],
-    mtfAlignmentRules: [
-      `15m=${mtfBiasObject.tf15m}, 1h=${mtfBiasObject.tf1h}, 4h=${mtfBiasObject.tf4h}`,
-      action === "SHORT" ? "1h 不可轉為 bullish" : "1h 不可轉為 bearish",
-    ],
-    nextConfirmationRules: [
-      triggerEngine?.nextAction || "滿足觸發條件後再執行",
-      `確認強度：${triggerEngine?.confirmationLabel || "-"}`,
-    ],
-    invalidationRules: [
-      ...(triggerEngine?.invalidationTriggers || []),
-      ...(trapDetection.trapSignal !== "NONE" ? trapDetection.trapInvalidationRules : []),
-    ].slice(0, 4),
-    invalidationPrice: invalidationPrice != null ? Number(Number(invalidationPrice).toFixed(4)) : undefined,
-    stopLoss: finalTradePlan?.stop,
-    takeProfit1: finalTradePlan?.target1,
-    takeProfit2: finalTradePlan?.target2,
-    takeProfit3:
-      action === "LONG" ? levels?.secondResistance : action === "SHORT" ? levels?.secondSupport : undefined,
-  };
+  const decisionSummary = triggerEngine?.entryTriggerSentence || explanation;
+  const aiDecisionOutput = buildAiDecisionOutput({
+    symbol,
+    price,
+    finalDecision,
+    adjustedConfidenceLevel,
+    riskLevel,
+    marketRegime,
+    mtfBiasObject,
+    bias,
+    levels,
+    finalTradePlan,
+    triggerEngine,
+    trapDetection,
+    summary: decisionSummary,
+    rsi,
+    macd,
+  });
 
   return {
     price,
@@ -2084,8 +2141,9 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     breakoutState,
     volumeState,
     tradePlan: finalTradePlan,
-    executionPlan,
-    trapDetection,
+    executionPlan: aiDecisionOutput.executionPlan,
+    trapDetection: aiDecisionOutput.trapDetection,
+    aiDecisionOutput,
     fakeBreakout,
     waitReasons,
     waitForConditions,
@@ -2094,7 +2152,7 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     liquiditySweep,
     trendlineState,
     aiSummary,
-    summary: triggerEngine?.entryTriggerSentence || explanation,
+    summary: decisionSummary,
     longProb,
     shortProb,
     smartSignal,
@@ -2156,7 +2214,7 @@ export default function CryptoSignalWebApp() {
       const candlesByInterval = Object.fromEntries(intervalEntries);
 
       setCandles(candlesByInterval[nextTimeframe] || []);
-      setAnalysis(analyzeMarket(candlesByInterval, nextTimeframe));
+      setAnalysis(analyzeMarket(candlesByInterval, nextTimeframe, nextSymbol));
       setLastUpdated(new Date().toLocaleString());
     } catch (err) {
       setError(err.message || "讀取資料失敗");
@@ -2346,6 +2404,7 @@ export default function CryptoSignalWebApp() {
             currentCandle={currentCandle}
             formatNumber={formatNumber}
             digits={digits}
+            showDevOutput={Boolean(import.meta.env.DEV)}
           />
         </main>
       </div>
