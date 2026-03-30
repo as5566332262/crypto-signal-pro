@@ -1525,6 +1525,14 @@ function buildAiDecisionOutput({
     `4h ${mtfBiasObject.tf4h}`,
     action === "LONG" ? "4h 不可為 bearish" : action === "SHORT" ? "4h 不可為 bullish" : "等待 15m + 1h 方向一致",
   ];
+  const entryReason = {
+    breakoutBreakdownCondition: triggerEngine?.formattedEntryCondition || triggerEngine?.entryTriggerSentence || "等待結構突破/跌破確認",
+    timeframeCondition: `15m ${mtfBiasObject.tf15m} / 1h ${mtfBiasObject.tf1h} / 4h ${mtfBiasObject.tf4h}`,
+    indicatorCondition:
+      action === "SHORT"
+        ? `RSI <= 45（目前 ${formatNumber(rsi, 2)}）且 MACD 柱體維持負值（目前 ${formatNumber(macd?.histogram, 4)}）`
+        : `RSI >= 55（目前 ${formatNumber(rsi, 2)}）且 MACD 柱體維持正值（目前 ${formatNumber(macd?.histogram, 4)}）`,
+  };
 
   return {
     symbol,
@@ -1577,6 +1585,7 @@ function buildAiDecisionOutput({
       takeProfit3:
         action === "LONG" ? levels?.secondResistance : action === "SHORT" ? levels?.secondSupport : undefined,
     },
+    entryReason,
     trapDetection,
   };
 }
