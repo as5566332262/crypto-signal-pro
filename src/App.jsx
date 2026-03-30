@@ -1582,6 +1582,8 @@ function detectTrapSignal({
 function buildAiDecisionOutput({
   symbol,
   price,
+  atr,
+  setupType,
   finalDecision,
   adjustedConfidenceLevel,
   riskLevel,
@@ -1626,6 +1628,8 @@ function buildAiDecisionOutput({
 
   return {
     symbol,
+    setupType,
+    atr,
     action,
     generatedAt: new Date().toISOString(),
     confidence: localizeConfidence(adjustedConfidenceLevel),
@@ -1635,12 +1639,17 @@ function buildAiDecisionOutput({
     mtfBias: mtfBiasObject,
     executionPlan: {
       action,
+      setupType,
+      atr,
       preferredSide: bias === "偏空" ? "SHORT" : bias === "偏多" ? "LONG" : undefined,
       currentActionLabel:
         action === "LONG" ? "偏多劇本：等待觸發後執行做多" : action === "SHORT" ? "偏空劇本：等待觸發後執行做空" : "目前動作：觀望，等待條件完成",
       rangeHigh,
       rangeLow,
       triggerPrice: triggerPrice != null ? Number(triggerPrice.toFixed(4)) : undefined,
+      entryLow: finalTradePlan?.entryLow,
+      entryHigh: finalTradePlan?.entryHigh,
+      entryMid: finalTradePlan?.entryMid,
       breakoutConfirmationRules: [
         action === "SHORT"
           ? `15m 收盤跌破 ${formatNumber(rangeLow)}`
@@ -2184,6 +2193,8 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
   const aiDecisionOutput = buildAiDecisionOutput({
     symbol,
     price,
+    atr,
+    setupType,
     finalDecision,
     adjustedConfidenceLevel,
     riskLevel,
@@ -2472,6 +2483,7 @@ export default function CryptoSignalWebApp() {
         timeframe,
         currentPrice: paperCurrentPrice,
         quantity: selectedQuantity,
+        forceSimulation: String(analysis?.finalDecision || "").toUpperCase() === "NO_TRADE",
       });
       const executedState = result.result === "PENDING_CREATED"
         ? applyMarketTickToPaperState(result.state, {
@@ -2488,19 +2500,21 @@ export default function CryptoSignalWebApp() {
       const nextOpenCount = executedState.openPositions.filter((position) => position.symbol === paperMarketSymbol && position.timeframe === timeframe).length;
 
       if (result.result === "EXECUTED_IMMEDIATELY" || nextOpenCount > prevOpenCount) {
+        const simulatedNonRecommended = Boolean(result?.eligibilityInfo?.overrideApplied);
         nextFeedback = {
           status: "EXECUTED",
-          statusLabel: "已立即模擬進場",
-          reason: "觸發條件已成立，系統已建立持倉",
+          statusLabel: simulatedNonRecommended ? "非建議交易（模擬）" : "已立即模擬進場",
+          reason: simulatedNonRecommended ? "已覆寫 AI NO TRADE 並建立模擬持倉" : "觸發條件已成立，系統已建立持倉",
           unmetConditions: [],
           distances: [],
           timestamp: new Date().toISOString(),
         };
       } else if (result.result === "PENDING_CREATED") {
+        const simulatedNonRecommended = Boolean(result?.eligibilityInfo?.overrideApplied);
         nextFeedback = {
           status: "PENDING",
-          statusLabel: "已建立條件掛單",
-          reason: "已建立條件掛單，等待觸發後進場",
+          statusLabel: simulatedNonRecommended ? "非建議交易（模擬）" : "已建立條件掛單",
+          reason: simulatedNonRecommended ? "已建立模擬掛單（覆寫 AI NO TRADE）" : "已建立條件掛單，等待觸發後進場",
           pendingOrder: result.pendingOrder,
           unmetConditions: [],
           distances: [],

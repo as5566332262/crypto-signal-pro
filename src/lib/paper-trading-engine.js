@@ -90,6 +90,45 @@ function resolveSideFromDecision(decision) {
   return null;
 }
 
+function resolveEntryMode(decision) {
+  const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
+  if (setupType === "breakout") return "breakout";
+  if (setupType === "pullback") return "pullback";
+  return "breakout";
+}
+
+function resolvePlannedEntryPrice(decision, side) {
+  const mode = resolveEntryMode(decision);
+  const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
+  if (mode === "pullback") {
+    const entryMid = normalizeNumber(decision?.executionPlan?.entryMid ?? decision?.entryMid);
+    const entryLow = normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow);
+    const entryHigh = normalizeNumber(decision?.executionPlan?.entryHigh ?? decision?.entryHigh);
+    if (Number.isFinite(entryMid)) return { entryPrice: entryMid, mode };
+    if (side === "LONG" && Number.isFinite(entryLow)) return { entryPrice: entryLow, mode };
+    if (side === "SHORT" && Number.isFinite(entryHigh)) return { entryPrice: entryHigh, mode };
+  }
+  return { entryPrice: triggerPrice, mode };
+}
+
+function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr }) {
+  if (!Number.isFinite(entryPrice) || !Number.isFinite(currentPrice)) {
+    return { entryPrice, wasAdjusted: false, distance: undefined };
+  }
+  const atrValue = normalizeNumber(atr);
+  const distance = Math.abs(entryPrice - currentPrice);
+  if (!Number.isFinite(atrValue) || atrValue <= 0) {
+    return { entryPrice, wasAdjusted: false, distance };
+  }
+  if (distance <= atrValue * 0.5) {
+    return { entryPrice, wasAdjusted: false, distance };
+  }
+  const adjustedEntry = side === "SHORT"
+    ? currentPrice - atrValue * 0.3
+    : currentPrice + atrValue * 0.3;
+  return { entryPrice: adjustedEntry, wasAdjusted: true, distance };
+}
+
 function isDecisionContextStale(decision) {
   const generatedAt = decision?.generatedAt ?? decision?.timestamp ?? decision?.decisionAt;
   if (!generatedAt) return false;
@@ -468,18 +507,45 @@ export function simulateDecisionExecution({
   timeframe,
   currentPrice,
   quantity = DEFAULT_POSITION_SIZE,
+  forceSimulation = false,
 }) {
   if (!decision || !state) {
     return { state, result: "NO_DECISION" };
   }
 
   const eligibilityInfo = getSimulationEligibility(decision, currentPrice);
-  if (eligibilityInfo.eligibility === "BLOCKED") {
-    return { state, result: eligibilityInfo.reasonCode, eligibilityInfo };
+  let effectiveEligibility = eligibilityInfo;
+  if (
+    forceSimulation &&
+    eligibilityInfo.eligibility === "BLOCKED" &&
+    ["SKIP_NO_ACTIONABLE_SIDE", "STRUCTURE_INVALID", "EXTREMELY_LOW_CONFIDENCE"].includes(eligibilityInfo.reasonCode)
+  ) {
+    effectiveEligibility = {
+      eligibility: "READY_TO_PLACE_PENDING",
+      reasonCode: "SIMULATION_OVERRIDE",
+      reason: "非建議交易（模擬）",
+      overrideApplied: true,
+      originalReasonCode: eligibilityInfo.reasonCode,
+      originalReason: eligibilityInfo.reason,
+    };
+  }
+
+  if (effectiveEligibility.eligibility === "BLOCKED") {
+    return { state, result: effectiveEligibility.reasonCode, eligibilityInfo: effectiveEligibility };
   }
 
   const side = resolveSideFromDecision(decision);
-  const triggerPrice = normalizeNumber(decision.executionPlan?.triggerPrice ?? decision.triggerPrice);
+  if (!side) {
+    return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility };
+  }
+  const plannedEntry = resolvePlannedEntryPrice(decision, side);
+  const constrainedEntry = applyEntryDistanceConstraint({
+    side,
+    entryPrice: plannedEntry.entryPrice,
+    currentPrice: normalizeNumber(currentPrice),
+    atr: decision?.executionPlan?.atr ?? decision?.atr,
+  });
+  const triggerPrice = normalizeNumber(constrainedEntry.entryPrice);
   const invalidationPrice = normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice);
   const contextKey = buildDecisionContextKey(decision, symbol, timeframe);
   const normalizedLevels = normalizeDirectionalLevels({
@@ -509,15 +575,18 @@ export function simulateDecisionExecution({
     quantity: asSafeNumber(quantity, DEFAULT_POSITION_SIZE),
     createdAt: nowIso(),
     status: "PENDING",
-    waitReason: eligibilityInfo.reason,
+    waitReason: effectiveEligibility.reason,
     entryReason: decision.entryReason || null,
+    entryMode: plannedEntry.mode,
+    entryAdjusted: constrainedEntry.wasAdjusted,
+    simulationLabel: effectiveEligibility.overrideApplied ? "非建議交易（模擬）" : null,
     decisionSnapshot: decision,
     decisionContextKey: contextKey,
   };
 
-  if (eligibilityInfo.eligibility === "READY_TO_EXECUTE") {
+  if (effectiveEligibility.eligibility === "READY_TO_EXECUTE") {
     const timestamp = nowIso();
-    const entryPrice = asSafeNumber(currentPrice, triggerPrice);
+    const entryPrice = asSafeNumber(triggerPrice, currentPrice);
     const quantityValue = asSafeNumber(quantity, DEFAULT_POSITION_SIZE);
     const position = {
       id: createId("pos"),
@@ -539,6 +608,9 @@ export function simulateDecisionExecution({
       openedAt: timestamp,
       unrealizedPnl: 0,
       entryReason: decision.entryReason || null,
+      entryMode: plannedEntry.mode,
+      entryAdjusted: constrainedEntry.wasAdjusted,
+      simulationLabel: effectiveEligibility.overrideApplied ? "非建議交易（模擬）" : null,
       decisionSnapshot: decision,
       decisionContextKey: contextKey,
       hitTargets: [],
@@ -551,7 +623,7 @@ export function simulateDecisionExecution({
       }),
       result: "EXECUTED_IMMEDIATELY",
       position,
-      eligibilityInfo,
+      eligibilityInfo: effectiveEligibility,
     };
   }
 
@@ -560,7 +632,7 @@ export function simulateDecisionExecution({
     pendingOrders: [pendingOrder, ...state.pendingOrders],
   });
 
-  return { state: nextState, result: "PENDING_CREATED", pendingOrder, eligibilityInfo };
+  return { state: nextState, result: "PENDING_CREATED", pendingOrder, eligibilityInfo: effectiveEligibility };
 }
 
 export function reconcilePendingOrdersWithDecision({
