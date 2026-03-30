@@ -44,6 +44,12 @@ function decisionTone(decision) {
   };
 }
 
+function trapSignalText(signal) {
+  if (signal === "BULL_TRAP") return "誘多";
+  if (signal === "BEAR_TRAP") return "誘空";
+  return "無明顯陷阱訊號";
+}
+
 function CandlestickBody(props) {
   const { x, width, payload } = props;
   if (!payload) return null;
@@ -122,13 +128,16 @@ export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel,
   );
 }
 
-export function DecisionCard({ analysis }) {
+export function DecisionCard({ analysis, formatNumber }) {
   const tone = decisionTone(analysis?.bias);
-  const summaryLine = analysis?.triggerEngine?.statusLine || analysis?.triggerEngine?.waitConditionSentence || analysis?.noEntryReason || "等待結構與訊號同步";
+  const trapSummary = analysis?.trapDetection?.trapSignal === "NONE"
+    ? "無明顯陷阱訊號"
+    : `${trapSignalText(analysis?.trapDetection?.trapSignal)}（${analysis?.trapDetection?.trapConfidence || "-"}）`;
+  const summaryLine = analysis?.summary || analysis?.triggerEngine?.waitConditionSentence || analysis?.noEntryReason || "等待結構與訊號同步";
   const metricSignals = [
     { label: "信心", value: analysis?.confidenceLevelLabel || "-", tone: "bg-violet-100 text-violet-700 ring-violet-200" },
     { label: "風險", value: analysis?.riskLevel || "-", tone: "bg-amber-100 text-amber-700 ring-amber-200" },
-    { label: "觸發", value: analysis?.triggerEngine?.confirmationLabel || "-", tone: "bg-sky-100 text-sky-700 ring-sky-200" },
+    { label: "觸發", value: analysis?.executionPlan?.triggerPrice ? formatNumber(analysis?.executionPlan?.triggerPrice, 2) : analysis?.triggerEngine?.confirmationLabel || "-", tone: "bg-sky-100 text-sky-700 ring-sky-200" },
     { label: "MTF 一致", value: analysis?.confluence || "-", tone: "bg-emerald-100 text-emerald-700 ring-emerald-200" },
   ];
 
@@ -146,7 +155,10 @@ export function DecisionCard({ analysis }) {
             </Badge>
             <div className="text-xs font-medium text-slate-500">請優先依此執行</div>
           </div>
-          <div className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-sm text-slate-700">{summaryLine}</div>
+          <div className="mt-3 space-y-2 rounded-xl bg-white/70 px-3 py-2 text-sm text-slate-700">
+            <div>{summaryLine}</div>
+            <div className="text-xs font-medium text-slate-600">陷阱判讀：{trapSummary}</div>
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-2.5">
           {metricSignals.map((metric) => (
@@ -163,44 +175,51 @@ export function DecisionCard({ analysis }) {
 }
 
 export function TradePlanCard({ analysis, digits, formatNumber }) {
-  const isHold = analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
-  const checklistItems = [
-    { label: "目前動作", value: "觀望，暫不進場" },
-    { label: "等待條件", value: analysis?.triggerEngine?.waitConditionSentence || "結構明確轉強或轉弱" },
-    { label: "下一步確認", value: "價格有效突破關鍵區間 + 多週期方向一致" },
-    { label: "失效條件", value: analysis?.noEntryReason || "動能與結構再次背離時取消計畫" },
+  const executionPlan = analysis?.executionPlan || {};
+  const isHold = executionPlan?.action === "HOLD" || analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
+  const ruleSections = [
+    { label: "目前動作", value: executionPlan?.currentActionLabel || "觀望，暫不進場" },
+    { label: "區間上緣", value: formatNumber(executionPlan?.rangeHigh, digits) },
+    { label: "區間下緣", value: formatNumber(executionPlan?.rangeLow, digits) },
+    { label: "觸發價格", value: executionPlan?.triggerPrice != null ? `15m 收盤觸發 ${formatNumber(executionPlan?.triggerPrice, digits)}` : "-" },
+    { label: "建議方向", value: executionPlan?.action || "HOLD" },
   ];
+  const listBlock = (title, rows) => (
+    <div className="rounded-xl border border-slate-200 bg-white p-3">
+      <div className="text-xs font-semibold tracking-[0.12em] text-slate-500">{title}</div>
+      <ul className="mt-2 list-disc space-y-1.5 pl-4 text-sm text-slate-700">
+        {(rows || []).filter(Boolean).map((item) => <li key={item}>{item}</li>)}
+      </ul>
+    </div>
+  );
 
   return (
     <Card className="rounded-3xl shadow-sm">
       <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle>執行計畫</CardTitle></CardHeader>
       <CardContent className="space-y-4 px-5 pb-5 text-sm sm:px-6">
-        {isHold ? (
-          <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-3.5 text-amber-900">
-            <div className="text-xs font-semibold tracking-[0.16em] text-amber-700">EXECUTION CHECKLIST</div>
-            <div className="mt-3 space-y-2.5">
-              {checklistItems.map((item) => (
-                <div key={item.label} className="flex items-start gap-2.5 rounded-lg border border-amber-200/90 bg-white/60 px-2.5 py-2">
-                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-amber-500" />
-                  <div>
-                    <div className="text-xs font-semibold text-amber-700">{item.label}</div>
-                    <div className="text-sm leading-snug text-amber-900">{item.value}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
+        <div className={`rounded-2xl border p-3.5 ${isHold ? "border-amber-200 bg-amber-50/80 text-amber-900" : "border-slate-200 bg-slate-50/70 text-slate-900"}`}>
+          <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">EXECUTION CHECKLIST</div>
+          <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
+            {ruleSections.map((item) => (
+              <div key={item.label} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                <div className="text-xs font-semibold text-slate-500">{item.label}</div>
+                <div className="text-sm leading-snug text-slate-900">{item.value || "-"}</div>
+              </div>
+            ))}
           </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">進場區</div><div className="font-semibold">{analysis?.tradePlan?.entryZone || "-"}</div></div>
-              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">止損</div><div className="font-semibold">{formatNumber(analysis?.stopLoss, digits)}</div></div>
-              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">目標1 / 目標2 / 目標3</div><div className="font-semibold">{formatNumber(analysis?.takeProfit1, digits)} / {formatNumber(analysis?.takeProfit2, digits)} / -</div></div>
-              <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">風險報酬比</div><div className="font-semibold">{formatNumber(analysis?.tradePlan?.rr1, 2)} / {formatNumber(analysis?.tradePlan?.rr2, 2)}</div></div>
-            </div>
-            <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">失效條件</div><div className="font-semibold">{analysis?.tradePlan?.invalidation || "-"}</div></div>
-          </>
-        )}
+          <div className="mt-3 grid gap-2.5">
+            {listBlock("突破確認條件", executionPlan?.breakoutConfirmationRules)}
+            {listBlock("回踩確認條件", executionPlan?.retestConfirmationRules)}
+            {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
+            {listBlock("下一步確認", executionPlan?.nextConfirmationRules)}
+            {listBlock("失效條件", executionPlan?.invalidationRules)}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <div className="rounded-xl bg-white p-3"><div className="text-slate-500">失效價格</div><div className="font-semibold">{formatNumber(executionPlan?.invalidationPrice, digits)}</div></div>
+            <div className="rounded-xl bg-white p-3"><div className="text-slate-500">止損</div><div className="font-semibold">{formatNumber(executionPlan?.stopLoss, digits)}</div></div>
+            <div className="rounded-xl bg-white p-3 col-span-2"><div className="text-slate-500">TP1 / TP2 / TP3</div><div className="font-semibold">{formatNumber(executionPlan?.takeProfit1, digits)} / {formatNumber(executionPlan?.takeProfit2, digits)} / {formatNumber(executionPlan?.takeProfit3, digits)}</div></div>
+          </div>
+        </div>
         <div className="rounded-xl border border-slate-200 p-3">
           <div className="text-slate-500">倉位 / 槓桿</div>
           <div className="font-semibold">1x 模擬單位 · 無槓桿</div>
@@ -215,6 +234,7 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
     { label: "Entry", tone: "bg-slate-100 text-slate-700" },
     { label: "Stop Loss", tone: "bg-rose-100 text-rose-700" },
     { label: "Take Profit", tone: "bg-emerald-100 text-emerald-700" },
+    { label: "Trap Zone", tone: "bg-orange-100 text-orange-700" },
     { label: "Position", tone: "bg-indigo-100 text-indigo-700" },
   ];
 
@@ -246,11 +266,23 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
 
               <ReferenceArea yAxisId="left" y1={analysis?.levels?.structureSupportZone?.low} y2={analysis?.levels?.structureSupportZone?.high} fill="#16a34a" fillOpacity={0.08} />
               <ReferenceArea yAxisId="left" y1={analysis?.levels?.structureResistanceZone?.low} y2={analysis?.levels?.structureResistanceZone?.high} fill="#dc2626" fillOpacity={0.08} />
+              {analysis?.trapDetection?.trapSignal !== "NONE" ? (
+                <ReferenceArea
+                  yAxisId="left"
+                  y1={analysis?.trapDetection?.trapZoneLow}
+                  y2={analysis?.trapDetection?.trapZoneHigh}
+                  fill="#f97316"
+                  fillOpacity={0.12}
+                />
+              ) : null}
 
               <ReferenceLine yAxisId="left" y={analysis?.price} stroke="#0f172a" strokeDasharray="4 4" label="現價" />
               <ReferenceLine yAxisId="left" y={analysis?.stopLoss} stroke="#ef4444" strokeDasharray="3 3" label="SL" />
               <ReferenceLine yAxisId="left" y={analysis?.takeProfit1} stroke="#22c55e" strokeDasharray="3 3" label="TP1" />
               <ReferenceLine yAxisId="left" y={analysis?.takeProfit2} stroke="#16a34a" strokeDasharray="3 3" label="TP2" />
+              {analysis?.executionPlan?.triggerPrice ? (
+                <ReferenceLine yAxisId="left" y={analysis?.executionPlan?.triggerPrice} stroke="#0284c7" strokeDasharray="5 5" label="Trigger" />
+              ) : null}
 
               <Bar yAxisId="right" dataKey="volume" opacity={0.22} radius={[3, 3, 0, 0]}>
                 {chartData.map((entry, index) => <Cell key={`vol-${index}`} fill={entry.bullish ? "#16a34a" : "#dc2626"} />)}
@@ -271,6 +303,10 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
 }
 
 export function MarketContextCard({ analysis, currentCandle, digits, formatNumber }) {
+  const trap = analysis?.trapDetection;
+  const trapZone = trap?.trapZoneLow != null && trap?.trapZoneHigh != null
+    ? `${formatNumber(trap?.trapZoneLow, digits)} ~ ${formatNumber(trap?.trapZoneHigh, digits)}`
+    : "-";
   return (
     <Card className="rounded-3xl shadow-sm">
       <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle>市場結構</CardTitle></CardHeader>
@@ -281,13 +317,25 @@ export function MarketContextCard({ analysis, currentCandle, digits, formatNumbe
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">假突破風險</div><div className="font-semibold">{analysis?.fakeBreakout?.risk || "-"}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">ATR 波動</div><div className="font-semibold">{formatNumber(analysis?.atr, digits)}</div></div>
         <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">目前 K 線</div><div className="font-semibold">{formatNumber(currentCandle?.low, digits)} ~ {formatNumber(currentCandle?.high, digits)}</div></div>
+        <div className="col-span-full rounded-xl border border-orange-200 bg-orange-50/80 p-3">
+          <div className="text-xs font-semibold tracking-[0.12em] text-orange-700">陷阱訊號</div>
+          <div className="mt-1 grid gap-1 text-sm text-orange-900 sm:grid-cols-2">
+            <div>訊號：<span className="font-semibold">{trapSignalText(trap?.trapSignal)}</span></div>
+            <div>信心：<span className="font-semibold">{trap?.trapConfidence || "-"}</span></div>
+            <div>區間：<span className="font-semibold">{trapZone}</span></div>
+            <div>原因：<span className="font-semibold">{trap?.trapReason || "-"}</span></div>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
 }
 
 export function AIAnalysisAccordion({ analysis }) {
-  const oneLineSummary = `AI分析：${analysis?.marketRegimeLabel || "市場狀態未定"} + ${analysis?.confluence || "多週期分歧"}，${analysis?.noEntryReason || "暫無有效 setup"}`;
+  const trapText = analysis?.trapDetection?.trapSignal === "NONE"
+    ? "無明顯陷阱"
+    : `${trapSignalText(analysis?.trapDetection?.trapSignal)}風險（${analysis?.trapDetection?.trapConfidence || "-"})`;
+  const oneLineSummary = `AI分析：${analysis?.marketRegimeLabel || "市場狀態未定"} + ${analysis?.confluence || "多週期分歧"}，${trapText}，${analysis?.noEntryReason || "暫無有效 setup"}`;
   return (
     <Card className="rounded-3xl border border-slate-200/80 bg-slate-50 shadow-sm">
       <details className="group">
@@ -302,6 +350,9 @@ export function AIAnalysisAccordion({ analysis }) {
           <div><span className="font-semibold">多週期：</span>{(analysis?.higherBiases || []).map((item) => `${item.interval}:${item.bias}`).join(" · ") || "-"}</div>
           <div><span className="font-semibold">指標摘要：</span>RSI {analysis?.rsi?.toFixed?.(2) || "-"}, MACD {analysis?.macd?.histogram?.toFixed?.(4) || "-"}</div>
           <div><span className="font-semibold">市場結構：</span>{analysis?.structure || "-"} / {analysis?.breakoutState || "-"}</div>
+          <div><span className="font-semibold">陷阱判讀：</span>{trapSignalText(analysis?.trapDetection?.trapSignal)}（{analysis?.trapDetection?.trapConfidence || "-"})</div>
+          <div><span className="font-semibold">陷阱驗證：</span>{(analysis?.trapDetection?.trapValidationRules || []).join("、") || "-"}</div>
+          <div><span className="font-semibold">陷阱失效：</span>{(analysis?.trapDetection?.trapInvalidationRules || []).join("、") || "-"}</div>
           <div><span className="font-semibold">風險警示：</span>{(analysis?.waitReasons || []).join("、") || "無"}</div>
           <pre className="whitespace-pre-wrap rounded-xl bg-slate-800 p-3 text-xs text-slate-100">{analysis?.aiSummary || "-"}</pre>
         </CardContent>
@@ -368,7 +419,7 @@ export default function TradingDecisionPage({
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
         <div className="min-w-0 space-y-6">
-          <DecisionCard analysis={analysis} />
+          <DecisionCard analysis={analysis} formatNumber={formatNumber} />
           <TradePlanCard analysis={analysis} digits={digits} formatNumber={formatNumber} />
           <AIAnalysisAccordion analysis={analysis} />
         </div>

@@ -101,6 +101,12 @@ const CONFIDENCE_LEVEL_LABELS = {
   high: "高",
 };
 
+const TRAP_SIGNAL_LABELS = {
+  BULL_TRAP: "誘多",
+  BEAR_TRAP: "誘空",
+  NONE: "無明顯陷阱訊號",
+};
+
 function ema(values, period) {
   if (!values.length) return [];
   const k = 2 / (period + 1);
@@ -739,6 +745,7 @@ function buildAiSummary({
   waitForConditions,
   triggerEngine,
   noEntryReason,
+  trapDetection,
 }) {
   const regimeText = localizeMarketRegime(marketRegime);
   const finalDecisionLabel = localizeDecision(finalDecision);
@@ -788,6 +795,10 @@ function buildAiSummary({
       ? `目前先不進場，正在等待：${triggerEngine?.waitConditionSentence || "價格回到關鍵區並完成結構確認"}。做多劇本：${triggerEngine?.waitScripts?.long || "-"} 做空劇本：${triggerEngine?.waitScripts?.short || "-"}`
     : "";
   const tooLateText = entryTiming === "TOO_LATE" ? "此 setup 已接近第一目標位，風報比優勢下降，不建議現在追單。" : "";
+  const trapText =
+    trapDetection?.trapSignal && trapDetection.trapSignal !== "NONE"
+      ? `陷阱判讀：${TRAP_SIGNAL_LABELS[trapDetection.trapSignal]}（${trapDetection.trapConfidence}），${trapDetection.trapReason}。`
+      : "陷阱判讀：無明顯誘多/誘空訊號。";
   return [
     `【最終決策】${finalDecisionLabel}`,
     `【Setup Type】${setupTypeLabel}`,
@@ -799,7 +810,7 @@ function buildAiSummary({
     triggerEngine ? `【轉向條件】${triggerEngine.biasShiftSentence}` : "",
     triggerEngine ? `【下一步行動】${triggerEngine.nextAction}` : "",
     `【風報比 RR】${rrLabel}`,
-    `【AI綜合結論】主週期（${primaryTimeframe}）判讀為${bias}，市場屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，信心等級為${confidenceText}。${reason}。假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；策略建議「${entryAdvice} / ${setup}」。${entryNowText}${tooLateText}${cannotEnterText}${waitForText}${waitExecutionText}${noSetupText}${triggerText}多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`,
+    `【AI綜合結論】主週期（${primaryTimeframe}）判讀為${bias}，市場屬於${regimeText}，結構為${structure}，${rhythm}。多週期一致性：${confluence}，信心等級為${confidenceText}。${reason}。假突破風險為${fakeBreakoutRisk}，目前交易適配度：${tradability}；策略建議「${entryAdvice} / ${setup}」。${trapText}${entryNowText}${tooLateText}${cannotEnterText}${waitForText}${waitExecutionText}${noSetupText}${triggerText}多頭機率約 ${longProb}%、空頭機率約 ${shortProb}%，請依波動調整倉位與節奏。`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -831,6 +842,12 @@ function localizeMarketRegime(value) {
 
 function localizeConfidence(value) {
   return CONFIDENCE_LEVEL_LABELS[value] || value || "-";
+}
+
+function normalizeMtfBiasLabel(value) {
+  if (value === "偏多") return "bullish";
+  if (value === "偏空") return "bearish";
+  return "neutral";
 }
 
 function deriveSetupType({
@@ -1316,6 +1333,166 @@ function detectFakeBreakoutRisk({ candles, levels, atr, volumeState, breakoutSta
   return { score: Number(score.toFixed(1)), risk, reasons };
 }
 
+function detectTrapSignal({
+  candles,
+  levels,
+  atr,
+  rsi,
+  macd,
+  volumeState,
+  mtfBias,
+  breakoutState,
+}) {
+  if (!candles?.length || !levels) {
+    return {
+      trapSignal: "NONE",
+      trapConfidence: "低",
+      trapReason: "資料不足，暫無陷阱訊號。",
+      trapZoneHigh: null,
+      trapZoneLow: null,
+      trapValidationRules: [],
+      trapInvalidationRules: [],
+    };
+  }
+
+  const last = candles[candles.length - 1];
+  const prev = candles[candles.length - 2];
+  const candleRange = Math.max(last.high - last.low, 1e-8);
+  const upperWick = last.high - Math.max(last.open, last.close);
+  const lowerWick = Math.min(last.open, last.close) - last.low;
+  const avgVolume20 =
+    candles.slice(-20).reduce((sum, c) => sum + c.volume, 0) / Math.max(candles.slice(-20).length, 1);
+  const volumeRatio = avgVolume20 > 0 ? last.volume / avgVolume20 : 1;
+  const momentumWeakBull = (rsi != null && rsi < 54) || (macd?.histogram != null && macd.histogram <= 0);
+  const momentumWeakBear = (rsi != null && rsi > 46) || (macd?.histogram != null && macd.histogram >= 0);
+  const atrBuffer = Math.max((atr || last.close * 0.01) * 0.22, last.close * 0.0018);
+  const sweptHigh = last.high > (levels?.structureResistanceZone?.high || last.high) + atrBuffer;
+  const sweptLow = last.low < (levels?.structureSupportZone?.low || last.low) - atrBuffer;
+  const failedUpHold = last.close < (levels?.structureResistanceZone?.high || last.close);
+  const failedDownHold = last.close > (levels?.structureSupportZone?.low || last.close);
+  const bullMtfMismatch = mtfBias?.tf15m !== "bullish" || (mtfBias?.tf1h === "bearish" && mtfBias?.tf4h !== "bullish");
+  const bearMtfMismatch = mtfBias?.tf15m !== "bearish" || (mtfBias?.tf1h === "bullish" && mtfBias?.tf4h !== "bearish");
+
+  let bullTrapScore = 0;
+  const bullTrapReasons = [];
+  if (sweptHigh && failedUpHold) {
+    bullTrapScore += 2.8;
+    bullTrapReasons.push(`已掃過上方流動性 ${formatNumber(levels?.structureResistanceZone?.high)}，但收盤跌回關鍵位下方`);
+  }
+  if (volumeRatio < 1) {
+    bullTrapScore += 1.2;
+    bullTrapReasons.push("突破後量能未高於 20MA 均量");
+  }
+  if (upperWick > candleRange * 0.45) {
+    bullTrapScore += 1.1;
+    bullTrapReasons.push("上影線明顯，顯示上方賣壓吸收");
+  }
+  if (momentumWeakBull) {
+    bullTrapScore += 1.2;
+    bullTrapReasons.push("RSI / MACD 未同步確認突破動能");
+  }
+  if (bullMtfMismatch) {
+    bullTrapScore += 1.4;
+    bullTrapReasons.push("多週期未同步偏多");
+  }
+  if (prev && prev.close > (levels?.structureResistanceZone?.high || prev.close) && failedUpHold) {
+    bullTrapScore += 1;
+    bullTrapReasons.push("前一根突破後無法延續，出現回落收盤");
+  }
+
+  let bearTrapScore = 0;
+  const bearTrapReasons = [];
+  if (sweptLow && failedDownHold) {
+    bearTrapScore += 2.8;
+    bearTrapReasons.push(`已掃過下方流動性 ${formatNumber(levels?.structureSupportZone?.low)}，但收盤收回關鍵位上方`);
+  }
+  if (volumeRatio < 1) {
+    bearTrapScore += 1.2;
+    bearTrapReasons.push("跌破後量能未高於 20MA 均量");
+  }
+  if (lowerWick > candleRange * 0.45) {
+    bearTrapScore += 1.1;
+    bearTrapReasons.push("下影線明顯，顯示下方承接買盤");
+  }
+  if (momentumWeakBear) {
+    bearTrapScore += 1.2;
+    bearTrapReasons.push("RSI / MACD 未同步確認下跌動能");
+  }
+  if (bearMtfMismatch) {
+    bearTrapScore += 1.4;
+    bearTrapReasons.push("多週期未同步偏空");
+  }
+  if (prev && prev.close < (levels?.structureSupportZone?.low || prev.close) && failedDownHold) {
+    bearTrapScore += 1;
+    bearTrapReasons.push("前一根跌破後無法延續，出現回收收盤");
+  }
+
+  const trapSignal =
+    bullTrapScore < 3.2 && bearTrapScore < 3.2 ? "NONE" : bullTrapScore >= bearTrapScore ? "BULL_TRAP" : "BEAR_TRAP";
+  const trapScore = trapSignal === "BULL_TRAP" ? bullTrapScore : trapSignal === "BEAR_TRAP" ? bearTrapScore : 0;
+  const trapConfidence = trapScore >= 6 ? "高" : trapScore >= 4.2 ? "中" : "低";
+
+  if (trapSignal === "BULL_TRAP") {
+    const trapZoneLow = levels?.structureResistanceZone?.high || null;
+    return {
+      trapSignal,
+      trapConfidence,
+      trapReason:
+        bullTrapReasons[0] ||
+        "上破後未站穩且動能不足，短線偏向誘多風險。",
+      trapZoneHigh: Number(last.high.toFixed(4)),
+      trapZoneLow: trapZoneLow != null ? Number(trapZoneLow.toFixed(4)) : null,
+      trapValidationRules: [
+        `15m 收盤無法站穩 ${formatNumber(levels?.structureResistanceZone?.high)} 上方`,
+        "突破後成交量未高於 20MA 均量",
+        "上影線占比偏高或 RSI 未續強",
+      ],
+      trapInvalidationRules: [
+        `價格重新站穩 ${formatNumber(last.high)} 上方`,
+        "成交量放大並延續 2 根 K 線",
+        "1h 轉為同步偏多且 MACD 柱體翻正",
+      ],
+    };
+  }
+
+  if (trapSignal === "BEAR_TRAP") {
+    const trapZoneHigh = levels?.structureSupportZone?.low || null;
+    return {
+      trapSignal,
+      trapConfidence,
+      trapReason:
+        bearTrapReasons[0] ||
+        "下破後未站穩且動能不足，短線偏向誘空風險。",
+      trapZoneHigh: trapZoneHigh != null ? Number(trapZoneHigh.toFixed(4)) : null,
+      trapZoneLow: Number(last.low.toFixed(4)),
+      trapValidationRules: [
+        `15m 收盤無法跌破 ${formatNumber(levels?.structureSupportZone?.low)} 下方`,
+        "跌破後成交量未高於 20MA 均量",
+        "下影線占比偏高或 RSI 未續弱",
+      ],
+      trapInvalidationRules: [
+        `價格重新跌破 ${formatNumber(last.low)} 下方`,
+        "成交量放大並延續 2 根 K 線",
+        "1h 轉為同步偏空且 MACD 柱體翻負",
+      ],
+    };
+  }
+
+  const regimeHint =
+    breakoutState === "區間內" || volumeState === "量縮"
+      ? "目前仍以區間震盪為主，暫無明顯陷阱訊號。"
+      : "目前結構未出現明確誘多/誘空特徵。";
+  return {
+    trapSignal: "NONE",
+    trapConfidence: "低",
+    trapReason: regimeHint,
+    trapZoneHigh: null,
+    trapZoneLow: null,
+    trapValidationRules: ["等待價格掃過關鍵位後是否失守/失敗站穩"],
+    trapInvalidationRules: ["若量價與多週期同步，陷阱風險下降"],
+  };
+}
+
 function analyzeMarket(candlesByInterval, primaryTimeframe) {
   const candles = candlesByInterval[primaryTimeframe] || [];
   if (!candles.length) return null;
@@ -1399,6 +1576,12 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
   const mtfDisagreement = normalizedWeight ? oppositeWeight / normalizedWeight : 0;
   const confluence =
     mtfBias === "偏多" ? "多週期偏多" : mtfBias === "偏空" ? "多週期偏空" : "多週期分歧";
+  const intervalBiasMap = Object.fromEntries(timeframeSignals.map((item) => [item.interval, item.bias]));
+  const mtfBiasObject = {
+    tf15m: normalizeMtfBiasLabel(intervalBiasMap["15m"]),
+    tf1h: normalizeMtfBiasLabel(intervalBiasMap["1h"]),
+    tf4h: normalizeMtfBiasLabel(intervalBiasMap["4h"]),
+  };
 
   const marketRegime = detectMarketRegime({
     adx,
@@ -1455,6 +1638,16 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     levels,
     atr,
     volumeState,
+    breakoutState,
+  });
+  const trapDetection = detectTrapSignal({
+    candles,
+    levels,
+    atr,
+    rsi,
+    macd,
+    volumeState,
+    mtfBias: mtfBiasObject,
     breakoutState,
   });
 
@@ -1788,6 +1981,7 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     waitForConditions,
     triggerEngine,
     noEntryReason,
+    trapDetection,
   });
 
   const timeframeBiases = timeframeSignals.map(({ interval, bias: intervalBias, spread, weight }) => ({
@@ -1796,6 +1990,60 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     spread: Number(spread.toFixed(2)),
     weight: Number(weight.toFixed(2)),
   }));
+
+  const action = finalDecision === "BUY" ? "LONG" : finalDecision === "SELL" ? "SHORT" : "HOLD";
+  const rangeHigh = Number((levels?.structureResistanceZone?.high ?? levels?.nearestResistance ?? price).toFixed(4));
+  const rangeLow = Number((levels?.structureSupportZone?.low ?? levels?.nearestSupport ?? price).toFixed(4));
+  const triggerPrice =
+    action === "LONG"
+      ? rangeHigh
+      : action === "SHORT"
+      ? rangeLow
+      : bias === "偏多"
+      ? rangeHigh
+      : rangeLow;
+  const invalidationPrice =
+    finalTradePlan?.stop ?? (action === "SHORT" ? levels?.structureResistanceZone?.high : levels?.structureSupportZone?.low);
+  const executionPlan = {
+    action,
+    currentActionLabel:
+      action === "LONG" ? "偏多劇本：等待觸發後執行做多" : action === "SHORT" ? "偏空劇本：等待觸發後執行做空" : "目前動作：觀望，等待條件完成",
+    rangeHigh,
+    rangeLow,
+    triggerPrice: triggerPrice != null ? Number(triggerPrice.toFixed(4)) : undefined,
+    breakoutConfirmationRules: [
+      action === "SHORT"
+        ? `15m 收盤跌破 ${formatNumber(rangeLow)}，且成交量 > 20MA 均量`
+        : `15m 收盤站上 ${formatNumber(rangeHigh)}，且成交量 > 20MA 均量`,
+      action === "SHORT"
+        ? `跌破 K 棒實體收在 ${formatNumber(rangeLow)} 下方，且 MACD 柱體維持負值`
+        : `突破 K 棒實體收在 ${formatNumber(rangeHigh)} 上方，且 MACD 柱體維持正值`,
+    ],
+    retestConfirmationRules: [
+      action === "SHORT"
+        ? `回測 ${formatNumber(rangeLow)} 無法站回，上影線轉弱`
+        : `回踩 ${formatNumber(rangeHigh)} 不破並收回上方`,
+      action === "SHORT" ? "回測時 RSI < 48" : "回測時 RSI > 52",
+    ],
+    mtfAlignmentRules: [
+      `15m=${mtfBiasObject.tf15m}, 1h=${mtfBiasObject.tf1h}, 4h=${mtfBiasObject.tf4h}`,
+      action === "SHORT" ? "1h 不可轉為 bullish" : "1h 不可轉為 bearish",
+    ],
+    nextConfirmationRules: [
+      triggerEngine?.nextAction || "滿足觸發條件後再執行",
+      `確認強度：${triggerEngine?.confirmationLabel || "-"}`,
+    ],
+    invalidationRules: [
+      ...(triggerEngine?.invalidationTriggers || []),
+      ...(trapDetection.trapSignal !== "NONE" ? trapDetection.trapInvalidationRules : []),
+    ].slice(0, 4),
+    invalidationPrice: invalidationPrice != null ? Number(Number(invalidationPrice).toFixed(4)) : undefined,
+    stopLoss: finalTradePlan?.stop,
+    takeProfit1: finalTradePlan?.target1,
+    takeProfit2: finalTradePlan?.target2,
+    takeProfit3:
+      action === "LONG" ? levels?.secondResistance : action === "SHORT" ? levels?.secondSupport : undefined,
+  };
 
   return {
     price,
@@ -1825,6 +2073,7 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     levels,
     higherBiases: timeframeBiases,
     confluence,
+    mtfBias: mtfBiasObject,
     confidenceLevel: adjustedConfidenceLevel,
     confidenceLevelLabel: localizeConfidence(adjustedConfidenceLevel),
     marketRegime,
@@ -1835,6 +2084,8 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     breakoutState,
     volumeState,
     tradePlan: finalTradePlan,
+    executionPlan,
+    trapDetection,
     fakeBreakout,
     waitReasons,
     waitForConditions,
@@ -1843,6 +2094,7 @@ function analyzeMarket(candlesByInterval, primaryTimeframe) {
     liquiditySweep,
     trendlineState,
     aiSummary,
+    summary: triggerEngine?.entryTriggerSentence || explanation,
     longProb,
     shortProb,
     smartSignal,
