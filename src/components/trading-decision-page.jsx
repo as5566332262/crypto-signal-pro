@@ -91,34 +91,31 @@ function CustomTooltip({ active, payload, label, symbol, formatNumber }) {
 }
 
 export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel, confidenceLabel, lastUpdated, digits, formatNumber }) {
+  const blocks = [
+    { label: "幣種", value: symbolLabel },
+    { label: "價格", value: formatNumber(currentPrice, digits) },
+    { label: "市場狀態", value: regime || "-" },
+    { label: "更新時間", value: lastUpdated || "-" },
+  ];
+
   return (
-    <Card className="rounded-3xl border border-slate-200 bg-slate-950 text-slate-100 shadow-md">
+    <Card className="rounded-3xl border border-slate-800/80 bg-slate-950 text-slate-100 shadow-[0_10px_40px_-20px_rgba(15,23,42,0.9)]">
       <CardHeader className="px-5 pt-5 pb-3 sm:px-6">
-        <CardTitle className="text-base tracking-wide text-slate-300">交易終端狀態列</CardTitle>
+        <CardTitle className="text-base tracking-[0.18em] text-slate-300">交易終端狀態列</CardTitle>
       </CardHeader>
-      <CardContent className="grid gap-x-6 gap-y-3 border-t border-slate-800 px-5 pt-4 pb-5 sm:grid-cols-2 sm:px-6 lg:grid-cols-5">
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-slate-400">幣種</div>
-          <div className="mt-1 text-sm font-semibold">{symbolLabel}</div>
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-slate-400">價格</div>
-          <div className="mt-1 text-sm font-semibold">{formatNumber(currentPrice, digits)}</div>
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-slate-400">市場狀態</div>
-          <div className="mt-1 text-sm font-semibold">{regime || "-"}</div>
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-slate-400">AI決策</div>
-          <div className="mt-1 flex items-center gap-2">
-            <Badge className={`rounded-full px-2.5 py-0.5 text-xs ${valueTone(actionLabel)}`}>{actionLabel || "-"}</Badge>
-            <span className="text-sm font-medium text-slate-200">信心：{confidenceLabel || "-"}</span>
+      <CardContent className="grid gap-y-3 border-t border-slate-800 px-5 pt-4 pb-5 sm:grid-cols-[repeat(4,minmax(0,1fr))_minmax(0,1.35fr)] sm:px-6">
+        {blocks.map((item, index) => (
+          <div key={item.label} className={`pr-4 ${index < blocks.length - 1 ? "border-r border-slate-800/90" : ""}`}>
+            <div className="text-[11px] tracking-[0.12em] text-slate-500">{item.label}</div>
+            <div className="mt-1.5 text-sm font-semibold tracking-wide text-slate-100">{item.value}</div>
           </div>
-        </div>
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-slate-400">更新時間</div>
-          <div className="mt-1 text-sm font-medium text-slate-200">{lastUpdated || "-"}</div>
+        ))}
+        <div className="rounded-2xl border border-slate-700/80 bg-slate-900/80 px-3.5 py-2.5">
+          <div className="text-[11px] tracking-[0.12em] text-slate-500">AI決策</div>
+          <div className="mt-1.5 flex items-center justify-between gap-3">
+            <Badge className={`rounded-full px-3 py-1 text-sm font-semibold tracking-wide ${valueTone(actionLabel)}`}>{actionLabel || "-"}</Badge>
+            <span className="text-xs text-slate-300">信心等級 <span className="font-semibold text-slate-100">{confidenceLabel || "-"}</span></span>
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -127,32 +124,39 @@ export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel,
 
 export function DecisionCard({ analysis }) {
   const tone = decisionTone(analysis?.bias);
+  const summaryLine = analysis?.triggerEngine?.statusLine || analysis?.triggerEngine?.waitConditionSentence || analysis?.noEntryReason || "等待結構與訊號同步";
+  const metricSignals = [
+    { label: "信心", value: analysis?.confidenceLevelLabel || "-", tone: "bg-violet-100 text-violet-700 ring-violet-200" },
+    { label: "風險", value: analysis?.riskLevel || "-", tone: "bg-amber-100 text-amber-700 ring-amber-200" },
+    { label: "觸發", value: analysis?.triggerEngine?.confirmationLabel || "-", tone: "bg-sky-100 text-sky-700 ring-sky-200" },
+    { label: "MTF 一致", value: analysis?.confluence || "-", tone: "bg-emerald-100 text-emerald-700 ring-emerald-200" },
+  ];
+
   return (
-    <Card className="rounded-3xl border-2 border-slate-900 shadow-md">
-      <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle className="text-xl">決策中心</CardTitle></CardHeader>
-      <CardContent className="space-y-4 px-5 pb-5 text-sm sm:px-6">
-        <div className={`rounded-2xl border bg-gradient-to-r p-4 ${tone.glow}`}>
-          <div className="text-sm font-medium text-slate-600">最終決策</div>
-          <div className="mt-2 flex items-center justify-between gap-4">
-            <Badge className={`rounded-full px-4 py-2 text-xl font-bold tracking-wide ${tone.pill}`}>
+    <Card className="rounded-3xl border-2 border-slate-900 shadow-[0_12px_30px_-18px_rgba(15,23,42,0.55)]">
+      <CardHeader className="px-5 pt-5 pb-3 sm:px-6">
+        <CardTitle className="text-2xl tracking-tight">決策中心</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 px-5 pb-6 text-sm sm:px-6">
+        <div className={`rounded-2xl border bg-gradient-to-r p-5 ${tone.glow}`}>
+          <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">FINAL DECISION</div>
+          <div className="mt-3 flex items-center justify-between gap-4">
+            <Badge className={`rounded-full px-5 py-2.5 text-2xl font-extrabold tracking-[0.08em] ${tone.pill}`}>
               {analysis?.finalDecisionLabel || "-"}
             </Badge>
-            <div className="text-xs text-slate-500">請優先依此行動</div>
+            <div className="text-xs font-medium text-slate-500">請優先依此執行</div>
           </div>
+          <div className="mt-3 rounded-xl bg-white/70 px-3 py-2 text-sm text-slate-700">{summaryLine}</div>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="rounded-xl bg-slate-50 p-3">
-            <div className="text-sm text-slate-500">信心</div>
-            <div className="text-lg font-bold">{analysis?.confidenceLevelLabel || "-"}</div>
-          </div>
-          <div className="rounded-xl bg-slate-50 p-3">
-            <div className="text-sm text-slate-500">風險</div>
-            <div className="text-lg font-bold">{analysis?.riskLevel || "-"}</div>
-          </div>
-          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">多週期一致性</div><div className="font-semibold">{analysis?.confluence || "-"}</div></div>
-          <div className="rounded-xl bg-slate-50 p-3"><div className="text-slate-500">觸發條件</div><div className="font-semibold">{analysis?.triggerEngine?.confirmationLabel || "-"}</div></div>
+        <div className="grid grid-cols-2 gap-2.5">
+          {metricSignals.map((metric) => (
+            <div key={metric.label} className="rounded-xl border border-slate-200 bg-white p-2.5">
+              <div className="text-[11px] tracking-[0.12em] text-slate-500">{metric.label}</div>
+              <div className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-sm font-semibold ring-1 ${metric.tone}`}>{metric.value}</div>
+            </div>
+          ))}
         </div>
-        <div className="rounded-xl border border-slate-200 p-3 text-slate-600">{analysis?.explanation || "-"}</div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-slate-600">{analysis?.explanation || "-"}</div>
       </CardContent>
     </Card>
   );
@@ -160,19 +164,31 @@ export function DecisionCard({ analysis }) {
 
 export function TradePlanCard({ analysis, digits, formatNumber }) {
   const isHold = analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
+  const checklistItems = [
+    { label: "目前動作", value: "觀望，暫不進場" },
+    { label: "等待條件", value: analysis?.triggerEngine?.waitConditionSentence || "結構明確轉強或轉弱" },
+    { label: "下一步確認", value: "價格有效突破關鍵區間 + 多週期方向一致" },
+    { label: "失效條件", value: analysis?.noEntryReason || "動能與結構再次背離時取消計畫" },
+  ];
+
   return (
     <Card className="rounded-3xl shadow-sm">
       <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle>執行計畫</CardTitle></CardHeader>
-      <CardContent className="space-y-3 px-5 pb-5 text-sm sm:px-6">
+      <CardContent className="space-y-4 px-5 pb-5 text-sm sm:px-6">
         {isHold ? (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-800">
-            <div className="font-semibold">目前不進場</div>
-            <ul className="mt-2 list-disc space-y-1 pl-5">
-              <li>等待條件：結構明確轉強或轉弱</li>
-              <li>價格有效突破關鍵區間</li>
-              <li>多週期方向重新一致</li>
-              <li className="text-amber-700/90">{analysis?.triggerEngine?.waitConditionSentence || analysis?.noEntryReason || "等待結構與動能同步"}</li>
-            </ul>
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-3.5 text-amber-900">
+            <div className="text-xs font-semibold tracking-[0.16em] text-amber-700">EXECUTION CHECKLIST</div>
+            <div className="mt-3 space-y-2.5">
+              {checklistItems.map((item) => (
+                <div key={item.label} className="flex items-start gap-2.5 rounded-lg border border-amber-200/90 bg-white/60 px-2.5 py-2">
+                  <span className="mt-1 h-1.5 w-1.5 rounded-full bg-amber-500" />
+                  <div>
+                    <div className="text-xs font-semibold text-amber-700">{item.label}</div>
+                    <div className="text-sm leading-snug text-amber-900">{item.value}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
           <>
@@ -195,21 +211,31 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
 }
 
 export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, formatNumber }) {
+  const overlays = [
+    { label: "Entry", tone: "bg-slate-100 text-slate-700" },
+    { label: "Stop Loss", tone: "bg-rose-100 text-rose-700" },
+    { label: "Take Profit", tone: "bg-emerald-100 text-emerald-700" },
+    { label: "Position", tone: "bg-indigo-100 text-indigo-700" },
+  ];
+
   return (
     <Card className="rounded-3xl shadow-sm">
       <CardHeader className="px-5 pt-5 pb-3 sm:px-6">
-        <CardTitle>價格圖表</CardTitle>
-        <div className="text-xs text-slate-500">已預留：Entry / SL / TP / 持倉標記覆蓋層</div>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle>價格圖表</CardTitle>
+            <div className="mt-1 text-xs text-slate-500">Execution Workspace · {timeframeLabel}</div>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2 py-1.5">
+            {overlays.map((item) => (
+              <Badge key={item.label} className={`rounded-full px-2 py-0.5 text-[11px] ${item.tone}`}>{item.label}</Badge>
+            ))}
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="px-5 pb-5 sm:px-6">
-        <div className="rounded-2xl border border-slate-200 bg-white p-2">
-          <div className="mb-2 flex flex-wrap gap-2 px-1 text-[11px] text-slate-500">
-            <Badge className="rounded-full bg-slate-100 text-slate-700">Entry Line（預留）</Badge>
-            <Badge className="rounded-full bg-rose-100 text-rose-700">Stop Loss（預留）</Badge>
-            <Badge className="rounded-full bg-emerald-100 text-emerald-700">Take Profit（預留）</Badge>
-            <Badge className="rounded-full bg-indigo-100 text-indigo-700">Position Marker（預留）</Badge>
-          </div>
-          <div className="h-[360px] w-full rounded-xl bg-slate-50 p-2">
+        <div className="rounded-2xl border border-slate-200 bg-white p-2.5 shadow-inner shadow-slate-100/60">
+          <div className="h-[360px] w-full rounded-xl border border-slate-200 bg-slate-50 p-2">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={chartData} margin={{ top: 12, right: 12, left: 4, bottom: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
@@ -238,7 +264,7 @@ export function ChartPanel({ chartData, analysis, symbol, timeframeLabel, format
           </ResponsiveContainer>
           </div>
         </div>
-        <div className="mt-2 text-xs text-slate-500">{timeframeLabel} · 已優化間距，便於後續執行覆蓋層疊加。</div>
+        <div className="mt-2 text-xs text-slate-500">圖層對齊已優化，便於後續掛單與風險線疊加。</div>
       </CardContent>
     </Card>
   );
@@ -307,7 +333,7 @@ export default function TradingDecisionPage({
   const symbolLabel = symbolOptions.find((item) => item.value === symbol)?.label || symbol;
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6 px-1 sm:px-2">
+    <div className="mx-auto w-full max-w-7xl space-y-7 px-1 sm:px-2">
       <Card className="rounded-3xl border-0 shadow-md">
         <CardContent className="grid gap-3 p-4 md:grid-cols-4">
           <Select value={symbol} onValueChange={setSymbol}>
@@ -340,13 +366,13 @@ export default function TradingDecisionPage({
         formatNumber={formatNumber}
       />
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-        <div className="min-w-0 space-y-5">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <div className="min-w-0 space-y-6">
           <DecisionCard analysis={analysis} />
           <TradePlanCard analysis={analysis} digits={digits} formatNumber={formatNumber} />
           <AIAnalysisAccordion analysis={analysis} />
         </div>
-        <div className="min-w-0 space-y-5">
+        <div className="min-w-0 space-y-6">
           <ChartPanel chartData={chartData} analysis={analysis} symbol={symbol} timeframeLabel={timeframeLabel} formatNumber={formatNumber} />
           <MarketContextCard analysis={analysis} currentCandle={currentCandle} digits={digits} formatNumber={formatNumber} />
         </div>
