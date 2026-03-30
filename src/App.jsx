@@ -2358,6 +2358,7 @@ export default function CryptoSignalWebApp() {
     return sliced.map((c, idx, arr) => {
       const originalIndex = candles.length - arr.length + idx;
       return {
+        openTime: c.openTime,
         time: formatTime(c.openTime, timeframe),
         open: c.open,
         close: c.close,
@@ -2390,9 +2391,13 @@ export default function CryptoSignalWebApp() {
       applyMarketTickToPaperState(prev, {
         price: paperCurrentPrice,
         candleClose: currentCandle?.close,
+        rsi: analysis?.rsi,
+        macd: analysis?.macd,
+        ma20: analysis?.ma20,
+        candleTime: currentCandle?.openTime,
       })
     );
-  }, [paperCurrentPrice, currentCandle?.close]);
+  }, [paperCurrentPrice, currentCandle?.close, currentCandle?.openTime, analysis?.rsi, analysis?.macd, analysis?.ma20]);
 
   useEffect(() => {
     if (!analysis?.aiDecisionOutput) return;
@@ -2471,6 +2476,10 @@ export default function CryptoSignalWebApp() {
         ? applyMarketTickToPaperState(result.state, {
           price: paperCurrentPrice,
           candleClose: currentCandle?.close,
+          rsi: analysis?.rsi,
+          macd: analysis?.macd,
+          ma20: analysis?.ma20,
+          candleTime: currentCandle?.openTime,
         })
         : result.state;
 
