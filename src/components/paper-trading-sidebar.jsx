@@ -11,9 +11,9 @@ function sideLabel(side) {
 
 function reasonLabel(reason) {
   const reasonMap = {
-    TP1: "TP1",
-    TP2: "TP2",
-    TP3: "TP3",
+    TP1: "止盈1",
+    TP2: "止盈2",
+    TP3: "止盈3",
     STOP_LOSS: "止損",
     INVALIDATION: "失效",
     TRAP_EXIT: "陷阱退出",
@@ -97,9 +97,9 @@ function TradingStateTerminal({
 
   const takeProfitDetailLabel = (item) =>
     [
-      item.takeProfit1 ? `TP1 ${formatNumber(item.takeProfit1, paperDigits)}` : null,
-      item.takeProfit2 ? `TP2 ${formatNumber(item.takeProfit2, paperDigits)}` : null,
-      item.takeProfit3 ? `TP3 ${formatNumber(item.takeProfit3, paperDigits)}` : null,
+      item.takeProfit1 ? `止盈1 ${formatNumber(item.takeProfit1, paperDigits)}` : null,
+      item.takeProfit2 ? `止盈2 ${formatNumber(item.takeProfit2, paperDigits)}` : null,
+      item.takeProfit3 ? `止盈3 ${formatNumber(item.takeProfit3, paperDigits)}` : null,
     ].filter(Boolean).join(" / ") || "-";
 
   const formatDate = (value) => (value ? new Date(value).toLocaleString() : "-");
@@ -171,7 +171,7 @@ function TradingStateTerminal({
                       <InfoPairRow
                         leftLabel="止損"
                         leftValue={formatNumber(position.stopLoss, paperDigits)}
-                        rightLabel="TP1"
+                        rightLabel="止盈1"
                         rightValue={position.takeProfit1 ? formatNumber(position.takeProfit1, paperDigits) : "-"}
                       />
                       <div className="whitespace-nowrap text-[13px] font-medium text-slate-700">
@@ -214,7 +214,7 @@ function TradingStateTerminal({
                       rightLabel="失效價"
                       rightValue={formatNumber(order.invalidationPrice, paperDigits)}
                     />
-                    <InfoSingleRow label="TP1 / TP2 / TP3" value={takeProfitDetailLabel(order)} />
+                    <InfoSingleRow label="止盈1 / 止盈2 / 止盈3" value={takeProfitDetailLabel(order)} />
                     <InfoSingleRow label="建立時間" value={formatDate(order.createdAt)} />
                   </div>
                   <div className="mt-3 pt-1">
