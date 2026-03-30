@@ -1,35 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { registerSW } from "virtual:pwa-register";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Input } from "@/components/ui/input";
-import {
-  RefreshCw,
-  TrendingUp,
-  TrendingDown,
-  AlertTriangle,
-  Activity,
-  BrainCircuit,
-  Target,
-} from "lucide-react";
-import {
-  ResponsiveContainer,
-  ComposedChart,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  Line,
-  Bar,
-  ReferenceArea,
-  ReferenceLine,
-  Cell,
-} from "recharts";
-import { motion } from "framer-motion";
 import PaperTradingSidebar from "@/components/paper-trading-sidebar";
+import TradingDecisionPage from "@/components/trading-decision-page";
 
 const SYMBOL_OPTIONS = [
   { label: "BTC", value: "BTCUSDT" },
@@ -46,7 +18,6 @@ const INTERVAL_OPTIONS = [
 
 const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 
-const APP_TITLE = "Crypto Signal Pro V5 - Final Phase";
 const PAPER_ACCOUNT_STORAGE_KEY = "crypto-signal-pro-paper-account-v6";
 const PAPER_INITIAL_BALANCE = 5000;
 const PAPER_SUPPORTED_SYMBOLS = ["BTC", "ETH", "SOL"];
@@ -56,6 +27,7 @@ function createInitialPaperAccount() {
     initialBalance: PAPER_INITIAL_BALANCE,
     balance: PAPER_INITIAL_BALANCE,
     equity: PAPER_INITIAL_BALANCE,
+    usedMargin: 0,
     realizedPnL: 0,
     unrealizedPnL: 0,
     totalTrades: 0,
@@ -1895,64 +1867,6 @@ async function fetchBinanceKlines(symbol, timeframe, limit = 240) {
   }));
 }
 
-function MetricCard({ label, value, helper }) {
-  return (
-    <Card className="rounded-2xl shadow-sm">
-      <CardContent className="p-4">
-        <div className="text-sm text-slate-500">{label}</div>
-        <div className="mt-1 text-2xl font-semibold">{value}</div>
-        {helper ? <div className="mt-1 text-xs text-slate-500">{helper}</div> : null}
-      </CardContent>
-    </Card>
-  );
-}
-
-function CustomTooltip({ active, payload, label, symbol }) {
-  if (!active || !payload || !payload.length) return null;
-  const row = payload[0]?.payload || {};
-  const digits = symbol === "BTCUSDT" ? 0 : 2;
-
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-3 text-sm shadow-lg">
-      <div className="mb-2 font-medium">{label}</div>
-      <div>開盤：{formatNumber(row.open, digits)}</div>
-      <div>最高：{formatNumber(row.high, digits)}</div>
-      <div>最低：{formatNumber(row.low, digits)}</div>
-      <div>收盤：{formatNumber(row.close, digits)}</div>
-      <div>MA20：{formatNumber(row.ma20, digits)}</div>
-      <div>MA50：{formatNumber(row.ma50, digits)}</div>
-      <div>成交量：{formatNumber(row.volume, 2)}</div>
-    </div>
-  );
-}
-
-function CandlestickBody(props) {
-  const { x, width, payload } = props;
-  if (!payload) return null;
-  const bullish = payload.close >= payload.open;
-
-  return (
-    <g>
-      <line
-        x1={x + width / 2}
-        x2={x + width / 2}
-        y1={payload.highY}
-        y2={payload.lowY}
-        stroke={bullish ? "#16a34a" : "#dc2626"}
-        strokeWidth={1.5}
-      />
-      <rect
-        x={x + width * 0.2}
-        y={Math.min(payload.openY, payload.closeY)}
-        width={width * 0.6}
-        height={Math.max(2, Math.abs(payload.closeY - payload.openY))}
-        fill={bullish ? "#16a34a" : "#dc2626"}
-        rx={1}
-      />
-    </g>
-  );
-}
-
 export default function CryptoSignalWebApp() {
   useEffect(() => {
     try {
@@ -1972,7 +1886,6 @@ export default function CryptoSignalWebApp() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [appMode, setAppMode] = useState("analysis");
   const [paperSymbol, setPaperSymbol] = useState("SOL");
   const [paperAccount, setPaperAccount] = useState(() => loadPaperAccount());
 
@@ -2057,13 +1970,6 @@ export default function CryptoSignalWebApp() {
     });
   }, [candles, timeframe]);
 
-  const biasStyle = useMemo(() => {
-    if (!analysis) return "bg-slate-100 text-slate-700";
-    if (analysis.bias === "偏多") return "bg-emerald-100 text-emerald-700";
-    if (analysis.bias === "偏空") return "bg-rose-100 text-rose-700";
-    return "bg-slate-100 text-slate-700";
-  }, [analysis]);
-
   const digits = symbol === "BTCUSDT" ? 0 : 2;
   const paperDigits = paperSymbol === "BTC" ? 0 : 2;
   const timeframeLabel =
@@ -2093,27 +1999,59 @@ export default function CryptoSignalWebApp() {
     };
   }, [openPositionUnrealizedPnL, paperAccount]);
 
-  const simulatorSignalPayload = useMemo(() => {
-    if (!analysis) return null;
-    return {
-      symbol: paperSymbol,
-      finalDecision: analysis.finalDecision,
-      setupType: analysis.setupType,
-      entryTiming: analysis.entryTiming,
-      entryTrigger: analysis.triggerEngine?.entryTriggerSentence || "",
-      invalidation: analysis.tradePlan?.invalidation || analysis.triggerEngine?.invalidationSentence || "",
-      biasShift: analysis.triggerEngine?.biasShiftSentence || "",
-      entryZone: analysis.tradePlan?.entryZone || "",
-      stopLoss: analysis.stopLoss,
-      target1: analysis.takeProfit1,
-      target2: analysis.takeProfit2,
-      rr: {
-        target1: analysis.tradePlan?.rr1 ?? null,
-        target2: analysis.tradePlan?.rr2 ?? null,
+  const handleExecuteSimulation = () => {
+    if (!analysis || !paperCurrentPrice) return;
+    if (paperAccount.openPosition) return;
+    if (!["BUY", "SELL"].includes(analysis.finalDecision)) return;
+
+    const nextSide = analysis.finalDecision === "BUY" ? "LONG" : "SHORT";
+    setPaperAccount((prev) => ({
+      ...prev,
+      usedMargin: paperCurrentPrice,
+      openPosition: {
+        symbol: paperSymbol,
+        side: nextSide,
+        size: 1,
+        entryPrice: paperCurrentPrice,
+        stopLoss: analysis.stopLoss,
+        target1: analysis.takeProfit1,
+        target2: analysis.takeProfit2,
+        openedAt: Date.now(),
       },
-      fakeBreakoutRisk: analysis.fakeBreakout?.risk || "",
-    };
-  }, [analysis, paperSymbol]);
+    }));
+  };
+
+  const handleClosePosition = () => {
+    if (!paperAccount.openPosition || !paperCurrentPrice) return;
+    const position = paperAccount.openPosition;
+    const direction = position.side === "LONG" ? 1 : -1;
+    const pnl = (paperCurrentPrice - position.entryPrice) * position.size * direction;
+    const result = pnl >= 0 ? "WIN" : "LOSS";
+
+    setPaperAccount((prev) => ({
+      ...prev,
+      balance: prev.balance + pnl,
+      realizedPnL: prev.realizedPnL + pnl,
+      usedMargin: 0,
+      totalTrades: (prev.totalTrades || 0) + 1,
+      wins: (prev.wins || 0) + (result === "WIN" ? 1 : 0),
+      losses: (prev.losses || 0) + (result === "LOSS" ? 1 : 0),
+      openPosition: null,
+      tradeHistory: [
+        {
+          symbol: position.symbol,
+          side: position.side,
+          entryPrice: position.entryPrice,
+          exitPrice: paperCurrentPrice,
+          pnl,
+          result,
+          openedAt: position.openedAt,
+          closedAt: Date.now(),
+        },
+        ...(prev.tradeHistory || []),
+      ],
+    }));
+  };
 
   const handleResetPaperAccount = () => {
     setPaperAccount(createInitialPaperAccount());
@@ -2125,543 +2063,38 @@ export default function CryptoSignalWebApp() {
         <PaperTradingSidebar
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
-          appMode={appMode}
-          setAppMode={setAppMode}
           paperSymbol={paperSymbol}
           setPaperSymbol={setPaperSymbol}
           supportedSymbols={PAPER_SUPPORTED_SYMBOLS}
           accountSnapshot={accountSnapshot}
           paperDigits={paperDigits}
-          simulatorSignalPayload={simulatorSignalPayload}
+          onExecuteSimulation={handleExecuteSimulation}
+          onClosePosition={handleClosePosition}
           onResetPaperAccount={handleResetPaperAccount}
           formatNumber={formatNumber}
         />
 
         <main className="flex-1 p-4 md:p-8">
-          <div className="mx-auto max-w-6xl space-y-6">
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="grid gap-4"
-        >
-          <Card className="rounded-3xl border-0 shadow-md">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-2xl">
-                <Activity className="h-6 w-6" />
-                {APP_TITLE}
-              </CardTitle>
-            </CardHeader>
-
-            <CardContent className="space-y-5">
-              <div className="grid gap-3 md:grid-cols-4">
-                <div>
-                  <div className="mb-2 text-sm text-slate-600">幣種</div>
-                  <Select value={symbol} onValueChange={setSymbol}>
-                    <SelectTrigger className="rounded-2xl bg-white">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SYMBOL_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div>
-                  <div className="mb-2 text-sm text-slate-600">週期</div>
-                  <Select value={timeframe} onValueChange={setTimeframe}>
-                    <SelectTrigger className="rounded-2xl bg-white">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {INTERVAL_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="flex items-end">
-                  <Button
-                    className="w-full rounded-2xl"
-                    onClick={() => loadData(symbol, timeframe)}
-                    disabled={isLoading}
-                  >
-                    <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
-                    重新分析
-                  </Button>
-                </div>
-
-                <div>
-                  <div className="mb-2 text-sm text-slate-600">自動更新</div>
-                  <Button
-                    variant={autoRefresh ? "default" : "outline"}
-                    className="w-full rounded-2xl"
-                    onClick={() => setAutoRefresh((v) => !v)}
-                  >
-                    {autoRefresh ? "已開啟" : "已關閉"}
-                  </Button>
-                </div>
-              </div>
-
-              {error ? (
-                <Alert className="rounded-2xl border-rose-200 bg-rose-50 text-rose-700">
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertDescription>{error}</AlertDescription>
-                </Alert>
-              ) : null}
-
-              <div className="rounded-2xl bg-slate-100 p-4 text-sm text-slate-600">
-                目前分析週期：{timeframeLabel}。V5 Final 已提供可直接下單的「交易執行計畫」：每筆策略都包含價格、條件、行動、取消與反手規則。最後更新：
-                {lastUpdated || "-"}
-              </div>
-            </CardContent>
-          </Card>
-
-        </motion.div>
-
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-          <MetricCard label="現價" value={formatNumber(analysis?.price, digits)} />
-          <MetricCard label="MA20" value={formatNumber(analysis?.ma20, digits)} helper="20 根均線" />
-          <MetricCard label="MA50" value={formatNumber(analysis?.ma50, digits)} helper="50 根均線" />
-          <MetricCard label="RSI" value={formatNumber(analysis?.rsi, 2)} helper="14 週期" />
-          <MetricCard
-            label="MACD 柱狀體"
-            value={formatNumber(analysis?.macd?.histogram, 4)}
-            helper="正值偏強，負值偏弱"
+          <TradingDecisionPage
+            symbol={symbol}
+            setSymbol={setSymbol}
+            timeframe={timeframe}
+            setTimeframe={setTimeframe}
+            symbolOptions={SYMBOL_OPTIONS}
+            intervalOptions={INTERVAL_OPTIONS}
+            loadData={loadData}
+            isLoading={isLoading}
+            autoRefresh={autoRefresh}
+            setAutoRefresh={setAutoRefresh}
+            error={error}
+            analysis={analysis}
+            timeframeLabel={timeframeLabel}
+            lastUpdated={lastUpdated}
+            chartData={chartData}
+            currentCandle={currentCandle}
+            formatNumber={formatNumber}
+            digits={digits}
           />
-          <MetricCard label="結構" value={analysis?.structure || "-"} helper="高低點結構" />
-          <MetricCard label="突破狀態" value={analysis?.breakoutState || "-"} helper="突破 / 回踩 / 區間" />
-          <MetricCard label="量能狀態" value={analysis?.volumeState || "-"} helper="放量 / 量縮 / 一般" />
-          <MetricCard label="掃流動性" value={analysis?.liquiditySweep || "-"} helper="掃高 / 掃低" />
-          <MetricCard label="趨勢線" value={analysis?.trendlineState || "-"} helper="趨勢線狀態" />
-          <MetricCard label="多頭勝率" value={`${analysis?.longProb ?? "-"}%`} helper="V3 概率模型" />
-          <MetricCard label="空頭勝率" value={`${analysis?.shortProb ?? "-"}%`} helper="V3 概率模型" />
-        </div>
-
-        <div className="grid gap-4">
-          {/* LEFT SIDE */}
-          <div className="space-y-4">
-            <Card className="rounded-3xl border-0 shadow-md">
-              <CardHeader>
-                <CardTitle className="text-lg">本次結論</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-500">趨勢偏向</span>
-                  <Badge className={`rounded-full px-3 py-1 text-sm ${biasStyle}`}>
-                    {analysis?.bias || "讀取中"}
-                  </Badge>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">最終決策</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.finalDecisionLabel || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">是否適合進場</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.entryAdvice || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">較佳策略</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.setup || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">策略型態</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.setupTypeLabel || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">進場時機</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.entryTimingLabel || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">觸發確認強度</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.triggerEngine?.confirmationLabel || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">進場評分</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.entryScore || "-"} / 10</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">風險等級</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.riskLevel || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">信心等級</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.confidenceLevelLabel || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">市場狀態</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.marketRegimeLabel || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">多週期共振</div>
-                  <div className="mt-1 text-xl font-semibold">{analysis?.confluence || "-"}</div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <div className="text-sm text-slate-500">V3 智能訊號</div>
-                  <div className="mt-1 flex items-center gap-2 text-xl font-semibold">
-                    <BrainCircuit className="h-5 w-5" />
-                    {analysis?.smartSignal || "-"}
-                  </div>
-                  <div className="mt-2 text-sm text-slate-500">
-                    做多 {analysis?.longProb ?? "-"}% ・ 做空 {analysis?.shortProb ?? "-"}%
-                  </div>
-                </div>
-
-                <div className="rounded-2xl bg-white p-4 shadow-sm text-sm text-slate-600">
-                  {analysis?.explanation || "等待資料中..."}
-                </div>
-
-                <div className="rounded-2xl bg-slate-900 p-4 text-sm leading-6 text-white shadow-sm">
-                  <div className="mb-2 text-xs uppercase tracking-wide text-slate-300">AI 綜合判斷</div>
-                  <div>{analysis?.aiSummary || "等待資料中..."}</div>
-                  {analysis?.noEntryReason ? <div className="mt-2 text-slate-300">無訊號原因：{analysis.noEntryReason}</div> : null}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-3xl shadow-md">
-              <CardHeader>
-                <CardTitle className="text-lg">K 線圖、均線與支撐壓力</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-[360px] w-full rounded-2xl bg-slate-100 p-2">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart data={chartData} margin={{ top: 12, right: 12, left: 4, bottom: 8 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
-                      <XAxis dataKey="time" minTickGap={24} tick={{ fontSize: 12 }} />
-                      <YAxis yAxisId="left" domain={["auto", "auto"]} tick={{ fontSize: 12 }} width={70} />
-                      <YAxis yAxisId="right" orientation="right" tick={false} hide />
-                      <Tooltip content={<CustomTooltip symbol={symbol} />} />
-
-                      <ReferenceArea
-                        yAxisId="left"
-                        y1={analysis?.levels?.structureSupportZone?.low}
-                        y2={analysis?.levels?.structureSupportZone?.high}
-                        fill="#16a34a"
-                        fillOpacity={0.08}
-                      />
-                      <ReferenceArea
-                        yAxisId="left"
-                        y1={analysis?.levels?.structureResistanceZone?.low}
-                        y2={analysis?.levels?.structureResistanceZone?.high}
-                        fill="#dc2626"
-                        fillOpacity={0.08}
-                      />
-                      <ReferenceLine yAxisId="left" y={analysis?.price} stroke="#0f172a" strokeDasharray="4 4" />
-
-                      <Bar yAxisId="right" dataKey="volume" opacity={0.22} radius={[3, 3, 0, 0]}>
-                        {chartData.map((entry, index) => (
-                          <Cell key={`vol-${index}`} fill={entry.bullish ? "#16a34a" : "#dc2626"} />
-                        ))}
-                      </Bar>
-
-                      <Bar
-                        yAxisId="left"
-                        dataKey="bodyValue"
-                        baseValue={(data) => data.bodyBase}
-                        shape={<CandlestickBody />}
-                        isAnimationActive={false}
-                      >
-                        {chartData.map((entry, index) => (
-                          <Cell key={`candle-${index}`} fill={entry.bullish ? "#16a34a" : "#dc2626"} />
-                        ))}
-                      </Bar>
-
-                      <Line yAxisId="left" type="monotone" dataKey="ma20" dot={false} strokeWidth={2} stroke="#a855f7" />
-                      <Line yAxisId="left" type="monotone" dataKey="ma50" dot={false} strokeWidth={2} stroke="#eab308" />
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div className="mt-3 text-sm text-slate-500">
-                  這張圖目前顯示 {timeframeLabel} 週期最近 60 根 K 線、MA20、MA50、成交量，以及結構支撐 / 壓力區。
-                  綠色區是結構支撐，紅色區是結構壓力，虛線是現價。
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-3xl shadow-md">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  {analysis?.bias === "偏多" ? <TrendingUp className="h-5 w-5" /> : <TrendingDown className="h-5 w-5" />}
-                  交易建議
-                </CardTitle>
-              </CardHeader>
-
-              <CardContent className="space-y-4">
-                {analysis?.finalDecision === "NO_TRADE" ? (
-                  <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-base font-semibold text-amber-800">
-                    本輪無有效交易機會
-                  </div>
-                ) : null}
-
-                <div className="grid gap-3 md:grid-cols-3">
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">建議方式</div>
-                    <div className="mt-1 text-lg font-semibold">{analysis?.setup || "-"}</div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">策略型態 / 進場時機</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {analysis?.setupTypeLabel || "-"} / {analysis?.entryTimingLabel || "-"}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">止損</div>
-                    <div className="mt-1 text-lg font-semibold">{formatNumber(analysis?.stopLoss, digits)}</div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">止盈</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {formatNumber(analysis?.takeProfit1, digits)} / {formatNumber(analysis?.takeProfit2, digits)}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">風報比 RR</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {formatNumber(analysis?.tradePlan?.rr1, 2)} / {formatNumber(analysis?.tradePlan?.rr2, 2)}
-                    </div>
-                    <div className="mt-1 text-xs text-slate-500">{analysis?.tradePlan?.rrLabel || "-"}</div>
-                  </div>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-4">
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm font-semibold text-slate-600">【進場觸發條件】</div>
-                    <div className="mt-2 text-sm text-slate-700">
-                      <div>{analysis?.triggerEngine?.formattedEntryCondition || analysis?.triggerEngine?.entryTriggerSentence || "-"}</div>
-                      <div className="mt-1 text-xs text-slate-500">價格區間：{analysis?.triggerEngine?.priceRange || "-"}</div>
-                    </div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm font-semibold text-slate-600">【執行方式】</div>
-                    <div className="mt-2 text-sm text-slate-700">
-                      <div>
-                        {analysis?.triggerEngine?.executionPlan?.type || "-"} /{" "}
-                        {analysis?.triggerEngine?.executionPlan?.action || "-"}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">
-                        取消：{analysis?.triggerEngine?.executionPlan?.cancel || "-"}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm font-semibold text-slate-600">【策略失效條件】</div>
-                    <div className="mt-2 text-sm text-slate-700">
-                      {analysis?.triggerEngine?.invalidationSentence || "-"}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm font-semibold text-slate-600">【轉向條件】</div>
-                    <div className="mt-2 text-sm text-slate-700">
-                      {analysis?.triggerEngine?.biasShiftSentence || "-"}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border-2 border-slate-900 bg-white p-4">
-                  <div className="text-base font-bold text-slate-900">【交易執行計畫】</div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-2">
-                    <div className="rounded-xl bg-slate-100 p-3">
-                      <div className="text-xs text-slate-500">方向</div>
-                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.direction || "-"}</div>
-                    </div>
-                    <div className="rounded-xl bg-slate-100 p-3">
-                      <div className="text-xs text-slate-500">執行方式</div>
-                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.execution || "-"}</div>
-                    </div>
-                    <div className="rounded-xl bg-slate-100 p-3 md:col-span-2">
-                      <div className="text-xs text-slate-500">進場條件（if → action）</div>
-                      <pre className="mt-1 whitespace-pre-wrap font-sans text-sm text-slate-700">
-                        {analysis?.triggerEngine?.executionCard?.entryCondition || "-"}
-                      </pre>
-                    </div>
-                    <div className="rounded-xl bg-slate-100 p-3">
-                      <div className="text-xs text-slate-500">止損</div>
-                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.stopLoss || "-"}</div>
-                    </div>
-                    <div className="rounded-xl bg-slate-100 p-3">
-                      <div className="text-xs text-slate-500">目標</div>
-                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.target || "-"}</div>
-                    </div>
-                    <div className="rounded-xl bg-slate-100 p-3">
-                      <div className="text-xs text-slate-500">RR</div>
-                      <div className="mt-1 font-semibold">{analysis?.triggerEngine?.executionCard?.rr || "-"}</div>
-                    </div>
-                    <div className="rounded-xl bg-slate-100 p-3">
-                      <div className="text-xs text-slate-500">取消條件</div>
-                      <div className="mt-1 text-sm text-slate-700">{analysis?.triggerEngine?.executionCard?.cancel || "-"}</div>
-                    </div>
-                    <div className="rounded-xl bg-slate-100 p-3 md:col-span-2">
-                      <div className="text-xs text-slate-500">反手條件</div>
-                      <div className="mt-1 text-sm text-slate-700">{analysis?.triggerEngine?.executionCard?.reverse || "-"}</div>
-                    </div>
-                  </div>
-                </div>
-
-                {analysis?.finalDecision === "WAIT" ? (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-                    <div className="font-semibold">【不進場原因】</div>
-                    <div className="mt-1">{analysis?.triggerEngine?.waitReason || analysis?.noEntryReason || "目前條件不足，暫不進場。"}</div>
-                    <div className="mt-2 font-semibold">【等待條件】</div>
-                    <div className="mt-1">{analysis?.triggerEngine?.waitConditionSentence || "等待價格回到關鍵區並完成觸發。"}</div>
-                    <div className="mt-2 font-semibold">【WAIT 雙劇本】</div>
-                    <div className="mt-1">1️⃣ 做多劇本：{analysis?.triggerEngine?.waitScripts?.long || "-"}</div>
-                    <div className="mt-1">2️⃣ 做空劇本：{analysis?.triggerEngine?.waitScripts?.short || "-"}</div>
-                  </div>
-                ) : null}
-
-                <div className="rounded-2xl border border-slate-200 p-4 text-sm leading-6 text-slate-600">
-                  <div>• V3 第一階段改為四週期共振與市場狀態分流評分。</div>
-                  <div>• 趨勢盤偏重順勢，震盪盤偏重結構區間，高波動盤會主動降分控風險。</div>
-                  <div>• 若多週期分歧，進場分數與信心會同步下調。</div>
-                  <div>• 勝率為概率模型推估，請搭配風控與結構位使用。</div>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">建議進場區</div>
-                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.entryZone || "-"}</div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">失效位</div>
-                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.invalidation || "-"}</div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">目標一</div>
-                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target1Text || "-"}</div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">目標二</div>
-                    <div className="mt-1 text-lg font-semibold">{analysis?.tradePlan?.target2Text || "-"}</div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-3xl shadow-md">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <Target className="h-5 w-5" />
-                  即時資料摘要
-                </CardTitle>
-              </CardHeader>
-
-              <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">短線支撐區</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {formatNumber(analysis?.levels?.shortSupportZone?.low, digits)} ~{" "}
-                      {formatNumber(analysis?.levels?.shortSupportZone?.high, digits)}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">短線壓力區</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {formatNumber(analysis?.levels?.shortResistanceZone?.low, digits)} ~{" "}
-                      {formatNumber(analysis?.levels?.shortResistanceZone?.high, digits)}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">結構支撐區</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {formatNumber(analysis?.levels?.structureSupportZone?.low, digits)} ~{" "}
-                      {formatNumber(analysis?.levels?.structureSupportZone?.high, digits)}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">結構壓力區</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {formatNumber(analysis?.levels?.structureResistanceZone?.low, digits)} ~{" "}
-                      {formatNumber(analysis?.levels?.structureResistanceZone?.high, digits)}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">ATR 波動</div>
-                    <div className="mt-1 text-lg font-semibold">{formatNumber(analysis?.atr, digits)}</div>
-                  </div>
-
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">最近 K 線區間</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {formatNumber(currentCandle?.low, digits)} ~ {formatNumber(currentCandle?.high, digits)}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">假突破風險</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {analysis?.fakeBreakout?.risk || "-"}（{formatNumber(analysis?.fakeBreakout?.score, 1)}）
-                    </div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">進場時機狀態</div>
-                    <div className="mt-1 text-lg font-semibold">{analysis?.entryTimingLabel || "-"}</div>
-                  </div>
-                  <div className="rounded-2xl bg-slate-100 p-4">
-                    <div className="text-sm text-slate-500">觸發確認強度</div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {analysis?.triggerEngine?.confirmationLabel || "-"}（{formatNumber(analysis?.triggerEngine?.triggerScore, 1)}）
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 p-4 text-sm text-slate-600">
-                  <div className="mb-2 font-medium text-slate-700">AI 訊號細節</div>
-                  <div>多方分數：{formatNumber(analysis?.bullScore, 1)}</div>
-                  <div>空方分數：{formatNumber(analysis?.bearScore, 1)}</div>
-                  <div>成交量：{formatNumber(currentCandle?.volume, 2)}</div>
-                  <div>RR（目標一/二）：{formatNumber(analysis?.tradePlan?.rr1, 2)} / {formatNumber(analysis?.tradePlan?.rr2, 2)}</div>
-                  <div>假突破因子：{(analysis?.fakeBreakout?.reasons || []).join("、") || "暫無明顯異常"}</div>
-                  <div>進場觸發條件：{analysis?.triggerEngine?.entryTriggerSentence || "等待結構與動能同步"}</div>
-                  <div>失效條件：{analysis?.triggerEngine?.invalidationSentence || "結構失效"}</div>
-                  <div>轉向條件：{analysis?.triggerEngine?.biasShiftSentence || "等待突破關鍵結構後再轉向"}</div>
-                  <div>V3 勝率結合主趨勢、多週期一致性、市場狀態、量能與波動風險。</div>
-
-                  <div className="mt-3 font-medium text-slate-700">多週期同步</div>
-                  {(analysis?.higherBiases || []).map((item) => (
-                    <div
-                      key={item.interval}
-                      className="mt-1 flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2"
-                    >
-                      <span>{item.interval}</span>
-                      <span>{item.bias}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div>
-                  <div className="mb-2 text-sm text-slate-500">自訂提醒備註</div>
-                  <Input className="rounded-2xl bg-white" placeholder="例如：SOL 日線站回 MA20 再考慮多單" />
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-        </div>
-          </div>
         </main>
       </div>
     </div>
