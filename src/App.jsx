@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   applyMarketTickToPaperState,
+  cancelPendingOrderManually,
   closePositionManually,
   createInitialPaperAccountState,
   getSimulationEligibility,
@@ -2557,15 +2558,23 @@ export default function CryptoSignalWebApp() {
     }));
   };
 
-  const handleClosePosition = () => {
+  const handleClosePosition = (positionId) => {
     if (!paperCurrentPrice) return;
 
     setPaperAccount((prev) =>
       closePositionManually(prev, {
-        symbol: paperMarketSymbol,
-        timeframe,
+        positionId,
         price: paperCurrentPrice,
         reason: "MANUAL_CLOSE",
+      })
+    );
+  };
+
+  const handleCancelPendingOrder = (orderId) => {
+    setPaperAccount((prev) =>
+      cancelPendingOrderManually(prev, {
+        orderId,
+        reason: "MANUAL_CANCEL",
       })
     );
   };
@@ -2597,6 +2606,7 @@ export default function CryptoSignalWebApp() {
           simulationExecutionStatus={simulationExecutionStatus}
           simulationButtonState={simulationButtonState}
           onClosePosition={handleClosePosition}
+          onCancelPendingOrder={handleCancelPendingOrder}
           onResetPaperAccount={handleResetPaperAccount}
           formatNumber={formatNumber}
         />

@@ -144,15 +144,15 @@ export function OpenPositionsCard({ accountSnapshot, paperDigits, formatNumber }
   );
 }
 
-export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber }) {
+export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber, onCancelPendingOrder }) {
   return (
     <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">條件掛單（等待觸發）</CardTitle>
+        <CardTitle className="text-sm">掛單中（Pending Orders）</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs">
         {pendingOrders.length ? (
-          pendingOrders.slice(0, 6).map((order) => (
+          pendingOrders.map((order) => (
             <div key={order.id} className="space-y-1.5 rounded-lg border border-sky-100 bg-sky-50/40 p-2 text-slate-600">
               <div className="font-semibold text-sky-700">狀態：掛單中（等待觸發）</div>
               <div className="font-semibold text-slate-800">{order.symbol} {sideLabel(order.side)}</div>
@@ -171,6 +171,14 @@ export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber }) 
                 ))}
               </div>
               <StatRow label="建立時間" value={new Date(order.createdAt).toLocaleString()} />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                onClick={() => onCancelPendingOrder?.(order.id)}
+              >
+                取消掛單
+              </Button>
             </div>
           ))
         ) : (
@@ -189,12 +197,13 @@ export function CancelledOrdersCard({ cancelledOrders, paperDigits, formatNumber
       </CardHeader>
       <CardContent className="space-y-2 text-xs">
         {cancelledOrders.length ? (
-          cancelledOrders.slice(0, 6).map((order) => (
+          cancelledOrders.map((order) => (
             <div key={`${order.id}-${order.cancelledAt || order.createdAt}`} className="rounded-lg bg-slate-50 p-2 text-slate-600">
               <div className="font-medium text-slate-700">{order.symbol} · {sideLabel(order.side)}</div>
               <div>觸發價: {formatNumber(order.triggerPrice, paperDigits)}</div>
-              <div>失效價: {formatNumber(order.invalidationPrice, paperDigits)}</div>
-              <div>原因: {order.cancelReason || "-"}</div>
+              <div>數量: {formatNumber(order.quantity, 2)}</div>
+              <div>取消原因: {order.cancelReason || "-"}</div>
+              <div>建立: {order.createdAt ? new Date(order.createdAt).toLocaleString() : "-"}</div>
               <div>取消: {order.cancelledAt ? new Date(order.cancelledAt).toLocaleString() : "-"}</div>
             </div>
           ))
@@ -210,11 +219,11 @@ export function TradeHistoryDrawer({ closedTrades, paperDigits, formatNumber }) 
   return (
     <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">已平倉（History）</CardTitle>
+        <CardTitle className="text-sm">已平倉（Closed History）</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-xs">
         {closedTrades.length ? (
-          closedTrades.slice(0, 6).map((trade) => {
+          closedTrades.map((trade) => {
             const pnlPositive = Number(trade.realizedPnl || 0) >= 0;
             return (
               <div key={trade.id} className="space-y-1.5 rounded-lg bg-slate-50 p-2 text-slate-600">
@@ -237,6 +246,44 @@ export function TradeHistoryDrawer({ closedTrades, paperDigits, formatNumber }) 
           })
         ) : (
           <div className="text-slate-500">無交易紀錄</div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+export function OpenPositionsSection({ openPositions, paperDigits, formatNumber, onClosePosition }) {
+  return (
+    <Card className="rounded-2xl border-slate-200">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">持倉中（Open Positions）</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 text-xs text-slate-600">
+        {openPositions.length ? (
+          openPositions.map((position) => {
+            const positionValue = Number(position.currentPrice || 0) * Number(position.quantity || 0);
+            const pnlPositive = Number(position.unrealizedPnl || 0) >= 0;
+            return (
+              <div key={position.id} className="space-y-1.5 rounded-lg border border-indigo-100 bg-indigo-50/40 p-2">
+                <div className="font-semibold text-slate-800">{position.symbol} {sideLabel(position.side)}</div>
+                <StatRow label="進場價" value={formatNumber(position.entryPrice, paperDigits)} />
+                <StatRow label="現價" value={formatNumber(position.currentPrice, paperDigits)} />
+                <StatRow label="數量" value={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`} />
+                <StatRow label="未實現損益" value={`${pnlPositive ? "+" : ""}${formatNumber(position.unrealizedPnl, 2)} USDT`} emphasize />
+                <StatRow label="倉位價值" value={`${formatNumber(positionValue, 2)} USDT`} />
+                <StatRow label="止損" value={formatNumber(position.stopLoss, paperDigits)} />
+                <StatRow label="TP1" value={formatNumber(position.takeProfit1, paperDigits)} />
+                <StatRow label="TP2" value={formatNumber(position.takeProfit2, paperDigits)} />
+                <StatRow label="TP3" value={formatNumber(position.takeProfit3, paperDigits)} />
+                <StatRow label="開倉時間" value={new Date(position.openedAt).toLocaleString()} />
+                <Button variant="outline" size="sm" className="h-7 rounded-lg px-2" onClick={() => onClosePosition?.(position.id)}>
+                  平倉
+                </Button>
+              </div>
+            );
+          })
+        ) : (
+          <div>目前無持倉</div>
         )}
       </CardContent>
     </Card>
@@ -278,6 +325,7 @@ export default function PaperTradingSidebar({
   onResetPaperAccount,
   onExecuteSimulation,
   onClosePosition,
+  onCancelPendingOrder,
   formatNumber,
   simulationOrderConfig,
   onSimulationQuantityChange,
@@ -314,10 +362,20 @@ export default function PaperTradingSidebar({
             onSimulationQuantityChange={onSimulationQuantityChange}
           />
           <PaperAccountCard accountSnapshot={accountSnapshot} formatNumber={formatNumber} />
-          <PendingOrdersCard pendingOrders={accountSnapshot.pendingOrders || []} paperDigits={paperDigits} formatNumber={formatNumber} />
-          <OpenPositionsCard accountSnapshot={accountSnapshot} paperDigits={paperDigits} formatNumber={formatNumber} />
-          <CancelledOrdersCard cancelledOrders={accountSnapshot.cancelledOrders || []} paperDigits={paperDigits} formatNumber={formatNumber} />
+          <PendingOrdersCard
+            pendingOrders={accountSnapshot.pendingOrders || []}
+            paperDigits={paperDigits}
+            formatNumber={formatNumber}
+            onCancelPendingOrder={onCancelPendingOrder}
+          />
+          <OpenPositionsSection
+            openPositions={accountSnapshot.openPositions || []}
+            paperDigits={paperDigits}
+            formatNumber={formatNumber}
+            onClosePosition={onClosePosition}
+          />
           <TradeHistoryDrawer closedTrades={accountSnapshot.closedTrades || []} paperDigits={paperDigits} formatNumber={formatNumber} />
+          <CancelledOrdersCard cancelledOrders={accountSnapshot.cancelledOrders || []} paperDigits={paperDigits} formatNumber={formatNumber} />
           <DebugStateCard accountSnapshot={accountSnapshot} />
 
           <div className="grid grid-cols-1 gap-2">
@@ -377,7 +435,6 @@ export default function PaperTradingSidebar({
                 <div>時間：{simulationExecutionStatus?.timestamp ? new Date(simulationExecutionStatus.timestamp).toLocaleString() : "-"}</div>
               </CardContent>
             </Card>
-            <Button className="rounded-2xl" variant="outline" onClick={onClosePosition}>平倉</Button>
             <Button variant="ghost" className="rounded-2xl text-rose-600 hover:bg-rose-50 hover:text-rose-700" onClick={onResetPaperAccount}>重置模擬</Button>
           </div>
         </div>
