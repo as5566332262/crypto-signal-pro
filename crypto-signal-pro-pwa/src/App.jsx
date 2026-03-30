@@ -187,7 +187,10 @@ return <div className="app">
 <Kpi title="現價" value={fmt(analysis?.price,d)} helper="即時收盤價"/><Kpi title="MA20" value={fmt(analysis?.ma20,d)} helper="20 均線"/><Kpi title="MA50" value={fmt(analysis?.ma50,d)} helper="50 均線"/><Kpi title="RSI" value={fmt(analysis?.rsi,2)} helper="14 週期"/><Kpi title="MACD 柱狀體" value={fmt(analysis?.macd?.histogram,4)} helper="正值偏強"/><Kpi title="結構" value={analysis?.structure||"-"} helper="上升 / 下降 / 盤整"/><Kpi title="突破狀態" value={analysis?.breakoutState||"-"} helper="突破 / 回踩 / 區間"/><Kpi title="突破驗證" value={analysis?.breakoutValidation?.quality||"-"} helper="strong / weak"/><Kpi title="量能狀態" value={analysis?.volumeState||"-"} helper="放量 / 量縮 / 一般"/><Kpi title="掃流動性" value={analysis?.liquiditySweep||"-"} helper="掃高 / 掃低"/><Kpi title="趨勢線" value={analysis?.trendlineState||"-"} helper="趨勢線狀態"/>
 </div>
 <div className="card position-card" style={{marginTop:16}}>
-<div className="position-head"><div className="position-symbol">{symbol}</div><span className={`badge ${badge}`}>{positionSnapshot?.sideLabel||"-"}</span><div className={`position-pnl ${positionSnapshot?.unrealized>=0?"profit":"loss"}`}>{positionSnapshot?`${positionSnapshot.unrealized>=0?"+":""}${fmt(positionSnapshot.unrealized,2)} USDT`:"-"}</div></div>
+<div className="position-head">
+<div className="position-head-top"><div className="position-symbol">{symbol}</div><span className={`badge ${badge}`}>{positionSnapshot?.sideLabel||"-"}</span></div>
+<div className={`position-pnl ${positionSnapshot?.unrealized>=0?"profit":"loss"}`}>{positionSnapshot?`${positionSnapshot.unrealized>=0?"+":""}${fmt(positionSnapshot.unrealized,2)} USDT`:"-"}</div>
+</div>
 <div className="position-price-line">{fmt(positionSnapshot?.entry,d)} <span className="position-arrow">→</span> {fmt(positionSnapshot?.mark,d)}</div>
 <div className="position-row"><div><span className="position-label">數量：</span>{positionSnapshot?`${fmt(positionSnapshot.qty,symbol==="BTCUSDT"?3:2)} ${symbol.replace("USDT","")}`:"-"}</div><div><span className="position-label">倉值：</span>{positionSnapshot?`${fmt(positionSnapshot.value,2)} USDT`:"-"}</div></div>
 <div className="position-row"><div><span className="position-label">止損：</span>{fmt(analysis?.stopLoss,d)}</div><div><span className="position-label">TP1：</span>{fmt(analysis?.takeProfit1,d)}</div></div>
