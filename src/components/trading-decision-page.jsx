@@ -307,7 +307,7 @@ export default function TradingDecisionPage({
   const symbolLabel = symbolOptions.find((item) => item.value === symbol)?.label || symbol;
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6">
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-1 sm:px-2">
       <Card className="rounded-3xl border-0 shadow-md">
         <CardContent className="grid gap-3 p-4 md:grid-cols-4">
           <Select value={symbol} onValueChange={setSymbol}>
@@ -340,13 +340,13 @@ export default function TradingDecisionPage({
         formatNumber={formatNumber}
       />
 
-      <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
-        <div className="space-y-4">
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <div className="min-w-0 space-y-5">
           <DecisionCard analysis={analysis} />
           <TradePlanCard analysis={analysis} digits={digits} formatNumber={formatNumber} />
           <AIAnalysisAccordion analysis={analysis} />
         </div>
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-5">
           <ChartPanel chartData={chartData} analysis={analysis} symbol={symbol} timeframeLabel={timeframeLabel} formatNumber={formatNumber} />
           <MarketContextCard analysis={analysis} currentCandle={currentCandle} digits={digits} formatNumber={formatNumber} />
         </div>
