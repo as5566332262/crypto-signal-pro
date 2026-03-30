@@ -202,7 +202,7 @@ function mapExecutionBlockedReason(resultCode, decision) {
   const entryTiming = String(decision?.entryTiming || "").toUpperCase();
   const confidence = String(decision?.confidence || "").toUpperCase();
 
-  if (setupType === "no_setup" || setupType === "no-trade") return "無有效 setup，未執行";
+  if (setupType === "no_setup" || setupType === "no-trade") return "目前不建議進場，已轉為條件單";
   if (entryTiming === "WAIT_PULLBACK" || entryTiming === "WAIT_BREAKOUT") return "尚未進入進場區間";
   if (entryTiming === "TOO_LATE") return "觸發條件尚未成立";
   if (confidence === "LOW" || confidence === "低") return "信心不足，未建立模擬單";
@@ -214,7 +214,7 @@ function mapExecutionBlockedReason(resultCode, decision) {
     DUPLICATE_SETUP: "同一 setup 已存在掛單或持倉",
     MISSING_TRIGGER: "觸發條件尚未成立",
     MISSING_INVALIDATION: "缺少失效價格，風險無法定義",
-    SETUP_ALREADY_INVALIDATED: "無有效 setup，未執行",
+    SETUP_ALREADY_INVALIDATED: "目前不建議進場，已轉為條件單",
     STALE_CONTEXT: "決策內容已過期，請先重新整理",
     STRUCTURE_INVALID: "結構條件不足，暫不建立掛單",
     EXTREMELY_LOW_CONFIDENCE: "信心過低，模擬執行暫停",
@@ -223,7 +223,7 @@ function mapExecutionBlockedReason(resultCode, decision) {
     SHORT_ENTRY_UNREALISTIC: "空單掛單位置不合理（距現價過遠）",
     SHORT_BREAKDOWN_ATR_REQUIRED: "空單跌破掛單缺少 ATR，無法驗證距離",
   };
-  return reasonMap[resultCode] || "條件不足，暫不執行";
+  return reasonMap[resultCode] || "條件不足，已轉為觀察或條件模式";
 }
 
 function buildExecutionDiagnostics({ decision, currentPrice, rsi, currentVolume, avgVolume20 }) {
@@ -2456,9 +2456,9 @@ export default function CryptoSignalWebApp() {
     console.debug("[simulation:click]", manualExecutionMeta);
     if (!analysis?.aiDecisionOutput || !paperCurrentPrice) {
       setSimulationExecutionStatus({
-        status: "BLOCKED",
-        statusLabel: "模擬執行被阻擋",
-        reason: "尚未取得即時價格或 AI 決策",
+        status: "WATCHING",
+        statusLabel: "已進入等待確認模式",
+        reason: "尚未取得即時價格或 AI 決策，先觀察並等待下一筆有效條件",
         unmetConditions: [],
         distances: [],
         timestamp: new Date().toISOString(),
@@ -2467,14 +2467,13 @@ export default function CryptoSignalWebApp() {
     }
 
     setPaperAccount((prev) => {
-      const action = String(analysis.aiDecisionOutput?.action || analysis.aiDecisionOutput?.executionPlan?.action || "").toUpperCase();
       const recentVolumes = (candles || []).slice(-20).map((c) => Number(c.volume)).filter((v) => Number.isFinite(v));
       const avgVolume20 = recentVolumes.length ? recentVolumes.reduce((sum, v) => sum + v, 0) / recentVolumes.length : null;
       const latestVolume = Number(currentCandle?.volume ?? candles?.[candles.length - 1]?.volume);
       let nextFeedback = {
-        status: "BLOCKED",
-        statusLabel: "模擬執行被阻擋",
-        reason: "觸發條件尚未成立",
+        status: "WATCHING",
+        statusLabel: "已進入等待確認模式",
+        reason: "觸發條件尚未成立，已轉為等待確認",
         unmetConditions: [],
         distances: [],
         timestamp: new Date().toISOString(),
@@ -2559,18 +2558,27 @@ export default function CryptoSignalWebApp() {
         };
       } else if (cancelledCount > 0) {
         nextFeedback = {
-          status: "BLOCKED",
-          statusLabel: "模擬執行被阻擋",
+          status: "WATCHING",
+          statusLabel: "已進入等待確認模式",
           reason: mapCancelReasonLabel(latestCancelled?.cancelReason),
           unmetConditions: [],
           distances: [],
           timestamp: latestCancelled?.cancelledAt || new Date().toISOString(),
         };
-      } else if (String(analysis.aiDecisionOutput?.setupType || "").toLowerCase() === "no_setup") {
+      } else if (result.result === "WATCH_AND_ARM") {
         nextFeedback = {
-          status: "SKIPPED",
-          statusLabel: "模擬執行被阻擋",
-          reason: "策略條件不足，系統未建立模擬單",
+          status: "WATCHING",
+          statusLabel: "已進入等待確認模式",
+          reason: "已進入等待確認模式，條件成立後可轉為掛單或進場",
+          unmetConditions: [],
+          distances: [],
+          timestamp: new Date().toISOString(),
+        };
+      } else if (result.result === "WATCH_ONLY" || String(analysis.aiDecisionOutput?.setupType || "").toLowerCase() === "no_setup") {
+        nextFeedback = {
+          status: "WATCHING",
+          statusLabel: "目前不建議進場，已轉為條件單",
+          reason: "目前不建議進場，已轉為條件單",
           unmetConditions: [],
           distances: [],
           timestamp: new Date().toISOString(),
@@ -2583,11 +2591,10 @@ export default function CryptoSignalWebApp() {
           currentVolume: latestVolume,
           avgVolume20,
         });
-        const skippedByAi = action === "HOLD" || ["SKIP_HOLD_NO_TRIGGER", "SKIP_NO_ACTIONABLE_SIDE"].includes(result.result);
         nextFeedback = {
-          status: skippedByAi ? "SKIPPED" : "BLOCKED",
-          statusLabel: skippedByAi ? "模擬執行被阻擋" : "模擬執行被阻擋",
-          reason: `模擬執行被阻擋：${mapExecutionBlockedReason(result.result, analysis.aiDecisionOutput)}`,
+          status: "PENDING",
+          statusLabel: "已建立模擬掛單",
+          reason: `目前不建議立即進場，已轉為條件單：${mapExecutionBlockedReason(result.result, analysis.aiDecisionOutput)}`,
           unmetConditions: diagnostics.unmetConditions,
           distances: diagnostics.distances,
           timestamp: new Date().toISOString(),
