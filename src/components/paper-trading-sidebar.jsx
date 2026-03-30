@@ -149,27 +149,40 @@ function TradingStateTerminal({
                 const positionValue = Number(position.currentPrice || 0) * Number(position.quantity || 0);
                 return (
                   <div key={position.id} className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="mb-2.5 flex items-center justify-between gap-2">
-                      <div className="text-sm font-semibold text-slate-800">{position.symbol}</div>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${position.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
-                        {sideLabel(position.side)}
-                      </span>
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <div className="truncate text-sm font-semibold text-slate-800">{position.symbol}</div>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${position.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                          {sideLabel(position.side)}
+                        </span>
+                      </div>
+                      <div className={`shrink-0 whitespace-nowrap text-sm font-bold ${pnlPositive ? "text-emerald-600" : "text-rose-600"}`}>
+                        {pnlPositive ? "+" : ""}
+                        {formatNumber(position.unrealizedPnl, 2)} USDT
+                      </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                      <InfoItem label="進場價" value={formatNumber(position.entryPrice, paperDigits)} />
-                      <InfoItem label="現價" value={formatNumber(position.currentPrice, paperDigits)} />
-                      <InfoItem label="數量" value={formatNumber(position.quantity, 2)} />
-                      <InfoItem label="倉位價值" value={`${formatNumber(positionValue, 2)} USDT`} />
-                      <InfoItem
-                        label="未實現損益"
-                        value={`${pnlPositive ? "+" : ""}${formatNumber(position.unrealizedPnl, 2)} USDT`}
-                        valueClassName={pnlPositive ? "text-emerald-600" : "text-rose-600"}
+                    <div className="space-y-2.5">
+                      <InfoPairRow
+                        leftLabel="進場價"
+                        leftValue={formatNumber(position.entryPrice, paperDigits)}
+                        rightLabel="現價"
+                        rightValue={formatNumber(position.currentPrice, paperDigits)}
                       />
-                      <InfoItem label="止損" value={formatNumber(position.stopLoss, paperDigits)} />
-                      <InfoItem label="止盈（TP1 / TP2 / TP3）" value={takeProfitDetailLabel(position)} className="col-span-2" />
-                      <InfoItem label="開倉時間" value={formatDate(position.openedAt)} className="col-span-2" />
+                      <InfoPairRow
+                        leftLabel="數量"
+                        leftValue={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`}
+                        rightLabel="倉位價值"
+                        rightValue={`${formatNumber(positionValue, 2)} USDT`}
+                      />
+                      <InfoPairRow
+                        leftLabel="止損"
+                        leftValue={formatNumber(position.stopLoss, paperDigits)}
+                        rightLabel="TP1"
+                        rightValue={position.takeProfit1 ? formatNumber(position.takeProfit1, paperDigits) : "-"}
+                      />
+                      <InfoSingleRow label="開倉時間" value={formatDate(position.openedAt)} />
                     </div>
-                    <div className="mt-3 border-t border-slate-100 pt-2.5">
+                    <div className="mt-3 pt-1">
                       <Button variant="outline" size="sm" className="h-7 w-full rounded-lg px-2" onClick={() => onClosePosition?.(position.id)}>
                         平倉
                       </Button>
@@ -186,21 +199,29 @@ function TradingStateTerminal({
             <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
               {pendingOrders.map((order) => (
                 <div key={order.id} className="rounded-xl border border-slate-200 bg-white p-3">
-                  <div className="mb-2.5 flex items-center justify-between gap-2">
-                    <div className="text-sm font-semibold text-slate-800">{order.symbol}</div>
-                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${order.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                  <div className="mb-3 flex items-center justify-between gap-2">
+                    <div className="truncate text-sm font-semibold text-slate-800">{order.symbol}</div>
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${order.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
                       {sideLabel(order.side)}
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                    <InfoItem label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
-                    <InfoItem label="數量" value={formatNumber(order.quantity, 2)} />
-                    <InfoItem label="止損" value={formatNumber(order.stopLoss, paperDigits)} />
-                    <InfoItem label="失效價" value={formatNumber(order.invalidationPrice, paperDigits)} />
-                    <InfoItem label="止盈（TP1 / TP2 / TP3）" value={takeProfitDetailLabel(order)} className="col-span-2" />
-                    <InfoItem label="建立時間" value={formatDate(order.createdAt)} className="col-span-2" />
+                  <div className="space-y-2.5">
+                    <InfoPairRow
+                      leftLabel="觸發價"
+                      leftValue={formatNumber(order.triggerPrice, paperDigits)}
+                      rightLabel="數量"
+                      rightValue={`${formatNumber(order.quantity, 2)} ${order.symbol.replace("USDT", "")}`}
+                    />
+                    <InfoPairRow
+                      leftLabel="止損"
+                      leftValue={formatNumber(order.stopLoss, paperDigits)}
+                      rightLabel="失效價"
+                      rightValue={formatNumber(order.invalidationPrice, paperDigits)}
+                    />
+                    <InfoSingleRow label="TP1 / TP2 / TP3" value={takeProfitDetailLabel(order)} />
+                    <InfoSingleRow label="建立時間" value={formatDate(order.createdAt)} />
                   </div>
-                  <div className="mt-3 border-t border-slate-100 pt-2.5">
+                  <div className="mt-3 pt-1">
                     <Button variant="outline" size="sm" className="h-7 w-full rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => onCancelPendingOrder?.(order.id)}>
                       取消掛單
                     </Button>
@@ -273,11 +294,24 @@ function TradingStateTerminal({
 
 function InfoItem({ label, value, className = "", valueClassName = "" }) {
   return (
-    <div className={`rounded-lg bg-slate-50 p-2 ${className}`}>
+    <div className={`min-w-0 ${className}`}>
       <div className="text-[11px] text-slate-500">{label}</div>
-      <div className={`mt-1 break-all font-semibold text-slate-800 ${valueClassName}`}>{value || "-"}</div>
+      <div className={`mt-0.5 min-w-0 whitespace-nowrap font-semibold text-slate-800 ${valueClassName}`}>{value || "-"}</div>
     </div>
   );
+}
+
+function InfoPairRow({ leftLabel, leftValue, rightLabel, rightValue }) {
+  return (
+    <div className="grid grid-cols-2 gap-x-3">
+      <InfoItem label={leftLabel} value={leftValue} />
+      <InfoItem label={rightLabel} value={rightValue} />
+    </div>
+  );
+}
+
+function InfoSingleRow({ label, value }) {
+  return <InfoItem label={label} value={value} />;
 }
 
 function DebugStateCard({ accountSnapshot }) {
@@ -322,7 +356,7 @@ export default function PaperTradingSidebar({
   simulationExecutionStatus,
   simulationButtonState,
 }) {
-  const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[320px]" : "w-full lg:w-[76px]";
+  const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[360px]" : "w-full lg:w-[76px]";
 
   return (
     <aside className={`shrink-0 border-b border-slate-200 bg-slate-50/70 p-3 transition-all duration-200 lg:border-b-0 lg:border-r ${sidebarWidthClass}`}>
