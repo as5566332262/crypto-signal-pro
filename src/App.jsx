@@ -182,6 +182,59 @@ function formatTime(ts, timeframe) {
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
 }
 
+function mapCancelReasonLabel(reason) {
+  const reasonMap = {
+    DECISION_HOLD: "AI 決策目前為「不交易」",
+    DECISION_CHANGED: "決策方向改變，原掛單已失效",
+    TRAP_BLOCKED: "誘多 / 誘空風險阻擋執行",
+    SETUP_INVALIDATED: "無有效 setup，未執行",
+  };
+  return reasonMap[reason] || "條件變更，掛單已取消";
+}
+
+function mapExecutionBlockedReason(resultCode, decision) {
+  const setupType = String(decision?.setupType || decision?.executionPlan?.setupType || "").toLowerCase();
+  const entryTiming = String(decision?.entryTiming || "").toUpperCase();
+  const confidence = String(decision?.confidence || "").toUpperCase();
+
+  if (setupType === "no_setup" || setupType === "no-trade") return "無有效 setup，未執行";
+  if (entryTiming === "WAIT_PULLBACK" || entryTiming === "WAIT_BREAKOUT") return "尚未進入進場區間";
+  if (entryTiming === "TOO_LATE") return "觸發條件尚未成立";
+  if (confidence === "LOW" || confidence === "低") return "信心不足，未建立模擬單";
+
+  const reasonMap = {
+    SKIP_HOLD_NO_TRIGGER: "AI 決策目前為「不交易」",
+    SKIP_NO_ACTIONABLE_SIDE: "觸發條件尚未成立",
+    BLOCKED_BY_TRAP: "誘多 / 誘空風險阻擋執行",
+    DUPLICATE_SETUP: "同一 setup 已存在掛單或持倉",
+    MISSING_TRIGGER: "觸發條件尚未成立",
+    SETUP_ALREADY_INVALIDATED: "無有效 setup，未執行",
+    NO_DECISION: "尚未產生可執行決策",
+  };
+  return reasonMap[resultCode] || "條件不足，暫不執行";
+}
+
+function getSimulationButtonState(decision) {
+  if (!decision) {
+    return {
+      disabled: true,
+      disabledReason: "尚未取得 AI 決策",
+    };
+  }
+
+  const action = String(decision?.action || decision?.executionPlan?.action || "").toUpperCase();
+  const triggerPrice = Number(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
+  const setupType = String(decision?.setupType || decision?.executionPlan?.setupType || "").toLowerCase();
+
+  if (setupType === "no_setup" || setupType === "no-trade") {
+    return { disabled: true, disabledReason: "無有效 setup，未執行" };
+  }
+  if ((action === "HOLD" || !action) && !Number.isFinite(triggerPrice)) {
+    return { disabled: true, disabledReason: "AI 決策目前為「不交易」" };
+  }
+  return { disabled: false, disabledReason: "" };
+}
+
 function calculateATR(candles, period = 14) {
   if (!candles || candles.length < period + 1) return null;
   const trueRanges = [];
@@ -2203,6 +2256,7 @@ export default function CryptoSignalWebApp() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [paperSymbol, setPaperSymbol] = useState("SOL");
   const [paperAccount, setPaperAccount] = useState(() => loadPaperAccount());
+  const [simulationExecutionStatus, setSimulationExecutionStatus] = useState(null);
 
   const loadData = async (nextSymbol = symbol, nextTimeframe = timeframe) => {
     setIsLoading(true);
@@ -2331,20 +2385,91 @@ export default function CryptoSignalWebApp() {
   }, [paperAccount]);
 
   const handleExecuteSimulation = () => {
-    if (!analysis?.aiDecisionOutput || !paperCurrentPrice) return;
+    if (!analysis?.aiDecisionOutput || !paperCurrentPrice) {
+      setSimulationExecutionStatus({
+        status: "BLOCKED",
+        statusLabel: "模擬執行被阻擋",
+        reason: "尚未取得即時價格或 AI 決策",
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
 
     setPaperAccount((prev) => {
+      let nextFeedback = {
+        status: "BLOCKED",
+        statusLabel: "模擬執行被阻擋",
+        reason: "觸發條件尚未成立",
+        timestamp: new Date().toISOString(),
+      };
+      const reconciledState = reconcilePendingOrdersWithDecision({
+        state: prev,
+        decision: analysis.aiDecisionOutput,
+        symbol: paperMarketSymbol,
+        timeframe,
+        currentPrice: paperCurrentPrice,
+      });
+      const previousCancelledCount = (prev.cancelledOrders || []).length;
+      const cancelledCount = (reconciledState.cancelledOrders || []).length - previousCancelledCount;
+      const latestCancelled = cancelledCount > 0 ? reconciledState.cancelledOrders?.[0] : null;
       const selectedQuantity = Number(prev?.simulationOrderConfig?.quantity) > 0 ? Number(prev.simulationOrderConfig.quantity) : 50;
       const result = simulateDecisionExecution({
-        state: prev,
+        state: reconciledState,
         decision: analysis.aiDecisionOutput,
         symbol: paperMarketSymbol,
         timeframe,
         currentPrice: paperCurrentPrice,
         quantity: selectedQuantity,
       });
+      const executedState = result.result === "PENDING_CREATED"
+        ? applyMarketTickToPaperState(result.state, {
+          price: paperCurrentPrice,
+          candleClose: currentCandle?.close,
+        })
+        : result.state;
 
-      return result.state;
+      const prevOpenCount = prev.openPositions.filter((position) => position.symbol === paperMarketSymbol && position.timeframe === timeframe).length;
+      const nextOpenCount = executedState.openPositions.filter((position) => position.symbol === paperMarketSymbol && position.timeframe === timeframe).length;
+
+      if (nextOpenCount > prevOpenCount) {
+        nextFeedback = {
+          status: "POSITION_OPENED",
+          statusLabel: "已開啟模擬持倉",
+          reason: "掛單觸發成功，已建立持倉",
+          timestamp: new Date().toISOString(),
+        };
+      } else if (result.result === "PENDING_CREATED") {
+        nextFeedback = {
+          status: "PENDING_CREATED",
+          statusLabel: "掛單已建立",
+          reason: "已建立待觸發模擬掛單",
+          timestamp: new Date().toISOString(),
+        };
+      } else if (cancelledCount > 0) {
+        nextFeedback = {
+          status: "PENDING_CANCELLED",
+          statusLabel: "掛單已取消",
+          reason: mapCancelReasonLabel(latestCancelled?.cancelReason),
+          timestamp: latestCancelled?.cancelledAt || new Date().toISOString(),
+        };
+      } else if (String(analysis.aiDecisionOutput?.setupType || "").toLowerCase() === "no_setup") {
+        nextFeedback = {
+          status: "NO_SETUP",
+          statusLabel: "無有效 setup，未執行",
+          reason: "策略條件不足，系統未建立模擬單",
+          timestamp: new Date().toISOString(),
+        };
+      } else {
+        nextFeedback = {
+          status: "BLOCKED",
+          statusLabel: "模擬執行被阻擋",
+          reason: mapExecutionBlockedReason(result.result, analysis.aiDecisionOutput),
+          timestamp: new Date().toISOString(),
+        };
+      }
+
+      setSimulationExecutionStatus(nextFeedback);
+      return executedState;
     });
   };
 
@@ -2373,7 +2498,13 @@ export default function CryptoSignalWebApp() {
 
   const handleResetPaperAccount = () => {
     setPaperAccount(resetPaperTradingState());
+    setSimulationExecutionStatus(null);
   };
+
+  const simulationButtonState = useMemo(
+    () => getSimulationButtonState(analysis?.aiDecisionOutput),
+    [analysis?.aiDecisionOutput]
+  );
 
   return (
     <div className="min-h-screen w-full bg-slate-50">
@@ -2389,6 +2520,8 @@ export default function CryptoSignalWebApp() {
           onExecuteSimulation={handleExecuteSimulation}
           simulationOrderConfig={accountSnapshot.simulationOrderConfig}
           onSimulationQuantityChange={handleSimulationQuantityChange}
+          simulationExecutionStatus={simulationExecutionStatus}
+          simulationButtonState={simulationButtonState}
           onClosePosition={handleClosePosition}
           onResetPaperAccount={handleResetPaperAccount}
           formatNumber={formatNumber}

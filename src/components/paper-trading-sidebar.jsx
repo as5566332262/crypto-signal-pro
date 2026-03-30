@@ -280,6 +280,8 @@ export default function PaperTradingSidebar({
   formatNumber,
   simulationOrderConfig,
   onSimulationQuantityChange,
+  simulationExecutionStatus,
+  simulationButtonState,
 }) {
   const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[320px]" : "w-full lg:w-[76px]";
 
@@ -318,7 +320,30 @@ export default function PaperTradingSidebar({
           <DebugStateCard accountSnapshot={accountSnapshot} />
 
           <div className="grid grid-cols-1 gap-2">
-            <Button className="rounded-2xl bg-slate-900 text-white hover:bg-slate-800" onClick={onExecuteSimulation}>執行模擬</Button>
+            <Button
+              className="rounded-2xl bg-slate-900 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={onExecuteSimulation}
+              disabled={simulationButtonState?.disabled}
+              title={simulationButtonState?.disabledReason || ""}
+            >
+              執行模擬
+            </Button>
+            {simulationButtonState?.disabledReason ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                目前無法執行：{simulationButtonState.disabledReason}
+              </div>
+            ) : null}
+
+            <Card className="rounded-2xl border-slate-200">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">最近一次執行結果</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1.5 text-xs text-slate-600">
+                <div>狀態：{simulationExecutionStatus?.statusLabel || "尚未執行"}</div>
+                <div>原因：{simulationExecutionStatus?.reason || "-"}</div>
+                <div>時間：{simulationExecutionStatus?.timestamp ? new Date(simulationExecutionStatus.timestamp).toLocaleString() : "-"}</div>
+              </CardContent>
+            </Card>
             <Button className="rounded-2xl" variant="outline" onClick={onClosePosition}>平倉</Button>
             <Button variant="ghost" className="rounded-2xl text-rose-600 hover:bg-rose-50 hover:text-rose-700" onClick={onResetPaperAccount}>重置模擬</Button>
           </div>
