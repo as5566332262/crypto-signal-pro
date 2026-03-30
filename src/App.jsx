@@ -2448,6 +2448,12 @@ export default function CryptoSignalWebApp() {
   }, [paperAccount]);
 
   const handleExecuteSimulation = () => {
+    const manualExecutionMeta = {
+      mode: "manual_click",
+      executionSource: "simulation_manual",
+      orderMode: "simulation",
+    };
+    console.debug("[simulation:click]", manualExecutionMeta);
     if (!analysis?.aiDecisionOutput || !paperCurrentPrice) {
       setSimulationExecutionStatus({
         status: "BLOCKED",
@@ -2484,6 +2490,14 @@ export default function CryptoSignalWebApp() {
       const cancelledCount = (reconciledState.cancelledOrders || []).length - previousCancelledCount;
       const latestCancelled = cancelledCount > 0 ? reconciledState.cancelledOrders?.[0] : null;
       const selectedQuantity = Number(prev?.simulationOrderConfig?.quantity) > 0 ? Number(prev.simulationOrderConfig.quantity) : 50;
+      console.debug("[simulation:submit-payload]", {
+        ...manualExecutionMeta,
+        symbol: paperMarketSymbol,
+        timeframe,
+        currentPrice: paperCurrentPrice,
+        quantity: selectedQuantity,
+        setupType: analysis.aiDecisionOutput?.setupType || analysis.aiDecisionOutput?.executionPlan?.setupType || null,
+      });
       const result = simulateDecisionExecution({
         state: reconciledState,
         decision: analysis.aiDecisionOutput,
@@ -2500,6 +2514,13 @@ export default function CryptoSignalWebApp() {
           currentVolume: latestVolume,
           avgVolume20,
         },
+      });
+      console.debug("[simulation:service-result]", {
+        ...manualExecutionMeta,
+        result: result.result,
+        eligibilityInfo: result.eligibilityInfo || null,
+        createdPosition: Boolean(result.position),
+        createdPendingOrder: Boolean(result.pendingOrder),
       });
       const executedState = result.result === "PENDING_CREATED"
         ? applyMarketTickToPaperState(result.state, {
@@ -2574,6 +2595,13 @@ export default function CryptoSignalWebApp() {
       }
 
       setSimulationExecutionStatus(nextFeedback);
+      console.debug("[simulation:position-write]", {
+        ...manualExecutionMeta,
+        finalStatus: nextFeedback.status,
+        finalReason: nextFeedback.reason,
+        openPositionCount: executedState.openPositions?.length || 0,
+        pendingOrderCount: executedState.pendingOrders?.length || 0,
+      });
       return executedState;
     });
   };
