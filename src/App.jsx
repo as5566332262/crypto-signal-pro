@@ -190,6 +190,9 @@ function mapCancelReasonLabel(reason) {
     DECISION_CHANGED: "決策方向改變，原掛單已失效",
     TRAP_BLOCKED: "誘多 / 誘空風險阻擋執行",
     SETUP_INVALIDATED: "無有效 setup，未執行",
+    EXPIRED: "掛單已到期，自動取消",
+    PRICE_DRIFTED: "價格偏離掛單過遠，自動取消",
+    STRUCTURE_CHANGED: "市場結構已明顯改變，掛單取消",
   };
   return reasonMap[reason] || "條件變更，掛單已取消";
 }
@@ -217,6 +220,8 @@ function mapExecutionBlockedReason(resultCode, decision) {
     EXTREMELY_LOW_CONFIDENCE: "信心過低，模擬執行暫停",
     MISSING_EXECUTION_PLAN: "缺少 execution plan，無法建立掛單",
     NO_DECISION: "尚未產生可執行決策",
+    SHORT_ENTRY_UNREALISTIC: "空單掛單位置不合理（距現價過遠）",
+    SHORT_BREAKDOWN_ATR_REQUIRED: "空單跌破掛單缺少 ATR，無法驗證距離",
   };
   return reasonMap[resultCode] || "條件不足，暫不執行";
 }
@@ -2503,7 +2508,7 @@ export default function CryptoSignalWebApp() {
         const simulatedNonRecommended = Boolean(result?.eligibilityInfo?.overrideApplied);
         nextFeedback = {
           status: "EXECUTED",
-          statusLabel: simulatedNonRecommended ? "非建議交易（模擬）" : "已立即模擬進場",
+          statusLabel: simulatedNonRecommended ? "模擬掛單（非建議）" : "已立即模擬進場",
           reason: simulatedNonRecommended ? "已覆寫 AI NO TRADE 並建立模擬持倉" : "觸發條件已成立，系統已建立持倉",
           unmetConditions: [],
           distances: [],
@@ -2513,8 +2518,8 @@ export default function CryptoSignalWebApp() {
         const simulatedNonRecommended = Boolean(result?.eligibilityInfo?.overrideApplied);
         nextFeedback = {
           status: "PENDING",
-          statusLabel: simulatedNonRecommended ? "非建議交易（模擬）" : "已建立條件掛單",
-          reason: simulatedNonRecommended ? "已建立模擬掛單（覆寫 AI NO TRADE）" : "已建立條件掛單，等待觸發後進場",
+          statusLabel: simulatedNonRecommended ? "模擬掛單（非建議）" : "已建立條件掛單",
+          reason: simulatedNonRecommended ? "已建立模擬掛單（非建議）" : "已建立條件掛單，等待觸發後進場",
           pendingOrder: result.pendingOrder,
           unmetConditions: [],
           distances: [],
