@@ -76,6 +76,31 @@ export function PendingOrdersCard({ pendingOrders, paperDigits, formatNumber }) 
   );
 }
 
+export function CancelledOrdersCard({ cancelledOrders, paperDigits, formatNumber }) {
+  return (
+    <Card className="rounded-2xl border-slate-200">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">已取消掛單</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 text-xs">
+        {cancelledOrders.length ? (
+          cancelledOrders.slice(0, 6).map((order) => (
+            <div key={`${order.id}-${order.cancelledAt || order.createdAt}`} className="rounded-lg bg-slate-50 p-2 text-slate-600">
+              <div className="font-medium text-slate-700">{order.symbol} · {order.side}</div>
+              <div>觸發價: {formatNumber(order.triggerPrice, paperDigits)}</div>
+              <div>失效價: {formatNumber(order.invalidationPrice, paperDigits)}</div>
+              <div>原因: {order.cancelReason || "-"}</div>
+              <div>取消: {order.cancelledAt ? new Date(order.cancelledAt).toLocaleString() : "-"}</div>
+            </div>
+          ))
+        ) : (
+          <div className="text-slate-500">無取消掛單紀錄</div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function TradeHistoryDrawer({ closedTrades, paperDigits, formatNumber }) {
   return (
     <Card className="rounded-2xl border-slate-200">
@@ -114,6 +139,7 @@ function DebugStateCard({ accountSnapshot }) {
             unrealizedPnl: accountSnapshot.unrealizedPnl,
           },
           pendingOrders: accountSnapshot.pendingOrders,
+          cancelledOrders: accountSnapshot.cancelledOrders,
           openPositions: accountSnapshot.openPositions,
           closedTrades: accountSnapshot.closedTrades,
         }, null, 2)}
@@ -163,6 +189,7 @@ export default function PaperTradingSidebar({
           <PaperAccountCard accountSnapshot={accountSnapshot} formatNumber={formatNumber} />
           <OpenPositionsCard accountSnapshot={accountSnapshot} paperDigits={paperDigits} formatNumber={formatNumber} />
           <PendingOrdersCard pendingOrders={accountSnapshot.pendingOrders || []} paperDigits={paperDigits} formatNumber={formatNumber} />
+          <CancelledOrdersCard cancelledOrders={accountSnapshot.cancelledOrders || []} paperDigits={paperDigits} formatNumber={formatNumber} />
           <TradeHistoryDrawer closedTrades={accountSnapshot.closedTrades || []} paperDigits={paperDigits} formatNumber={formatNumber} />
           <DebugStateCard accountSnapshot={accountSnapshot} />
 
