@@ -1,6 +1,6 @@
 const DEFAULT_BALANCE = 5000;
 const DEFAULT_LEVERAGE = 1;
-const DEFAULT_POSITION_SIZE = 1;
+const DEFAULT_POSITION_SIZE = 50;
 const TRAP_BLOCK_CONFIDENCE = new Set(["MEDIUM", "HIGH", "中", "高"]);
 const LEVEL_CHANGE_TOLERANCE_RATIO = 0.001;
 const MAX_CANCELLED_ORDERS_HISTORY = 50;
@@ -85,6 +85,10 @@ export function createInitialPaperAccountState() {
     pendingOrders: [],
     cancelledOrders: [],
     closedTrades: [],
+    simulationOrderConfig: {
+      mode: "fixed_quantity",
+      quantity: DEFAULT_POSITION_SIZE,
+    },
   };
 }
 
@@ -197,6 +201,7 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, timestamp = now
       side: order.side,
       status: "OPEN",
       entryPrice,
+      triggerPrice: order.triggerPrice,
       currentPrice: entryPrice,
       quantity,
       notional,
