@@ -160,12 +160,9 @@ function TradingStateTerminal({
                       </div>
                     </div>
                     <div className="space-y-2.5">
-                      <InfoPairRow
-                        leftLabel="進場價"
-                        leftValue={formatNumber(position.entryPrice, paperDigits)}
-                        rightLabel="現價"
-                        rightValue={formatNumber(position.currentPrice, paperDigits)}
-                      />
+                      <div className="text-sm font-semibold text-slate-800">
+                        {formatNumber(position.entryPrice, paperDigits)} <span className="px-1 text-slate-400">→</span> {formatNumber(position.currentPrice, paperDigits)}
+                      </div>
                       <InfoPairRow
                         leftLabel="數量"
                         leftValue={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`}
