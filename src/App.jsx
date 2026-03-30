@@ -2519,6 +2519,7 @@ export default function CryptoSignalWebApp() {
       const didCallCreatePendingOrder = result.executionIntent === "PLACE_PENDING";
       const createdPendingOrder = Boolean(result.pendingOrder) && pendingAfter > pendingBefore;
       const pendingType = result.confirmationResult?.decisionType || analysis.aiDecisionOutput?.entryTiming || null;
+      const isOpportunityEntry = pendingType === "OPPORTUNITY_ENTRY";
       console.debug("[simulation:service-result]", {
         ...manualExecutionMeta,
         finalDecision: analysis?.finalDecision || null,
@@ -2552,8 +2553,16 @@ export default function CryptoSignalWebApp() {
         const simulatedNonRecommended = Boolean(result?.eligibilityInfo?.overrideApplied);
         nextFeedback = {
           status: "EXECUTED",
-          statusLabel: simulatedNonRecommended ? "模擬掛單（非建議）" : "已立即模擬進場",
-          reason: simulatedNonRecommended ? "已覆寫 AI NO TRADE 並建立模擬持倉" : "觸發條件已成立，系統已建立持倉",
+          statusLabel: simulatedNonRecommended
+            ? "模擬掛單（非建議）"
+            : isOpportunityEntry
+              ? "可嘗試進場（低信心）"
+              : "已立即模擬進場",
+          reason: simulatedNonRecommended
+            ? "已覆寫 AI NO TRADE 並建立模擬持倉"
+            : isOpportunityEntry
+              ? "非最佳 setup，已以小倉位嘗試進場"
+              : "觸發條件已成立，系統已建立持倉",
           unmetConditions: [],
           distances: [],
           timestamp: new Date().toISOString(),
@@ -2562,8 +2571,16 @@ export default function CryptoSignalWebApp() {
         const simulatedNonRecommended = Boolean(result?.eligibilityInfo?.overrideApplied);
         nextFeedback = {
           status: "PENDING",
-          statusLabel: simulatedNonRecommended ? "模擬掛單（非建議）" : "已建立條件掛單",
-          reason: simulatedNonRecommended ? "已建立模擬掛單（非建議）" : "已建立條件掛單，等待條件成立後進場",
+          statusLabel: simulatedNonRecommended
+            ? "模擬掛單（非建議）"
+            : isOpportunityEntry
+              ? "可嘗試進場（低信心）"
+              : "已建立條件掛單",
+          reason: simulatedNonRecommended
+            ? "已建立模擬掛單（非建議）"
+            : isOpportunityEntry
+              ? "非最佳 setup，建議小倉位並放寬條件掛單"
+              : "已建立條件掛單，等待條件成立後進場",
           pendingOrder: result.pendingOrder,
           unmetConditions: [],
           distances: [],
