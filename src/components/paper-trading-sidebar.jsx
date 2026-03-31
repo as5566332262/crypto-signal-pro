@@ -131,6 +131,11 @@ class CardRenderErrorBoundary extends React.Component {
 }
 
 export function PaperAccountCard({ accountSnapshot, formatNumber }) {
+  const metricKeys = ["equity", "realizedPnl", "unrealizedPnl"];
+  const hasAbnormalMetric = metricKeys.some((key) => {
+    const value = Number(accountSnapshot?.[key]);
+    return !Number.isFinite(value) || Math.abs(value) > 1_000_000;
+  });
   return (
     <Card className="rounded-2xl border-slate-200">
       <CardHeader className="pb-2">
@@ -142,6 +147,11 @@ export function PaperAccountCard({ accountSnapshot, formatNumber }) {
         <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">已用保證金</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.usedMargin || 0, 2)} USDT</div></div>
         <div className="rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">已實現損益</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.realizedPnl, 2)} USDT</div></div>
         <div className="col-span-2 rounded-lg bg-slate-50 p-2"><div className="text-[11px] text-slate-500">未實現損益</div><div className="mt-0.5 font-semibold text-slate-800">{formatNumber(accountSnapshot.unrealizedPnl, 2)} USDT</div></div>
+        {hasAbnormalMetric ? (
+          <div className="col-span-2 rounded-lg border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800">
+            ⚠️ 偵測到異常帳戶數值，已記錄 trace，請先確認 account trace/error trace。
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

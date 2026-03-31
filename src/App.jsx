@@ -6,7 +6,9 @@ import {
   createInitialPaperAccountState,
   DEFAULT_PERFORMANCE_DEBUG_STATE,
   getSimulationEligibility,
+  normalizePaperAccountState,
   paperTradingAnalytics,
+  paperTradingConstants,
   reconcilePendingOrdersWithDecision,
   resetPaperTradingState,
   simulateDecisionExecution,
@@ -62,7 +64,7 @@ function loadPaperAccount() {
     const raw = window.localStorage.getItem(PAPER_ACCOUNT_STORAGE_KEY);
     if (!raw) return createInitialPaperAccountState();
     const parsed = JSON.parse(raw);
-    return {
+    return normalizePaperAccountState({
       ...createInitialPaperAccountState(),
       ...parsed,
       openPositions: Array.isArray(parsed?.openPositions) ? parsed.openPositions : [],
@@ -76,7 +78,7 @@ function loadPaperAccount() {
         mode: "fixed_quantity",
         quantity: Number(parsed?.simulationOrderConfig?.quantity) > 0 ? Number(parsed.simulationOrderConfig.quantity) : 50,
       },
-    };
+    }, { eventType: "RESTORE", sourceFunction: "loadPaperAccount" });
   } catch {
     return createInitialPaperAccountState();
   }
@@ -94,7 +96,7 @@ function loadSimulationSnapshot() {
     const normalizedLifecycle = ["running", "paused", "stopped", "idle"].includes(parsed?.simulationLifecycle)
       ? parsed.simulationLifecycle
       : "idle";
-    const normalizedPaperAccount = {
+    const normalizedPaperAccount = normalizePaperAccountState({
       ...fallbackAccount,
       ...(parsed?.paperAccount || {}),
       openPositions: Array.isArray(parsed?.openPositions)
@@ -124,7 +126,7 @@ function loadSimulationSnapshot() {
           ? Number(parsed?.simulationOrderConfig?.quantity || parsed?.paperAccount?.simulationOrderConfig?.quantity)
           : 50,
       },
-    };
+    }, { eventType: "RESTORE", sourceFunction: "loadSimulationSnapshot" });
 
     return {
       simulationLifecycle: normalizedLifecycle,
@@ -566,6 +568,7 @@ function calculateSimulationStats(accountSnapshot, symbol) {
     reentryAvgPnl: reentryTrades.length ? sumPnl(reentryTrades) / reentryTrades.length : 0,
     initialAvgPnl: initialTrades.length ? sumPnl(initialTrades) / initialTrades.length : 0,
   };
+  const accountSummary = calculateAccountSummary(accountSnapshot);
 
   return {
     totalTrades,
@@ -593,6 +596,43 @@ function calculateSimulationStats(accountSnapshot, symbol) {
     averageWaitBySymbol,
     reentrySuccessRate: reentryPerformanceComparison.reentryWinRate,
     reentryPerformanceComparison,
+    cash: accountSummary.cash,
+    equity: accountSummary.equity,
+    marginUsed: accountSummary.marginUsed,
+    positionValue: accountSummary.positionValue,
+    totalAccountValue: accountSummary.totalAccountValue,
+    netWorth: accountSummary.netWorth,
+  };
+}
+
+function calculateAccountSummary(accountSnapshot) {
+  const closedTrades = Array.isArray(accountSnapshot?.closedTrades) ? accountSnapshot.closedTrades : [];
+  const openPositions = Array.isArray(accountSnapshot?.openPositions) ? accountSnapshot.openPositions : [];
+  const realizedPnl = closedTrades.reduce((sum, trade) => sum + Number(trade?.realizedPnl || 0), 0);
+  const cash = Number(paperTradingConstants?.DEFAULT_BALANCE || 5000) + realizedPnl;
+  const unrealizedPnl = openPositions.reduce((sum, position) => sum + Number(position?.unrealizedPnl || 0), 0);
+  const marginUsed = openPositions.reduce((sum, position) => {
+    const notional = Number(position?.notional || 0);
+    const leverage = Number(position?.leverage || 1);
+    return sum + (Number.isFinite(notional) ? notional / Math.max(1, leverage || 1) : 0);
+  }, 0);
+  const positionValue = openPositions.reduce((sum, position) => {
+    const qty = Number(position?.quantity || 0);
+    const px = Number(position?.currentPrice ?? position?.entryPrice ?? 0);
+    return sum + Math.abs(qty * px);
+  }, 0);
+  const equity = cash + unrealizedPnl;
+  return {
+    cash,
+    balance: cash,
+    realizedPnl,
+    unrealizedPnl,
+    marginUsed,
+    usedMargin: marginUsed,
+    positionValue,
+    equity,
+    totalAccountValue: equity,
+    netWorth: equity,
   };
 }
 
@@ -2830,6 +2870,13 @@ export default function CryptoSignalWebApp() {
   const paperCurrentPrice = symbol === paperMarketSymbol ? analysis?.price : null;
 
   useEffect(() => {
+    setPaperAccount((prev) => normalizePaperAccountState(prev, {
+      eventType: "SYMBOL_SWITCH",
+      sourceFunction: "App.paperMarketSymbolChange",
+    }));
+  }, [paperMarketSymbol]);
+
+  useEffect(() => {
     let cancelled = false;
     const refreshSnapshots = async () => {
       try {
@@ -2913,6 +2960,7 @@ export default function CryptoSignalWebApp() {
   }, [simulationLifecycle, symbol, currentCandle?.openTime, analysis?.price, paperMarketSymbol, timeframe]);
 
   const accountSnapshot = useMemo(() => {
+    const accountSummary = calculateAccountSummary(paperAccount);
     const currentSymbolOpenPositions = (paperAccount.openPositions || []).filter((position) => position.symbol === paperMarketSymbol);
     const currentSymbolPendingOrders = (paperAccount.pendingOrders || []).filter((order) => order.symbol === paperMarketSymbol);
     const currentSymbolClosedTrades = (paperAccount.closedTrades || []).filter((trade) => trade.symbol === paperMarketSymbol);
@@ -2929,6 +2977,7 @@ export default function CryptoSignalWebApp() {
 
     return {
       ...paperAccount,
+      ...accountSummary,
       currentSymbolOpenPositions,
       currentSymbolPendingOrders,
       currentSymbolClosedTrades,
