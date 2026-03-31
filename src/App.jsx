@@ -5,6 +5,7 @@ import {
   closePositionManually,
   createInitialPaperAccountState,
   getSimulationEligibility,
+  paperTradingAnalytics,
   reconcilePendingOrdersWithDecision,
   resetPaperTradingState,
   simulateDecisionExecution,
@@ -359,6 +360,7 @@ function mapExecutionBlockedReason(resultCode, decision) {
     NO_DECISION: "尚未產生可執行決策",
     SHORT_ENTRY_UNREALISTIC: "空單掛單位置不合理（距現價過遠）",
     SHORT_BREAKDOWN_ATR_REQUIRED: "空單跌破掛單缺少 ATR，無法驗證距離",
+    BLOCKED_BY_PERFORMANCE_FILTER: "此 setup 歷史勝率與平均損益過差，已轉為觀察模式",
   };
   return reasonMap[resultCode] || "條件不足，已轉為觀察模式";
 }
@@ -468,6 +470,13 @@ function calculateSimulationStats(accountSnapshot) {
     const winsCount = rows.filter((trade) => Number(trade.realizedPnl) > 0).length;
     return rows.length ? (winsCount / rows.length) * 100 : 0;
   };
+  const performanceMap = paperTradingAnalytics.buildPerformanceMap(closedTrades);
+  const performanceRows = Object.entries(performanceMap)
+    .map(([setupKey, stat]) => ({
+      setupKey,
+      ...stat,
+    }))
+    .sort((a, b) => b.totalTrades - a.totalTrades);
 
   return {
     totalTrades,
@@ -483,12 +492,15 @@ function calculateSimulationStats(accountSnapshot) {
     shortWinRate: bySide("SHORT"),
     decisionTypeWinRate: byKeyWinRate("decisionType"),
     pendingTypeWinRate: byKeyWinRate("pendingType"),
+    performanceMap,
+    performanceRows,
   };
 }
 
 function buildDiagnostics(accountSnapshot) {
   const trades = accountSnapshot.closedTrades || [];
   if (!trades.length) return { reviewLines: [], suggestions: [] };
+  const performanceMap = paperTradingAnalytics.buildPerformanceMap(trades);
   const statsByDecision = {};
   const statsByPending = {};
   const lowVolumeBreakoutLosses = trades.filter((t) => t.pendingType === "BREAKOUT_ENTRY" && Number(t.realizedPnl) <= 0 && String(t.regime || "").includes("低量"));
@@ -512,13 +524,21 @@ function buildDiagnostics(accountSnapshot) {
     .sort((a, b) => (a[1].wins / a[1].total) - (b[1].wins / b[1].total))
     .slice(0, 3)
     .map(([k, v]) => `${k} 勝率偏低（${((v.wins / v.total) * 100).toFixed(1)}%，${v.losses}/${v.total} 虧損）`);
+  const setupReviewLines = Object.entries(performanceMap)
+    .filter(([, v]) => v.totalTrades >= 3)
+    .sort((a, b) => a[1].winRate - b[1].winRate)
+    .slice(0, 3)
+    .map(([k, v]) => `Setup ${k}：樣本 ${v.totalTrades}，勝率 ${v.winRate.toFixed(1)}%，平均PnL ${v.avgPnl.toFixed(2)}`);
   const suggestions = [
     lowVolumeBreakoutLosses.length >= 2 ? "BREAKOUT_ENTRY 在低量環境勝率低，建議提高量能門檻" : null,
     (statsByPending.OPPORTUNITY_ENTRY?.losses || 0) >= 2 ? "OPPORTUNITY_ENTRY 虧損偏高，建議進一步降低倉位或降級為觀察" : null,
     lowRRLosses.length >= 2 ? "RR < 1.2 的交易表現差，建議避免執行" : null,
     (statsByDecision.WAIT_BREAKOUT?.losses || 0) > (statsByDecision.WAIT_BREAKOUT?.wins || 0) ? "MTF 分歧時建議降級，不要急於突破追價" : null,
+    Object.values(performanceMap).some((v) => v.totalTrades >= 10 && v.winRate < 40 && v.avgPnl < 0)
+      ? "已啟用 setup 歷史績效過濾：低勝率且負報酬 setup 將自動轉為觀察"
+      : null,
   ].filter(Boolean);
-  return { reviewLines, suggestions };
+  return { reviewLines: [...reviewLines, ...setupReviewLines], suggestions };
 }
 
 function calculateATR(candles, period = 14) {
@@ -3149,6 +3169,10 @@ const simulationAgentState = {
       nextFeedback = {
         ...nextFeedback,
         hasKlineConfirmation,
+        currentSetupKey: result.currentSetupKey || null,
+        currentSetupWinRate: Number(result.currentSetupWinRate || 0),
+        currentSetupSampleSize: Number(result.currentSetupSampleSize || 0),
+        blockedByPerformanceFilter: Boolean(result.blockedByPerformanceFilter),
         cooldownDebug: {
           lastTradeDirection: cooldownState.lastTradeDirection,
           longLossStreak: cooldownState.longLossStreak,

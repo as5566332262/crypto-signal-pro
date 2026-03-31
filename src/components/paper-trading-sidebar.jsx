@@ -529,6 +529,16 @@ export default function PaperTradingSidebar({
                   ))}
                 </ul>
               </div>
+              <div>
+                <div className="mb-1 text-slate-500">各 Setup 表現（次數 / 勝率 / 平均PnL）</div>
+                <ul className="list-disc pl-4">
+                  {(accountSnapshot.simulationStats?.performanceRows || []).slice(0, 12).map((row) => (
+                    <li key={row.setupKey}>
+                      {row.setupKey}: {row.totalTrades} 筆 / {formatNumber(row.winRate, 1)}% / {formatNumber(row.avgPnl, 2)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </CardContent>
           </Card>
           <Card className="rounded-2xl border-slate-200">
@@ -637,6 +647,10 @@ export default function PaperTradingSidebar({
                     <div>consecutiveLossCount：{simulationExecutionStatus.cooldownDebug.consecutiveLossCount ?? "-"}</div>
                     <div>cooldownActive：{simulationExecutionStatus.cooldownDebug.cooldownActive ? "true" : "false"}</div>
                     <div>cooldownBarsLeft：{simulationExecutionStatus.cooldownDebug.cooldownBarsLeft ?? "-"}</div>
+                    <div>currentSetupKey：{simulationExecutionStatus.currentSetupKey || "-"}</div>
+                    <div>currentSetupWinRate：{formatNumber(simulationExecutionStatus.currentSetupWinRate, 1)}%</div>
+                    <div>currentSetupSampleSize：{simulationExecutionStatus.currentSetupSampleSize ?? 0}</div>
+                    <div>blockedByPerformanceFilter：{simulationExecutionStatus.blockedByPerformanceFilter ? "true" : "false"}</div>
                   </div>
                 ) : null}
                 <div>時間：{formatDate(simulationExecutionStatus?.timestamp)}</div>
