@@ -98,6 +98,7 @@ const CONFIDENCE_LEVEL_LABELS = {
   medium: "中",
   high: "高",
 };
+const SIMULATION_FORCE_PROBE_NO_TRADE_BARS = 12;
 
 const TRAP_SIGNAL_LABELS = {
   BULL_TRAP: "誘多",
@@ -2609,12 +2610,27 @@ export default function CryptoSignalWebApp() {
       const cancelledCount = (reconciledState.cancelledOrders || []).length - previousCancelledCount;
       const latestCancelled = cancelledCount > 0 ? reconciledState.cancelledOrders?.[0] : null;
       const selectedQuantity = Number(prev?.simulationOrderConfig?.quantity) > 0 ? Number(prev.simulationOrderConfig.quantity) : 50;
+      const latestTradeTimestamp = [
+        ...(prev?.openPositions || []).map((position) => new Date(position?.openedAt || 0).getTime()),
+        ...(prev?.closedTrades || []).map((trade) => new Date(trade?.closedAt || 0).getTime()),
+        ...(prev?.pendingOrders || []).map((order) => new Date(order?.createdAt || 0).getTime()),
+      ]
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .sort((a, b) => b - a)[0];
+      const noTradeBars = (() => {
+        if (!Array.isArray(candles) || candles.length === 0) return 0;
+        if (!Number.isFinite(latestTradeTimestamp)) return candles.length;
+        return candles.filter((candle) => Number(candle?.openTime) > latestTradeTimestamp).length;
+      })();
+      const forceProbeEntry = noTradeBars >= SIMULATION_FORCE_PROBE_NO_TRADE_BARS;
       console.debug("[simulation:submit-payload]", {
         ...manualExecutionMeta,
         symbol: paperMarketSymbol,
         timeframe,
         currentPrice: paperCurrentPrice,
         quantity: selectedQuantity,
+        noTradeBars,
+        forceProbeEntry,
         setupType: analysis.aiDecisionOutput?.setupType || analysis.aiDecisionOutput?.executionPlan?.setupType || null,
       });
       const result = simulateDecisionExecution({
@@ -2632,6 +2648,20 @@ export default function CryptoSignalWebApp() {
           macd: analysis?.macd,
           currentVolume: latestVolume,
           avgVolume20,
+          volumeConfirmed: analysis?.volumeState === "量增",
+          structure: {
+            supportLow: analysis?.levels?.structureSupportZone?.low,
+            supportHigh: analysis?.levels?.structureSupportZone?.high,
+            resistanceLow: analysis?.levels?.structureResistanceZone?.low,
+            resistanceHigh: analysis?.levels?.structureResistanceZone?.high,
+          },
+          mtf: {
+            aligned: analysis?.multiTimeframe?.aligned,
+            disagreement: analysis?.multiTimeframe?.disagreement,
+            score: analysis?.multiTimeframe?.score,
+          },
+          noTradeBars,
+          forceProbeEntry,
         },
       });
       const pendingBefore = (reconciledState.pendingOrders || []).length;
@@ -2655,7 +2685,9 @@ const pendingType =
 
 const isOpportunityEntry = pendingType === "OPPORTUNITY_ENTRY" || pendingType === "FALLBACK_ENTRY";
 const isMissedMoveEntry = pendingType === "MISSED_MOVE_ENTRY";
+const isProbeEntryD = pendingType === "PROBE_ENTRY_D";
 const scoringResult = result.confirmationResult?.scoring || null;
+const isRangeStrategy = Boolean(result.confirmationResult?.confirmationState?.rangeMarket);
       console.debug("[simulation:service-result]", {
         ...manualExecutionMeta,
         finalDecision: analysis?.finalDecision || null,
@@ -2693,13 +2725,21 @@ const scoringResult = result.confirmationResult?.scoring || null;
             ? "模擬掛單（非建議）"
             : isMissedMoveEntry
               ? "錯過行情進場（反彈 / 回檔）"
+              : isProbeEntryD && isRangeStrategy
+                ? "震盪盤策略"
+              : isProbeEntryD
+                ? "低信心試單（D級）"
               : isOpportunityEntry
                 ? "次優進場（低信心）"
               : "已立即模擬進場",
           reason: simulatedNonRecommended
             ? "已覆寫 AI NO TRADE 並建立模擬持倉"
-            : isMissedMoveEntry
-              ? "價格已脫離原區間，偵測到反轉 / 回檔訊號，已以更小倉位進場"
+              : isMissedMoveEntry
+                ? "價格已脫離原區間，偵測到反轉 / 回檔訊號，已以更小倉位進場"
+              : isProbeEntryD && isRangeStrategy
+                ? "震盪盤策略：靠近支撐/壓力觸發試單，採低倉位探測"
+              : isProbeEntryD
+                ? "D 級市場觸發 RSI 極值或最低交易頻率，已以小倉位試單"
               : isOpportunityEntry
                 ? "價格在區間停留過久仍未完美確認，已以小倉位嘗試進場"
               : "觸發條件已成立，系統已建立持倉",
@@ -2715,13 +2755,21 @@ const scoringResult = result.confirmationResult?.scoring || null;
             ? "模擬掛單（非建議）"
             : isMissedMoveEntry
               ? "錯過行情進場（反彈 / 回檔）"
+              : isProbeEntryD && isRangeStrategy
+                ? "震盪盤策略"
+              : isProbeEntryD
+                ? "低信心試單（D級）"
               : isOpportunityEntry
                 ? "次優進場（低信心）"
               : "已建立條件掛單",
           reason: simulatedNonRecommended
             ? "已建立模擬掛單（非建議）"
-            : isMissedMoveEntry
-              ? "價格已遠離原進場區，改以反轉/回檔訊號掛單，並降低倉位"
+              : isMissedMoveEntry
+                ? "價格已遠離原進場區，改以反轉/回檔訊號掛單，並降低倉位"
+              : isProbeEntryD && isRangeStrategy
+                ? "震盪盤策略：在支撐/壓力附近以低倉位掛單探測"
+              : isProbeEntryD
+                ? "D 級市場 RSI 極值 / 長時間無交易，已啟用低信心試單"
               : isOpportunityEntry
                 ? "在進場區久候未出現完整確認，已放寬條件並降低倉位掛單"
               : "已建立條件掛單，等待條件成立後進場",
