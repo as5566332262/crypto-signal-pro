@@ -345,8 +345,15 @@ function TradingStateTerminal({
                     <InfoItem label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
                     <InfoItem label="數量" value={formatNumber(order.quantity, 2)} />
                     <InfoItem label="取消原因" value={order.cancelReason || "-"} className="col-span-2" />
-                    <InfoItem label="isReentryAttempt / reentryCount" value={`${order.isReentryAttempt ? "true" : "false"} / ${order.reentryCount ?? 0}`} className="col-span-2" />
-                    <InfoItem label="reentryReason / reentryAdjustedEntry" value={`${order.reentryReason ?? "-"} / ${order.reentryAdjustedEntry ? "true" : "false"}`} className="col-span-2" />
+                    {order.isReentryAttempt ? (
+                      <InfoItem label="Re-entry" value={`第 ${order.reentryCount ?? 0} 次`} className="col-span-2" />
+                    ) : null}
+                    {order.reentryReason ? (
+                      <InfoItem label="Re-entry 原因" value={order.reentryReason} className="col-span-2" />
+                    ) : null}
+                    {order.reentryAdjustedEntry ? (
+                      <InfoItem label="進場調整" value="已調整進場價" className="col-span-2" />
+                    ) : null}
                     <InfoItem label="建立時間" value={formatDate(order.createdAt)} className="col-span-2" />
                     <InfoItem label="取消時間" value={formatDate(order.cancelledAt)} className="col-span-2" />
                   </div>
