@@ -15,6 +15,7 @@ const DEFAULT_PENDING_TIMEOUT_BARS = 4;
 const DEFAULT_PULLBACK_MAX_WAIT_BARS = 6;
 const DEFAULT_TREND_ENTRY_CLAMP_PCT = 0.002;
 const DEFAULT_RANGE_ENTRY_CLAMP_PCT = 0.0008;
+const PRE_ARM_LONG_UPPER_ZONE_BUFFER_RATIO = 0.2;
 const DEFAULT_REENTRY_MAX_ATTEMPTS = 2;
 const DEFAULT_REENTRY_FAIL_LIMIT = 2;
 const DEFAULT_REENTRY_PULLBACK_ATR_RATIO = 0.15;
@@ -543,6 +544,17 @@ function resolveEntryMode(decision) {
   return "breakout";
 }
 
+function resolveStrategyType(decision = {}) {
+  return String(
+    decision?.strategyType ??
+    decision?.setupType ??
+    decision?.executionPlan?.setupType ??
+    decision?.marketRegimeLabel ??
+    decision?.regime ??
+    ""
+  ).toLowerCase();
+}
+
 function resolveEntrySourceFunction(decision, side, mode) {
   if (mode === "pullback") {
     const entryMid = normalizeNumber(decision?.executionPlan?.entryMid ?? decision?.entryMid);
@@ -647,6 +659,57 @@ function shouldBlockInvalidRangeLongEntry({
     }
   }
   return null;
+}
+
+function evaluateConditionalPendingEligibility({
+  decision,
+  side,
+  currentPrice,
+  entryPrice,
+  rangeBoundary = {},
+}) {
+  const strategyType = resolveStrategyType(decision);
+  const allowedStrategy = strategyType === "range" || strategyType === "pullback";
+  const canEvaluatePrice = Number.isFinite(currentPrice) && Number.isFinite(entryPrice);
+  const zoneLow = normalizeNumber(rangeBoundary?.zoneLow);
+  const zoneHigh = normalizeNumber(rangeBoundary?.zoneHigh);
+  const support = normalizeNumber(rangeBoundary?.support);
+  const resistance = normalizeNumber(rangeBoundary?.resistance);
+  const lowerCandidates = [zoneLow, support].filter((value) => Number.isFinite(value));
+  const upperCandidates = [zoneHigh, resistance].filter((value) => Number.isFinite(value));
+  const hasEntryZone = lowerCandidates.length > 0 && upperCandidates.length > 0;
+  const lowerBoundary = hasEntryZone ? Math.min(...lowerCandidates) : null;
+  const upperBoundary = hasEntryZone ? Math.max(...upperCandidates) : null;
+  const rangeWidth = Number.isFinite(lowerBoundary) && Number.isFinite(upperBoundary)
+    ? Math.max(upperBoundary - lowerBoundary, 0)
+    : 0;
+  const nearUpperZone = side === "LONG" &&
+    Number.isFinite(entryPrice) &&
+    Number.isFinite(upperBoundary) &&
+    rangeWidth > 0 &&
+    (upperBoundary - entryPrice) <= rangeWidth * PRE_ARM_LONG_UPPER_ZONE_BUFFER_RATIO;
+  const longEntryAboveCurrent = side === "LONG" && canEvaluatePrice && entryPrice > currentPrice;
+  const reasons = [];
+  if (allowedStrategy) reasons.push("strategyType 為 range/pullback");
+  if (hasEntryZone) reasons.push("已識別有效 entry zone（支撐區）");
+  if (side !== "LONG" || !longEntryAboveCurrent) reasons.push("LONG entry 未高於 currentPrice");
+  if (side !== "LONG" || !nearUpperZone) reasons.push("未靠近 zoneHigh/resistance");
+  const eligible = allowedStrategy && hasEntryZone && !longEntryAboveCurrent && !nearUpperZone;
+
+  return {
+    eligible,
+    strategyType,
+    allowedStrategy,
+    hasEntryZone,
+    longEntryAboveCurrent,
+    nearUpperZone,
+    reasons,
+    autoCancelConditions: [
+      "結構破壞（STRUCTURE_CHANGED）",
+      "動能轉弱（MOMENTUM_WEAKENED）",
+      "失效區被擊穿（SETUP_INVALIDATED）",
+    ],
+  };
 }
 
 function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr, marketRegime }) {
@@ -2235,6 +2298,36 @@ export function simulateDecisionExecution({
     zoneHigh: rangeBoundary.zoneHigh,
     sourceFunction: plannedEntry.sourceFunction || "unknown",
   });
+  const conditionalPendingEligibility = evaluateConditionalPendingEligibility({
+    decision,
+    side,
+    currentPrice: normalizeNumber(currentPrice),
+    entryPrice: tentativeEntryPrice,
+    rangeBoundary,
+  });
+
+  if (!conditionalPendingEligibility.eligible) {
+    const blockedByStrategy =
+      !conditionalPendingEligibility.allowedStrategy &&
+      ["breakout", "momentum"].includes(conditionalPendingEligibility.strategyType);
+    return {
+      state,
+      result: blockedByStrategy ? "PREPEND_BLOCKED_STRATEGY_TYPE" : "PREPEND_BLOCKED_CONDITIONS",
+      executionIntent: "WATCH_AND_ARM",
+      confirmationResult,
+      ...performanceDebugPayload,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        eligibility: "WATCH_ONLY",
+        reasonCode: blockedByStrategy ? "PRE_ARM_DISABLED_FOR_BREAKOUT_OR_MOMENTUM" : "PRE_ARM_CONDITION_NOT_MET",
+        reason: blockedByStrategy
+          ? "breakout/momentum 先不預掛，維持確認後再掛"
+          : "條件式預掛未通過（需 range/pullback + 有效支撐區 + LONG 不高掛且不靠近阻力）",
+        executionIntent: "WATCH_AND_ARM",
+        conditionalPendingEligibility,
+      },
+    };
+  }
 
   const invalidRangeLongReason = shouldBlockInvalidRangeLongEntry({
     side,
@@ -2402,6 +2495,12 @@ export function simulateDecisionExecution({
       decisionAction: decision?.action ?? decision?.executionPlan?.action ?? null,
       setupType: decision?.setupType ?? decision?.executionPlan?.setupType ?? null,
       createdCandleTime: decisionBarTime,
+    },
+    conditionalPending: {
+      enabled: true,
+      strategyType: conditionalPendingEligibility.strategyType,
+      whyEligible: conditionalPendingEligibility.reasons,
+      autoCancelConditions: conditionalPendingEligibility.autoCancelConditions,
     },
     createdCandleTime: decisionBarTime,
     maxWaitBars: plannedEntry.mode === "pullback" ? DEFAULT_PULLBACK_MAX_WAIT_BARS : DEFAULT_PENDING_TIMEOUT_BARS,
@@ -2642,6 +2741,33 @@ export function reconcilePendingOrdersWithDecision({
       cancelReason = "PRICE_DRIFTED";
     } else if (isPreEntryInvalidated(order, markPrice)) {
       cancelReason = "SETUP_INVALIDATED";
+    } else if (
+      order?.conditionalPending?.enabled &&
+      side === order.side &&
+      order.side === "LONG" &&
+      Number.isFinite(markPrice) &&
+      Number.isFinite(order.invalidationPrice) &&
+      markPrice <= order.invalidationPrice
+    ) {
+      cancelReason = "SETUP_INVALIDATED";
+    } else if (
+      order?.conditionalPending?.enabled &&
+      side === order.side &&
+      order.side === "LONG" &&
+      (String(decision?.breakoutState ?? "").toLowerCase().includes("breakdown") ||
+        String(decision?.structure ?? "").toLowerCase().includes("break"))
+    ) {
+      cancelReason = "STRUCTURE_CHANGED";
+    } else if (
+      order?.conditionalPending?.enabled &&
+      side === order.side &&
+      order.side === "LONG"
+    ) {
+      const rsi = normalizeNumber(decision?.rsi);
+      const macdHistogram = normalizeNumber(decision?.macdHistogram ?? decision?.macd?.histogram);
+      if ((Number.isFinite(rsi) && rsi < 48) || (Number.isFinite(macdHistogram) && macdHistogram < 0)) {
+        cancelReason = "MOMENTUM_WEAKENED";
+      }
     } else if (side && order.side !== side && Number.isFinite(referenceAtr) && referenceAtr > 0) {
       const movedDistance = Math.abs(asSafeNumber(markPrice) - asSafeNumber(order.triggerPrice));
       if (movedDistance > referenceAtr * DEFAULT_PENDING_DRIFT_ATR_RATIO) {

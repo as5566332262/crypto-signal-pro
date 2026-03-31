@@ -84,6 +84,19 @@ function waitingReasonLabel(reason) {
   return reasonMap[normalizedReason] || normalizedReason || "-";
 }
 
+function cancelReasonLabel(reason) {
+  const reasonMap = {
+    STRUCTURE_CHANGED: "結構破壞",
+    MOMENTUM_WEAKENED: "動能明顯轉弱",
+    SETUP_INVALIDATED: "失效區被擊穿",
+    PRICE_DRIFTED: "價格漂移",
+    PENDING_TIMEOUT_REEVALUATED: "等待逾時重評估",
+    EXPIRED: "掛單過期",
+  };
+  const normalizedReason = toPrimitiveText(reason, { fallback: "-" });
+  return reasonMap[normalizedReason] || normalizedReason || "-";
+}
+
 function simulationPhaseLabel(phase) {
   const phaseMap = {
     initializing: "初始化中",
@@ -440,6 +453,19 @@ function TradingStateTerminal({
                       />
                       <InfoSingleRow label="reentryAdjustedEntry" value={order.reentryAdjustedEntry ? "true" : "false"} />
                       <InfoSingleRow label="價格漂移取消" value={order.canceledByPriceDrift ? "是" : "否"} />
+                      {order.conditionalPending?.enabled ? (
+                        <>
+                          <InfoSingleRow label="已預掛單" value="是（條件式預掛單）" />
+                          <InfoSingleRow
+                            label="為何可預掛"
+                            value={(order.conditionalPending?.whyEligible || []).join(" / ") || "-"}
+                          />
+                          <InfoSingleRow
+                            label="哪些情況會撤單"
+                            value={(order.conditionalPending?.autoCancelConditions || []).join(" / ") || "-"}
+                          />
+                        </>
+                      ) : null}
                     </div>
                   </div>
                   <div className="mt-auto pt-3">
@@ -509,6 +535,7 @@ function TradingStateTerminal({
                     <InfoItem label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
                     <InfoItem label="數量" value={formatNumber(order.quantity, 2)} />
                     <InfoItem label="取消原因" value={toPrimitiveText(order.cancelReason)} className="col-span-2" />
+                    <InfoItem label="取消原因（中文）" value={cancelReasonLabel(order.cancelReason)} className="col-span-2" />
                     {order.isReentryAttempt ? (
                       <InfoItem label="Re-entry" value={`第 ${order.reentryCount ?? 0} 次`} className="col-span-2" />
                     ) : null}
@@ -987,6 +1014,13 @@ export default function PaperTradingSidebar({
                       <div>掛單方向：{sideLabel(simulationExecutionStatus.pendingOrder.side)}</div>
                       <div>觸發價格：{formatNumber(simulationExecutionStatus.pendingOrder.triggerPrice, paperDigits)}</div>
                       <div>失效價格：{formatNumber(simulationExecutionStatus.pendingOrder.invalidationPrice, paperDigits)}</div>
+                      {simulationExecutionStatus.pendingOrder?.conditionalPending?.enabled ? (
+                        <>
+                          <div>已預掛單：是（條件式預掛單）</div>
+                          <div>為何可預掛：{(simulationExecutionStatus.pendingOrder.conditionalPending.whyEligible || []).join(" / ") || "-"}</div>
+                          <div>撤單條件：{(simulationExecutionStatus.pendingOrder.conditionalPending.autoCancelConditions || []).join(" / ") || "-"}</div>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
                   {simulationExecutionStatus?.unmetConditions?.length ? (
