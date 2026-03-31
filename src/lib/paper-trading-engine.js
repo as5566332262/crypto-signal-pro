@@ -49,6 +49,37 @@ function getUnrealizedPnl(position, markPrice) {
   return getPnl(position.side, position.entryPrice, markPrice, position.quantity);
 }
 
+function resolveDecisionType(decision, confirmationResult) {
+  return (
+    confirmationResult?.decisionType ||
+    decision?.decisionType ||
+    decision?.executionPlan?.decisionType ||
+    "UNKNOWN"
+  );
+}
+
+function resolvePendingType(decisionType, decision) {
+  const entryTiming = String(decision?.entryTiming || "").toUpperCase();
+  const setupType = String(decision?.setupType || decision?.executionPlan?.setupType || "").toLowerCase();
+  if (decisionType === "WAIT_PULLBACK" || entryTiming === "WAIT_PULLBACK" || setupType === "pullback") return "PULLBACK_ENTRY";
+  if (decisionType === "WAIT_BREAKOUT" || entryTiming === "WAIT_BREAKOUT" || setupType === "breakout") return "BREAKOUT_ENTRY";
+  return decisionType || "UNKNOWN";
+}
+
+function resolveTradeMetadata({ decision, confirmationResult, signalContext = {} }) {
+  const decisionType = resolveDecisionType(decision, confirmationResult);
+  const scoring = confirmationResult?.scoring || decision?.scoring || {};
+  return {
+    decisionType,
+    pendingType: resolvePendingType(decisionType, decision),
+    scoreGrade: scoring?.scoreGrade || null,
+    totalScore: normalizeNumber(scoring?.totalScore),
+    regime: decision?.marketRegimeLabel || decision?.regime || null,
+    confirmationState: confirmationResult?.canExecute ? "CONFIRMED" : "WAITING_CONFIRMATION",
+    entryReasonDetail: decision?.entryReason || decision?.summary || null,
+  };
+}
+
 function isDuplicateContext(state, symbol, timeframe, contextKey) {
   const hasOpen = state.openPositions.some(
     (position) =>
@@ -443,6 +474,20 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
     pnlPercent,
     closeReason,
     entryReason: position.entryReason,
+    stopLoss: position.stopLoss,
+    takeProfit1: position.takeProfit1,
+    createdAt: position.createdAt || position.openedAt,
+    enteredAt: position.openedAt,
+    decisionType: position.decisionType || null,
+    pendingType: position.pendingType || null,
+    scoreGrade: position.scoreGrade || null,
+    totalScore: position.totalScore ?? null,
+    regime: position.regime || null,
+    confirmationState: position.confirmationState || null,
+    entryReasonDetail: position.entryReasonDetail || null,
+    exitReasonDetail: closeReason,
+    maxFavorableExcursion: position.maxFavorableExcursion ?? 0,
+    maxAdverseExcursion: position.maxAdverseExcursion ?? 0,
   };
 
   const nextOpen = state.openPositions.filter((item) => item.id !== positionId);
@@ -453,6 +498,24 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
     openPositions: nextOpen,
     closedTrades: [closedTrade, ...state.closedTrades],
   });
+}
+
+function maybeAdjustPositionRisk(position, tickPrice) {
+  const entry = normalizeNumber(position.entryPrice);
+  const tp1 = normalizeNumber(position.takeProfit1);
+  if (!Number.isFinite(entry) || !Number.isFinite(tp1) || !Number.isFinite(tickPrice)) return position;
+  const movedTowardsTarget = position.side === "LONG" ? tickPrice > entry : tickPrice < entry;
+  if (!movedTowardsTarget) return position;
+  const progress = Math.abs(tickPrice - entry) / Math.max(Math.abs(tp1 - entry), 1e-8);
+  if (progress >= 0.5 && !position.breakEvenMoved) {
+    return {
+      ...position,
+      stopLoss: entry,
+      breakEvenMoved: true,
+      lastRiskAction: "MOVE_STOP_TO_BREAKEVEN",
+    };
+  }
+  return position;
 }
 
 function shouldFillOrder(order, tickPrice) {
@@ -593,6 +656,11 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
       decisionSnapshot: order.decisionSnapshot,
       decisionContextKey: order.decisionContextKey,
       hitTargets: [],
+      createdAt: order.createdAt || timestamp,
+      ...resolveTradeMetadata({
+        decision: order.decisionSnapshot,
+        confirmationResult: confirmation,
+      }),
     };
     nextState.openPositions.push(position);
     console.info("[paper-trading] pending order executed", {
@@ -687,6 +755,7 @@ export function simulateDecisionExecution({
       : { state, result: "NO_DECISION" };
   }
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
+  const tradeMetadata = resolveTradeMetadata({ decision, confirmationResult, signalContext });
   const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
   console.debug("[paper-engine:simulateDecisionExecution:before-validator]", {
     symbol,
@@ -836,6 +905,7 @@ export function simulateDecisionExecution({
     },
     decisionSnapshot: decision,
     decisionContextKey: contextKey,
+    ...tradeMetadata,
   };
 
   const createPendingOrder = ({ baseState, order }) => {
@@ -915,6 +985,8 @@ export function simulateDecisionExecution({
       decisionSnapshot: decision,
       decisionContextKey: contextKey,
       hitTargets: [],
+      createdAt: timestamp,
+      ...tradeMetadata,
     };
 
     return {
@@ -1021,9 +1093,19 @@ export function applyMarketTickToPaperState(
     timestamp,
   });
   const updatedPositions = nextState.openPositions.map((position) => ({
-    ...position,
-    currentPrice: tickPrice,
-    unrealizedPnl: getUnrealizedPnl(position, tickPrice),
+    ...maybeAdjustPositionRisk({
+      ...position,
+      currentPrice: tickPrice,
+      unrealizedPnl: getUnrealizedPnl(position, tickPrice),
+      maxFavorableExcursion: Math.max(
+        asSafeNumber(position.maxFavorableExcursion, Number.NEGATIVE_INFINITY),
+        getPnl(position.side, position.entryPrice, tickPrice, position.quantity)
+      ),
+      maxAdverseExcursion: Math.min(
+        asSafeNumber(position.maxAdverseExcursion, Number.POSITIVE_INFINITY),
+        getPnl(position.side, position.entryPrice, tickPrice, position.quantity)
+      ),
+    }, tickPrice),
   }));
 
   nextState = recalculateAccountState({

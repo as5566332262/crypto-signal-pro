@@ -252,7 +252,13 @@ function TradingStateTerminal({
                         valueClassName={pnlPositive ? "text-emerald-600" : "text-rose-600"}
                       />
                       <InfoItem label="平倉原因" value={reasonLabel(trade.closeReason)} className="col-span-2" />
-                      <InfoItem label="時間" value={formatDate(trade.closedAt)} className="col-span-2" />
+                      <InfoItem label="decisionType" value={trade.decisionType || "-"} className="col-span-2" />
+                      <InfoItem label="pendingType" value={trade.pendingType || "-"} className="col-span-2" />
+                      <InfoItem label="scoreGrade / totalScore" value={`${trade.scoreGrade || "-"} / ${trade.totalScore ?? "-"}`} className="col-span-2" />
+                      <InfoItem label="regime / confirmation" value={`${trade.regime || "-"} / ${trade.confirmationState || "-"}`} className="col-span-2" />
+                      <InfoItem label="進場理由" value={trade.entryReasonDetail || trade.entryReason || "-"} className="col-span-2" />
+                      <InfoItem label="最大浮盈 / 最大浮虧" value={`${formatNumber(trade.maxFavorableExcursion, 2)} / ${formatNumber(trade.maxAdverseExcursion, 2)}`} className="col-span-2" />
+                      <InfoItem label="建立/進場/出場" value={`${formatDate(trade.createdAt)} / ${formatDate(trade.enteredAt)} / ${formatDate(trade.closedAt)}`} className="col-span-2" />
                     </div>
                   </div>
                 );
@@ -359,6 +365,9 @@ export default function PaperTradingSidebar({
   paperDigits,
   onResetPaperAccount,
   onExecuteSimulation,
+  onStartSimulation,
+  onPauseSimulation,
+  onStopSimulation,
   onClosePosition,
   onCancelPendingOrder,
   formatNumber,
@@ -366,7 +375,19 @@ export default function PaperTradingSidebar({
   onSimulationQuantityChange,
   simulationExecutionStatus,
   simulationButtonState,
+  simulationLifecycle,
+  simulationStartedAt,
+  lastDecisionAt,
 }) {
+  const [runtimeNow, setRuntimeNow] = React.useState(Date.now());
+  React.useEffect(() => {
+    if (simulationLifecycle !== "running") return undefined;
+    const timer = window.setInterval(() => setRuntimeNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [simulationLifecycle]);
+  const runtimeSec = simulationStartedAt ? Math.max(0, Math.floor((runtimeNow - new Date(simulationStartedAt).getTime()) / 1000)) : 0;
+  const runtimeLabel = `${Math.floor(runtimeSec / 3600)}h ${Math.floor((runtimeSec % 3600) / 60)}m ${runtimeSec % 60}s`;
+
   const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[360px]" : "w-full lg:w-[76px]";
 
   return (
@@ -397,6 +418,20 @@ export default function PaperTradingSidebar({
             onSimulationQuantityChange={onSimulationQuantityChange}
           />
           <PaperAccountCard accountSnapshot={accountSnapshot} formatNumber={formatNumber} />
+          <Card className="rounded-2xl border-slate-200">
+            <CardHeader className="pb-2"><CardTitle className="text-sm">模擬生命週期</CardTitle></CardHeader>
+            <CardContent className="space-y-2 text-xs">
+              <div>目前狀態：<span className="font-semibold uppercase">{simulationLifecycle || "idle"}</span></div>
+              <div>是否模擬中：<span className="font-semibold">{simulationLifecycle === "running" ? "是" : "否"}</span></div>
+              <div>已運行：<span className="font-semibold">{simulationStartedAt ? runtimeLabel : "-"}</span></div>
+              <div>最近決策：<span className="font-semibold">{lastDecisionAt ? new Date(lastDecisionAt).toLocaleString() : "-"}</span></div>
+              <div className="grid grid-cols-3 gap-2 pt-1">
+                <Button className="rounded-xl text-xs" onClick={onStartSimulation}>開始</Button>
+                <Button variant="outline" className="rounded-xl text-xs" onClick={onPauseSimulation}>暫停</Button>
+                <Button variant="outline" className="rounded-xl text-xs" onClick={onStopSimulation}>停止</Button>
+              </div>
+            </CardContent>
+          </Card>
           <TradingStateTerminal
             openPositions={accountSnapshot.openPositions || []}
             pendingOrders={accountSnapshot.pendingOrders || []}
@@ -408,6 +443,53 @@ export default function PaperTradingSidebar({
             onCancelPendingOrder={onCancelPendingOrder}
           />
           <DebugStateCard accountSnapshot={accountSnapshot} />
+          <Card className="rounded-2xl border-slate-200">
+            <CardHeader className="pb-2"><CardTitle className="text-sm">模擬績效統計</CardTitle></CardHeader>
+            <CardContent className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-2">
+              <InfoItem label="總交易數" value={accountSnapshot.simulationStats?.totalTrades} />
+              <InfoItem label="勝率" value={`${formatNumber(accountSnapshot.simulationStats?.winRate, 1)}%`} />
+              <InfoItem label="總損益" value={formatNumber(accountSnapshot.simulationStats?.totalPnl, 2)} />
+              <InfoItem label="已實現損益" value={formatNumber(accountSnapshot.simulationStats?.realizedPnl, 2)} />
+              <InfoItem label="未實現損益" value={formatNumber(accountSnapshot.simulationStats?.unrealizedPnl, 2)} />
+              <InfoItem label="平均盈虧比" value={formatNumber(accountSnapshot.simulationStats?.avgRR, 2)} />
+              <InfoItem label="最大連勝" value={accountSnapshot.simulationStats?.maxWinStreak} />
+              <InfoItem label="最大連敗" value={accountSnapshot.simulationStats?.maxLossStreak} />
+              <InfoItem label="最大回撤" value={formatNumber(accountSnapshot.simulationStats?.maxDrawdown, 2)} />
+              <InfoItem label="多單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.longWinRate, 1)}%`} />
+              <InfoItem label="空單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.shortWinRate, 1)}%`} />
+              </div>
+              <div>
+                <div className="mb-1 text-slate-500">各 decisionType 勝率</div>
+                <ul className="list-disc pl-4">
+                  {Object.entries(accountSnapshot.simulationStats?.decisionTypeWinRate || {}).map(([key, value]) => (
+                    <li key={key}>{key}: {formatNumber(value, 1)}%</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <div className="mb-1 text-slate-500">各 pendingType 勝率</div>
+                <ul className="list-disc pl-4">
+                  {Object.entries(accountSnapshot.simulationStats?.pendingTypeWinRate || {}).map(([key, value]) => (
+                    <li key={key}>{key}: {formatNumber(value, 1)}%</li>
+                  ))}
+                </ul>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="rounded-2xl border-slate-200">
+            <CardHeader className="pb-2"><CardTitle className="text-sm">Review / Diagnostics</CardTitle></CardHeader>
+            <CardContent className="space-y-2 text-xs">
+              <div className="text-slate-500">低勝率 setup</div>
+              <ul className="list-disc space-y-1 pl-4">
+                {(accountSnapshot.diagnostics?.reviewLines || []).map((line) => <li key={line}>{line}</li>)}
+              </ul>
+              <div className="text-slate-500">Suggested Adjustments</div>
+              <ul className="list-disc space-y-1 pl-4">
+                {(accountSnapshot.diagnostics?.suggestions || []).map((line) => <li key={line}>{line}</li>)}
+              </ul>
+            </CardContent>
+          </Card>
 
           <div className="grid grid-cols-1 gap-2">
             <Button
@@ -416,7 +498,7 @@ export default function PaperTradingSidebar({
               disabled={simulationButtonState?.disabled}
               title={simulationButtonState?.disabledReason || ""}
             >
-              執行模擬
+              單次執行模擬
             </Button>
             {simulationButtonState?.disabledReason ? (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
