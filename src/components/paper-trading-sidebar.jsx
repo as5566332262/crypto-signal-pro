@@ -376,6 +376,17 @@ function InfoSingleRow({ label, value, valueClassName = "" }) {
   );
 }
 
+function DebugField({ label, value, valueClassName = "" }) {
+  return (
+    <div className="min-w-0 space-y-0.5">
+      <div className="text-[11px] font-medium text-slate-500">{label}</div>
+      <div className={`min-w-0 text-xs font-semibold text-slate-800 break-all whitespace-pre-wrap [overflow-wrap:anywhere] ${valueClassName}`}>
+        {value ?? "-"}
+      </div>
+    </div>
+  );
+}
+
 function DebugStateCard({ accountSnapshot }) {
   return (
     <details className="rounded-2xl border border-slate-200 bg-white p-3 text-xs" open={false}>
@@ -520,7 +531,7 @@ export default function PaperTradingSidebar({
               </div>
               <div>
                 <div className="mb-1 text-slate-500">各 decisionType 勝率</div>
-                <ul className="list-disc pl-4">
+                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
                   {Object.entries(accountSnapshot.simulationStats?.decisionTypeWinRate || {}).map(([key, value]) => (
                     <li key={key}>{key}: {formatNumber(value, 1)}%</li>
                   ))}
@@ -528,7 +539,7 @@ export default function PaperTradingSidebar({
               </div>
               <div>
                 <div className="mb-1 text-slate-500">各 pendingType 勝率</div>
-                <ul className="list-disc pl-4">
+                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
                   {Object.entries(accountSnapshot.simulationStats?.pendingTypeWinRate || {}).map(([key, value]) => (
                     <li key={key}>{key}: {formatNumber(value, 1)}%</li>
                   ))}
@@ -536,7 +547,7 @@ export default function PaperTradingSidebar({
               </div>
               <div>
                 <div className="mb-1 text-slate-500">Full Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
-                <ul className="list-disc pl-4">
+                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
                   {(accountSnapshot.simulationStats?.performanceRows || []).slice(0, 8).map((row, index) => (
                     <li key={row?.setupKey || `full-${index}`}>
                       {row?.setupKey || "-"}: {row?.totalTrades ?? 0} 筆 / {formatNumber(row?.winRate, 1)}% / {formatNumber(row?.avgPnl, 2)}
@@ -546,7 +557,7 @@ export default function PaperTradingSidebar({
               </div>
               <div>
                 <div className="mb-1 text-slate-500">Coarse Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
-                <ul className="list-disc pl-4">
+                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
                   {(accountSnapshot.simulationStats?.coarsePerformanceRows || []).slice(0, 8).map((row) => (
                     <li key={`coarse-${row?.setupKey || "unknown"}`}>
                       {row?.setupKey || "-"}: {row?.totalTrades ?? 0} 筆 / {formatNumber(row?.winRate, 1)}% / {formatNumber(row?.avgPnl, 2)}
@@ -556,7 +567,7 @@ export default function PaperTradingSidebar({
               </div>
               <div>
                 <div className="mb-1 text-slate-500">Recent vs All-time（Full Setup）</div>
-                <ul className="list-disc pl-4">
+                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
                   {Object.entries(accountSnapshot.simulationStats?.performanceRecentMap || {}).slice(0, 8).map(([setupKey, row]) => {
                     const allTime = accountSnapshot.simulationStats?.performanceMap?.[setupKey];
                     return (
@@ -574,11 +585,11 @@ export default function PaperTradingSidebar({
             <CardHeader className="pb-2"><CardTitle className="text-sm">Review / Diagnostics</CardTitle></CardHeader>
             <CardContent className="space-y-2 text-xs">
               <div className="text-slate-500">低勝率 setup</div>
-              <ul className="list-disc space-y-1 pl-4">
+              <ul className="list-disc space-y-1 pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
                 {(accountSnapshot.diagnostics?.reviewLines || []).map((line) => <li key={line}>{line}</li>)}
               </ul>
               <div className="text-slate-500">Suggested Adjustments</div>
-              <ul className="list-disc space-y-1 pl-4">
+              <ul className="list-disc space-y-1 pl-4 [overflow-wrap:anywhere] break-words">
                 {(accountSnapshot.diagnostics?.suggestions || []).map((line) => <li key={line}>{line}</li>)}
               </ul>
             </CardContent>
@@ -614,13 +625,13 @@ export default function PaperTradingSidebar({
                 {simulationExecutionStatus?.scoring ? (
                   <div className="rounded-lg border border-violet-200 bg-violet-50 p-2 text-slate-700 space-y-1">
                     <div className="font-semibold text-violet-800">Scoring 引擎</div>
-                    <div>總分：{simulationExecutionStatus.scoring.totalScore ?? "-"}</div>
-                    <div>等級：{simulationExecutionStatus.scoring.scoreGrade || "-"}</div>
-                    <div>信心：{simulationExecutionStatus.scoring.confidenceLevel || "-"}</div>
+                    <DebugField label="總分" value={simulationExecutionStatus.scoring.totalScore ?? "-"} />
+                    <DebugField label="等級" value={simulationExecutionStatus.scoring.scoreGrade || "-"} />
+                    <DebugField label="信心" value={simulationExecutionStatus.scoring.confidenceLevel || "-"} />
                     {simulationExecutionStatus.scoring.keyPositiveFactors?.length ? (
                       <div>
                         <div className="text-[11px] text-violet-700">關鍵加分</div>
-                        <ul className="list-disc pl-4">
+                        <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
                           {simulationExecutionStatus.scoring.keyPositiveFactors.map((item) => (
                             <li key={`plus-${item.label}`}>{item.label}（+{item.impact}）</li>
                           ))}
@@ -630,7 +641,7 @@ export default function PaperTradingSidebar({
                     {simulationExecutionStatus.scoring.keyNegativeFactors?.length ? (
                       <div>
                         <div className="text-[11px] text-rose-700">關鍵扣分</div>
-                        <ul className="list-disc pl-4">
+                        <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
                           {simulationExecutionStatus.scoring.keyNegativeFactors.map((item) => (
                             <li key={`minus-${item.label}`}>{item.label}（{item.impact}）</li>
                           ))}
@@ -669,24 +680,24 @@ export default function PaperTradingSidebar({
                 {simulationExecutionStatus?.cooldownDebug ? (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-slate-700 space-y-1">
                     <div className="font-semibold text-amber-800">Cooldown Debug</div>
-                    <div>hasKlineConfirmation：{simulationExecutionStatus.hasKlineConfirmation ? "true" : "false"}</div>
-                    <div>lastTradeDirection：{simulationExecutionStatus.cooldownDebug.lastTradeDirection || "-"}</div>
-                    <div>longLossStreak：{simulationExecutionStatus.cooldownDebug.longLossStreak ?? "-"}</div>
-                    <div>shortLossStreak：{simulationExecutionStatus.cooldownDebug.shortLossStreak ?? "-"}</div>
-                    <div>consecutiveLossCount：{simulationExecutionStatus.cooldownDebug.consecutiveLossCount ?? "-"}</div>
-                    <div>cooldownActive：{simulationExecutionStatus.cooldownDebug.cooldownActive ? "true" : "false"}</div>
-                    <div>cooldownBarsLeft：{simulationExecutionStatus.cooldownDebug.cooldownBarsLeft ?? "-"}</div>
+                    <DebugField label="hasKlineConfirmation" value={simulationExecutionStatus.hasKlineConfirmation ? "true" : "false"} />
+                    <DebugField label="lastTradeDirection" value={simulationExecutionStatus.cooldownDebug.lastTradeDirection || "-"} />
+                    <DebugField label="longLossStreak" value={simulationExecutionStatus.cooldownDebug.longLossStreak ?? "-"} />
+                    <DebugField label="shortLossStreak" value={simulationExecutionStatus.cooldownDebug.shortLossStreak ?? "-"} />
+                    <DebugField label="consecutiveLossCount" value={simulationExecutionStatus.cooldownDebug.consecutiveLossCount ?? "-"} />
+                    <DebugField label="cooldownActive" value={simulationExecutionStatus.cooldownDebug.cooldownActive ? "true" : "false"} />
+                    <DebugField label="cooldownBarsLeft" value={simulationExecutionStatus.cooldownDebug.cooldownBarsLeft ?? "-"} />
                   </div>
                 ) : null}
                 <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2 text-slate-700 space-y-1">
                   <div className="font-semibold text-indigo-800">Performance Filter Debug</div>
-                  <div>currentFullSetupKey：{performanceDebug.currentFullSetupKey || performanceDebug.currentSetupKey || "-"}</div>
-                  <div>currentCoarseSetupKey：{performanceDebug.currentCoarseSetupKey || "-"}</div>
-                  <div>performanceSource：{performanceDebug.performanceSource || "-"}</div>
-                  <div>performanceSampleSize：{performanceDebug.performanceSampleSize ?? performanceDebug.currentSetupSampleSize ?? 0}</div>
-                  <div>performanceWinRate：{performanceDebug.performanceWinRate == null ? "-" : `${formatNumber(performanceDebug.performanceWinRate, 1)}%`}</div>
-                  <div>performanceAvgPnl：{performanceDebug.performanceAvgPnl == null ? "-" : formatNumber(performanceDebug.performanceAvgPnl, 2)}</div>
-                  <div>blockedByPerformanceFilter：{performanceDebug.blockedByPerformanceFilter ? "true" : "false"}</div>
+                  <DebugField label="currentFullSetupKey" value={performanceDebug.currentFullSetupKey || performanceDebug.currentSetupKey || "-"} />
+                  <DebugField label="currentCoarseSetupKey" value={performanceDebug.currentCoarseSetupKey || "-"} />
+                  <DebugField label="performanceSource" value={performanceDebug.performanceSource || "-"} />
+                  <DebugField label="performanceSampleSize" value={performanceDebug.performanceSampleSize ?? performanceDebug.currentSetupSampleSize ?? 0} />
+                  <DebugField label="performanceWinRate" value={performanceDebug.performanceWinRate == null ? "-" : `${formatNumber(performanceDebug.performanceWinRate, 1)}%`} />
+                  <DebugField label="performanceAvgPnl" value={performanceDebug.performanceAvgPnl == null ? "-" : formatNumber(performanceDebug.performanceAvgPnl, 2)} />
+                  <DebugField label="blockedByPerformanceFilter" value={performanceDebug.blockedByPerformanceFilter ? "true" : "false"} />
                 </div>
                 <div>時間：{formatDate(simulationExecutionStatus?.timestamp)}</div>
               </CardContent>
