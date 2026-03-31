@@ -19,6 +19,10 @@ const DEFAULT_REENTRY_MAX_ATTEMPTS = 2;
 const DEFAULT_REENTRY_FAIL_LIMIT = 2;
 const DEFAULT_REENTRY_PULLBACK_ATR_RATIO = 0.15;
 const DEFAULT_REENTRY_MIN_DISTANCE_PCT = 0.0004;
+const MAX_ACCOUNT_TRACE_HISTORY = 2000;
+const MAX_ACCOUNT_ERROR_TRACE_HISTORY = 400;
+const ACCOUNT_SURGE_ABS_THRESHOLD = 10000;
+const ACCOUNT_SURGE_RATIO_THRESHOLD = 5;
 const REDUCED_CONFIDENCE_TYPES = new Set(["OPPORTUNITY_ENTRY", "FALLBACK_ENTRY", "MISSED_MOVE_ENTRY", "PROBE_ENTRY_D"]);
 const DIRECTIONAL_LOSS_STREAK_THRESHOLD = 2;
 const DIRECTIONAL_COOLDOWN_BARS = 6;
@@ -803,6 +807,13 @@ export function createInitialPaperAccountState() {
     pendingFillChecks: [],
     pendingCancelTrace: [],
     waitingDiagnostics: createDefaultWaitingDiagnostics(),
+    accountTrace: [],
+    accountErrorTrace: [],
+    cash: DEFAULT_BALANCE,
+    marginUsed: 0,
+    positionValue: 0,
+    totalAccountValue: DEFAULT_BALANCE,
+    netWorth: DEFAULT_BALANCE,
   };
 }
 
@@ -990,18 +1001,100 @@ function cancelPendingOrder(order, reason, timestamp = nowIso(), metadata = {}) 
   };
 }
 
-function recalculateAccountState(state) {
-  const unrealizedPnl = state.openPositions.reduce((sum, position) => sum + asSafeNumber(position.unrealizedPnl), 0);
-  const usedMargin = state.openPositions.reduce((sum, position) => sum + asSafeNumber(position.notional) / Math.max(1, asSafeNumber(position.leverage, 1)), 0);
-
+function deriveAccountMetrics(state) {
+  const closedTrades = Array.isArray(state?.closedTrades) ? state.closedTrades : [];
+  const openPositions = Array.isArray(state?.openPositions) ? state.openPositions : [];
+  const realizedPnl = closedTrades.reduce((sum, trade) => sum + asSafeNumber(trade?.realizedPnl), 0);
+  const cash = DEFAULT_BALANCE + realizedPnl;
+  const unrealizedPnl = openPositions.reduce((sum, position) => sum + asSafeNumber(position?.unrealizedPnl), 0);
+  const marginUsed = openPositions.reduce(
+    (sum, position) => sum + asSafeNumber(position?.notional) / Math.max(1, asSafeNumber(position?.leverage, 1)),
+    0
+  );
+  const positionValue = openPositions.reduce(
+    (sum, position) => sum + Math.abs(asSafeNumber(position?.currentPrice, position?.entryPrice) * asSafeNumber(position?.quantity)),
+    0
+  );
+  const equity = cash + unrealizedPnl;
   return {
-    ...state,
-    balance: asSafeNumber(state.balance),
-    realizedPnl: asSafeNumber(state.realizedPnl),
+    cash,
+    balance: cash,
+    realizedPnl,
     unrealizedPnl,
-    usedMargin,
-    equity: asSafeNumber(state.balance) + unrealizedPnl,
+    marginUsed,
+    usedMargin: marginUsed,
+    positionValue,
+    totalAccountValue: equity,
+    netWorth: equity,
+    equity,
   };
+}
+
+function buildAccountTraceEvent(previousState, nextState, payload = {}) {
+  const previous = deriveAccountMetrics(previousState || {});
+  const next = deriveAccountMetrics(nextState || {});
+  const delta = {
+    cash: next.cash - previous.cash,
+    realizedPnl: next.realizedPnl - previous.realizedPnl,
+    unrealizedPnl: next.unrealizedPnl - previous.unrealizedPnl,
+    equity: next.equity - previous.equity,
+  };
+  const surgeDetected = Math.abs(delta.equity) >= ACCOUNT_SURGE_ABS_THRESHOLD &&
+    Math.abs(delta.equity) > Math.max(1, Math.abs(previous.equity)) * ACCOUNT_SURGE_RATIO_THRESHOLD;
+  const finiteDetected = [next.cash, next.realizedPnl, next.unrealizedPnl, next.equity].every(Number.isFinite);
+  const warnings = [];
+  if (!finiteDetected) warnings.push("NON_FINITE_ACCOUNT_VALUE");
+  const largePositionVsEquity = Math.abs(next.positionValue) > Math.max(1, Math.abs(next.equity)) * 30;
+  if (largePositionVsEquity) warnings.push("POSITION_VALUE_IMBALANCE");
+  if (surgeDetected) warnings.push("ABNORMAL_EQUITY_SURGE");
+  return {
+    trace: {
+      timestamp: payload.timestamp || nowIso(),
+      selectedSymbol: payload.selectedSymbol ?? null,
+      affectedSymbol: payload.affectedSymbol ?? null,
+      eventType: payload.eventType || "STATE_UPDATE",
+      sourceFunction: payload.sourceFunction || "unknown",
+      cashBefore: previous.cash,
+      cashAfter: next.cash,
+      realizedPnlBefore: previous.realizedPnl,
+      realizedPnlAfter: next.realizedPnl,
+      unrealizedPnlBefore: previous.unrealizedPnl,
+      unrealizedPnlAfter: next.unrealizedPnl,
+      equityBefore: previous.equity,
+      equityAfter: next.equity,
+      delta,
+      warnings,
+    },
+    warnings,
+  };
+}
+
+function withAccountTrace(previousState, nextState, payload = {}) {
+  const normalizedNextState = {
+    ...nextState,
+    accountTrace: Array.isArray(nextState?.accountTrace) ? nextState.accountTrace : [],
+    accountErrorTrace: Array.isArray(nextState?.accountErrorTrace) ? nextState.accountErrorTrace : [],
+  };
+  const { trace, warnings } = buildAccountTraceEvent(previousState, normalizedNextState, payload);
+  const nextTrace = [trace, ...normalizedNextState.accountTrace].slice(0, MAX_ACCOUNT_TRACE_HISTORY);
+  const nextErrorTrace = warnings.length
+    ? [trace, ...normalizedNextState.accountErrorTrace].slice(0, MAX_ACCOUNT_ERROR_TRACE_HISTORY)
+    : normalizedNextState.accountErrorTrace;
+  return {
+    ...normalizedNextState,
+    accountTrace: nextTrace,
+    accountErrorTrace: nextErrorTrace,
+  };
+}
+
+function recalculateAccountState(state, tracePayload = null) {
+  const metrics = deriveAccountMetrics(state);
+  const nextState = {
+    ...state,
+    ...metrics,
+  };
+  if (!tracePayload) return nextState;
+  return withAccountTrace(state, nextState, tracePayload);
 }
 
 function closePosition(state, {
@@ -1094,8 +1187,6 @@ function closePosition(state, {
   };
   const recalculated = recalculateAccountState({
     ...state,
-    balance: asSafeNumber(state.balance) + realizedPnl,
-    realizedPnl: asSafeNumber(state.realizedPnl) + realizedPnl,
     openPositions: nextOpen,
     closedTrades: [closedTrade, ...state.closedTrades],
     longLossStreak: nextLongLossStreak,
@@ -1106,6 +1197,12 @@ function closePosition(state, {
     symbolIsolationState: nextSymbolIsolationState,
     performanceMap: nextSymbolIsolationState[symbol].performanceMap,
     coarsePerformanceMap: nextSymbolIsolationState[symbol].coarsePerformanceMap,
+  }, {
+    timestamp: closedAt,
+    selectedSymbol: selectedSymbolAtThatMoment,
+    affectedSymbol: symbol,
+    eventType: "CLOSE_POSITION",
+    sourceFunction: "closePosition",
   });
   return appendPositionLifecycleEvent(recalculated, {
     timestamp: closedAt,
@@ -1547,7 +1644,13 @@ function maybeFillPendingOrders(state, {
 
   nextState.pendingOrders = nextState.pendingOrders.filter((order) => order.status === "PENDING");
   nextState.cancelledOrders = nextState.cancelledOrders.slice(0, MAX_CANCELLED_ORDERS_HISTORY);
-  return recalculateAccountState(nextState);
+  return recalculateAccountState(nextState, {
+    timestamp,
+    selectedSymbol: selectedSymbolAtThatMoment,
+    affectedSymbol: symbol,
+    eventType: "MARKET_TICK",
+    sourceFunction: "maybeFillPendingOrders",
+  });
 }
 
 function detectTrapExit(position, decisionSnapshot, tickPrice) {
@@ -1916,6 +2019,11 @@ export function simulateDecisionExecution({
     const nextState = recalculateAccountState({
       ...baseState,
       pendingOrders: [order, ...(baseState?.pendingOrders || [])],
+    }, {
+      selectedSymbol: symbol,
+      affectedSymbol: order.symbol,
+      eventType: "PLACE_ORDER",
+      sourceFunction: "simulateDecisionExecution.createPendingOrder",
     });
     const afterCount = (nextState?.pendingOrders || []).length;
     return {
@@ -2027,6 +2135,12 @@ export function simulateDecisionExecution({
     let nextState = recalculateAccountState({
       ...state,
       openPositions: [position, ...state.openPositions],
+    }, {
+      timestamp,
+      selectedSymbol: symbol,
+      affectedSymbol: symbol,
+      eventType: "FILL_ORDER",
+      sourceFunction: "simulateDecisionExecution",
     });
     if (reentryAttempt?.key) {
       const tracked = nextState?.reentryTracking?.[reentryAttempt.key] || {};
@@ -2249,6 +2363,12 @@ export function reconcilePendingOrdersWithDecision({
     ...state,
     pendingOrders: nextPending,
     cancelledOrders: cancelledOrders.slice(0, MAX_CANCELLED_ORDERS_HISTORY),
+  }, {
+    timestamp,
+    selectedSymbol: selectedSymbolAtThatMoment,
+    affectedSymbol: symbol,
+    eventType: "RECONCILE",
+    sourceFunction: "reconcilePendingOrdersWithDecision",
   });
 }
 
@@ -2271,7 +2391,7 @@ export function applyMarketTickToPaperState(
   }
 ) {
   const tickPrice = asSafeNumber(price);
-  if (!Number.isFinite(tickPrice)) return state;
+  if (!symbol || !Number.isFinite(tickPrice)) return state;
 
   const normalizedRsi = normalizeNumber(rsi);
   const normalizedCandleClose = normalizeNumber(candleClose);
@@ -2337,6 +2457,12 @@ export function applyMarketTickToPaperState(
   nextState = recalculateAccountState({
     ...nextState,
     openPositions: updatedPositions,
+  }, {
+    timestamp,
+    selectedSymbol: selectedSymbolAtThatMoment,
+    affectedSymbol: symbol,
+    eventType: "MARKET_TICK",
+    sourceFunction: "applyMarketTickToPaperState.updatePositions",
   });
 
   const toClose = [];
@@ -2359,7 +2485,13 @@ export function applyMarketTickToPaperState(
     });
   }
 
-  return recalculateAccountState(nextState);
+  return recalculateAccountState(nextState, {
+    timestamp,
+    selectedSymbol: selectedSymbolAtThatMoment,
+    affectedSymbol: symbol,
+    eventType: "MARKET_TICK",
+    sourceFunction: "applyMarketTickToPaperState.finalize",
+  });
 }
 
 export function closePositionManually(state, { positionId, symbol, timeframe, price, reason = "MANUAL_CLOSE" }) {
@@ -2387,6 +2519,12 @@ export function cancelPendingOrderManually(state, { orderId, reason = "MANUAL_CA
     pendingOrders: (state.pendingOrders || []).filter((order) => order.id !== orderId),
     cancelledOrders: [cancelPendingOrder(targetOrder, reason, cancelledAt, { triggeredBy: "MANUAL_ACTION" }), ...(state.cancelledOrders || [])]
       .slice(0, MAX_CANCELLED_ORDERS_HISTORY),
+  }, {
+    timestamp: cancelledAt,
+    selectedSymbol: targetOrder.symbol,
+    affectedSymbol: targetOrder.symbol,
+    eventType: "CANCEL_ORDER",
+    sourceFunction: "cancelPendingOrderManually",
   });
   nextState = appendOrderLifecycleEvent(nextState, {
     symbol: targetOrder.symbol,
@@ -2415,6 +2553,22 @@ export function cancelPendingOrderManually(state, { orderId, reason = "MANUAL_CA
 
 export function resetPaperTradingState() {
   return createInitialPaperAccountState();
+}
+
+export function normalizePaperAccountState(state, { eventType = "RESTORE", sourceFunction = "normalizePaperAccountState" } = {}) {
+  return recalculateAccountState({
+    ...createInitialPaperAccountState(),
+    ...(state || {}),
+    openPositions: Array.isArray(state?.openPositions) ? state.openPositions : [],
+    pendingOrders: Array.isArray(state?.pendingOrders) ? state.pendingOrders : [],
+    cancelledOrders: Array.isArray(state?.cancelledOrders) ? state.cancelledOrders : [],
+    closedTrades: Array.isArray(state?.closedTrades) ? state.closedTrades : [],
+  }, {
+    eventType,
+    sourceFunction,
+    selectedSymbol: null,
+    affectedSymbol: null,
+  });
 }
 
 export const paperTradingConstants = {
