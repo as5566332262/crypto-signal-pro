@@ -632,6 +632,8 @@ export default function PaperTradingSidebar({
                     <div className="font-semibold text-amber-800">Cooldown Debug</div>
                     <div>hasKlineConfirmation：{simulationExecutionStatus.hasKlineConfirmation ? "true" : "false"}</div>
                     <div>lastTradeDirection：{simulationExecutionStatus.cooldownDebug.lastTradeDirection || "-"}</div>
+                    <div>longLossStreak：{simulationExecutionStatus.cooldownDebug.longLossStreak ?? "-"}</div>
+                    <div>shortLossStreak：{simulationExecutionStatus.cooldownDebug.shortLossStreak ?? "-"}</div>
                     <div>consecutiveLossCount：{simulationExecutionStatus.cooldownDebug.consecutiveLossCount ?? "-"}</div>
                     <div>cooldownActive：{simulationExecutionStatus.cooldownDebug.cooldownActive ? "true" : "false"}</div>
                     <div>cooldownBarsLeft：{simulationExecutionStatus.cooldownDebug.cooldownBarsLeft ?? "-"}</div>

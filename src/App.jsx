@@ -2879,6 +2879,8 @@ export default function CryptoSignalWebApp() {
           timestamp: new Date().toISOString(),
           cooldownDebug: {
             lastTradeDirection: cooldownState.lastTradeDirection,
+            longLossStreak: cooldownState.longLossStreak,
+            shortLossStreak: cooldownState.shortLossStreak,
             consecutiveLossCount: sideConsecutiveLossCount,
             cooldownActive: cooldownActiveForSide,
             cooldownBarsLeft: sideCooldownBarsLeft,
@@ -2891,6 +2893,8 @@ export default function CryptoSignalWebApp() {
             ...(reconciledState?.simulationAgentState || {}),
             hasKlineConfirmation,
             lastTradeDirection: cooldownState.lastTradeDirection,
+            longLossStreak: cooldownState.longLossStreak,
+            shortLossStreak: cooldownState.shortLossStreak,
             consecutiveLossCount: sideConsecutiveLossCount,
             cooldownActive: cooldownActiveForSide,
             cooldownBarsLeft: sideCooldownBarsLeft,
@@ -2966,6 +2970,8 @@ const isRangeStrategy = Boolean(result.confirmationResult?.confirmationState?.ra
 const simulationAgentState = {
   hasKlineConfirmation,
   lastTradeDirection: cooldownState.lastTradeDirection,
+  longLossStreak: cooldownState.longLossStreak,
+  shortLossStreak: cooldownState.shortLossStreak,
   consecutiveLossCount: sideConsecutiveLossCount,
   cooldownActive: cooldownActiveForSide,
   cooldownBarsLeft: sideCooldownBarsLeft,
@@ -3145,6 +3151,8 @@ const simulationAgentState = {
         hasKlineConfirmation,
         cooldownDebug: {
           lastTradeDirection: cooldownState.lastTradeDirection,
+          longLossStreak: cooldownState.longLossStreak,
+          shortLossStreak: cooldownState.shortLossStreak,
           consecutiveLossCount: sideConsecutiveLossCount,
           cooldownActive: cooldownActiveForSide,
           cooldownBarsLeft: sideCooldownBarsLeft,
