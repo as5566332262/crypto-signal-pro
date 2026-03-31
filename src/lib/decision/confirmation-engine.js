@@ -86,6 +86,9 @@ function resolveMomentumConfirmed(indicators = {}, side) {
 }
 
 function resolveRangeMarket({ confirmationState = {}, indicators = {}, mtf = {} }) {
+  const marketRegime = String(indicators?.marketRegime ?? "").toLowerCase();
+  const breakoutState = String(indicators?.breakoutState ?? "").toLowerCase();
+  if (marketRegime === "ranging" || breakoutState.includes("區間")) return true;
   const mtfDisagreement = normalizeNumber(mtf?.disagreement ?? mtf?.disagreementRatio ?? mtf?.divergence);
   const mtfDivergent = confirmationState?.mtfAligned === false || (Number.isFinite(mtfDisagreement) && mtfDisagreement >= 0.45);
   const momentumOutOfSync = confirmationState?.momentumConfirmed === false;
@@ -158,11 +161,46 @@ function resolveRangeProbeContext({ currentPrice, side, structure = {}, aiDecisi
 
 function resolveKlineConfirmed(aiDecisionOutput = {}, indicators = {}) {
   if (typeof indicators?.klineConfirmed === "boolean") return indicators.klineConfirmed;
-  const close = normalizeNumber(indicators?.candleClose ?? indicators?.close);
-  const trigger = normalizeNumber(aiDecisionOutput?.executionPlan?.triggerPrice ?? aiDecisionOutput?.triggerPrice);
-  if (!Number.isFinite(close) || !Number.isFinite(trigger)) return false;
   const side = normalizeSide(aiDecisionOutput);
-  return side === "SHORT" ? close <= trigger : close >= trigger;
+  const rsi = normalizeNumber(indicators?.rsi);
+  const open = normalizeNumber(indicators?.candleOpen ?? indicators?.open);
+  const close = normalizeNumber(indicators?.candleClose ?? indicators?.close);
+  const high = normalizeNumber(indicators?.candleHigh ?? indicators?.high);
+  const low = normalizeNumber(indicators?.candleLow ?? indicators?.low);
+  const prevOpen = normalizeNumber(indicators?.prevOpen);
+  const prevClose = normalizeNumber(indicators?.prevClose);
+  if (!side || !Number.isFinite(open) || !Number.isFinite(close) || !Number.isFinite(high) || !Number.isFinite(low)) {
+    return false;
+  }
+  const body = Math.abs(close - open);
+  const upperWick = high - Math.max(open, close);
+  const lowerWick = Math.min(open, close) - low;
+  const hasUpperWick = Number.isFinite(upperWick) && upperWick >= body * 0.8;
+  const hasLowerWick = Number.isFinite(lowerWick) && lowerWick >= body * 0.8;
+  const bearishClose = close < open;
+  const bullishClose = close > open;
+  const bearishEngulfing =
+    Number.isFinite(prevOpen) &&
+    Number.isFinite(prevClose) &&
+    prevClose > prevOpen &&
+    bearishClose &&
+    open >= prevClose &&
+    close <= prevOpen;
+  const bullishEngulfing =
+    Number.isFinite(prevOpen) &&
+    Number.isFinite(prevClose) &&
+    prevClose < prevOpen &&
+    bullishClose &&
+    open <= prevClose &&
+    close >= prevOpen;
+
+  if (side === "SHORT") {
+    return Number.isFinite(rsi) && rsi > 60 && (hasUpperWick || bearishEngulfing || bearishClose);
+  }
+  if (side === "LONG") {
+    return Number.isFinite(rsi) && rsi < 40 && (hasLowerWick || bullishEngulfing || bullishClose);
+  }
+  return false;
 }
 
 function resolveBreakoutConfirmed(aiDecisionOutput = {}, currentPrice, indicators = {}) {
@@ -352,7 +390,7 @@ export function runConfirmationEngine({
   const noTradeBars = Math.max(0, Math.floor(normalizeNumber(indicators?.noTradeBars) || 0));
   const forceProbeByNoTradeBars = noTradeBars >= FORCE_PROBE_NO_TRADE_BARS;
   const forceProbeByFlag = Boolean(indicators?.forceProbeEntry);
-  const rangeProbeReady = nearSupport || nearResistance || (rangeMarket && Boolean(rangeProbeSide));
+  const rangeProbeReady = (nearSupport || nearResistance) && softConditions.klineConfirmed;
   const probeTriggered = dGradeRsiProbeReady || rangeProbeReady || forceProbeByNoTradeBars || forceProbeByFlag;
   const probeSide = rangeProbeSide || (Number.isFinite(rsi) ? (rsi <= 40 ? "LONG" : rsi >= 60 ? "SHORT" : side) : side);
 
@@ -424,7 +462,7 @@ export function runConfirmationEngine({
       confirmationState.priceInZone &&
       confirmationState.mtfAligned;
   } else if (decisionType === "PROBE_ENTRY_D") {
-    canExecute = probeTriggered;
+    canExecute = rangeMarket ? rangeProbeReady : probeTriggered;
   }
 
   return {

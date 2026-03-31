@@ -157,6 +157,8 @@ const CONFIDENCE_LEVEL_LABELS = {
   high: "高",
 };
 const SIMULATION_FORCE_PROBE_NO_TRADE_BARS = 12;
+const SIMULATION_DIRECTIONAL_COOLDOWN_BARS = 8;
+const SIMULATION_DIRECTIONAL_LOSS_STREAK_THRESHOLD = 2;
 
 const TRAP_SIGNAL_LABELS = {
   BULL_TRAP: "誘多",
@@ -221,6 +223,94 @@ function calculateMACD(closes) {
     signal: signalLine[signalLine.length - 1],
     histogram: macdLine[macdLine.length - 1] - signalLine[signalLine.length - 1],
   };
+}
+
+function resolveDecisionSide(decision) {
+  const action = String(decision?.action ?? decision?.executionPlan?.action ?? "").toUpperCase();
+  if (["LONG", "BUY"].includes(action)) return "LONG";
+  if (["SHORT", "SELL"].includes(action)) return "SHORT";
+  const preferredSide = String(
+    decision?.executionPlan?.preferredSide ?? decision?.preferredSide ?? decision?.biasSide ?? ""
+  ).toUpperCase();
+  if (preferredSide === "LONG") return "LONG";
+  if (preferredSide === "SHORT") return "SHORT";
+  return null;
+}
+
+function getDirectionalLossCooldown({ closedTrades = [], candles = [], symbol, timeframe }) {
+  const directionalTrades = closedTrades
+    .filter((trade) => trade?.symbol === symbol && trade?.timeframe === timeframe)
+    .sort((a, b) => new Date(b?.closedAt || 0).getTime() - new Date(a?.closedAt || 0).getTime());
+  const lastTradeDirection = directionalTrades[0]?.side || null;
+  if (!lastTradeDirection) {
+    return { lastTradeDirection: null, consecutiveLossCount: 0, cooldownActive: false, cooldownRemainingBars: 0 };
+  }
+  let consecutiveLossCount = 0;
+  let streakClosedAt = null;
+  for (const trade of directionalTrades) {
+    if (trade?.side !== lastTradeDirection) break;
+    if (Number(trade?.realizedPnl) > 0) break;
+    consecutiveLossCount += 1;
+    if (!streakClosedAt) streakClosedAt = trade?.closedAt;
+  }
+  const lastLossTimestamp = new Date(streakClosedAt || 0).getTime();
+  const barsSinceLastLoss = Number.isFinite(lastLossTimestamp) && lastLossTimestamp > 0
+    ? candles.filter((candle) => Number(candle?.openTime) > lastLossTimestamp).length
+    : 0;
+  const cooldownRemainingBars = consecutiveLossCount >= SIMULATION_DIRECTIONAL_LOSS_STREAK_THRESHOLD
+    ? Math.max(0, SIMULATION_DIRECTIONAL_COOLDOWN_BARS - barsSinceLastLoss)
+    : 0;
+  return {
+    lastTradeDirection,
+    consecutiveLossCount,
+    cooldownActive: cooldownRemainingBars > 0,
+    cooldownRemainingBars,
+  };
+}
+
+function resolveKlineConfirmation({ side, rsi, currentCandle, previousCandle }) {
+  if (!side || !currentCandle) return false;
+  const open = Number(currentCandle?.open);
+  const high = Number(currentCandle?.high);
+  const low = Number(currentCandle?.low);
+  const close = Number(currentCandle?.close);
+  const prevOpen = Number(previousCandle?.open);
+  const prevClose = Number(previousCandle?.close);
+  const candleRange = Math.max(Math.abs(high - low), 1e-8);
+  const body = Math.abs(close - open);
+  const upperWick = high - Math.max(open, close);
+  const lowerWick = Math.min(open, close) - low;
+  const hasUpperWick = Number.isFinite(upperWick) && upperWick >= body * 0.8;
+  const hasLowerWick = Number.isFinite(lowerWick) && lowerWick >= body * 0.8;
+  const bearishClose = Number.isFinite(close) && Number.isFinite(open) && close < open;
+  const bullishClose = Number.isFinite(close) && Number.isFinite(open) && close > open;
+  const bearishEngulfing =
+    Number.isFinite(prevOpen) &&
+    Number.isFinite(prevClose) &&
+    Number.isFinite(open) &&
+    Number.isFinite(close) &&
+    prevClose > prevOpen &&
+    close < open &&
+    open >= prevClose &&
+    close <= prevOpen;
+  const bullishEngulfing =
+    Number.isFinite(prevOpen) &&
+    Number.isFinite(prevClose) &&
+    Number.isFinite(open) &&
+    Number.isFinite(close) &&
+    prevClose < prevOpen &&
+    close > open &&
+    open <= prevClose &&
+    close >= prevOpen;
+  if (side === "SHORT") {
+    const rsiReady = Number.isFinite(rsi) ? rsi > 60 : false;
+    return rsiReady && (hasUpperWick || bearishEngulfing || bearishClose) && candleRange > 0;
+  }
+  if (side === "LONG") {
+    const rsiReady = Number.isFinite(rsi) ? rsi < 40 : false;
+    return rsiReady && (hasLowerWick || bullishEngulfing || bullishClose) && candleRange > 0;
+  }
+  return false;
 }
 
 function formatNumber(value, digits = 2) {
@@ -2763,6 +2853,55 @@ export default function CryptoSignalWebApp() {
         forceProbeEntry,
         setupType: analysis.aiDecisionOutput?.setupType || analysis.aiDecisionOutput?.executionPlan?.setupType || null,
       });
+      const decisionSide = resolveDecisionSide(analysis.aiDecisionOutput);
+      const previousCandle = candles?.length > 1 ? candles[candles.length - 2] : null;
+      const hasKlineConfirmation = resolveKlineConfirmation({
+        side: decisionSide,
+        rsi: Number(analysis?.rsi),
+        currentCandle,
+        previousCandle,
+      });
+      const cooldownState = getDirectionalLossCooldown({
+        closedTrades: prev?.closedTrades || [],
+        candles: candles || [],
+        symbol: paperMarketSymbol,
+        timeframe,
+      });
+      const cooldownActiveForSide =
+        executionSource === "simulation_agent" &&
+        cooldownState.cooldownActive &&
+        cooldownState.lastTradeDirection === decisionSide;
+      console.debug("[simulation:agent-guard]", {
+        executionSource,
+        decisionSide,
+        hasKlineConfirmation,
+        lastTradeDirection: cooldownState.lastTradeDirection,
+        consecutiveLossCount: cooldownState.consecutiveLossCount,
+        cooldownActive: cooldownState.cooldownActive,
+        cooldownRemainingBars: cooldownState.cooldownRemainingBars,
+      });
+      if (cooldownActiveForSide) {
+        nextFeedback = {
+          status: "WATCHING",
+          statusLabel: "方向冷卻中",
+          reason: `${decisionSide === "LONG" ? "多單" : "空單"}連續虧損已達 ${SIMULATION_DIRECTIONAL_LOSS_STREAK_THRESHOLD} 次，暫停 ${cooldownState.cooldownRemainingBars} 根 K`,
+          unmetConditions: ["DIRECTIONAL_COOLDOWN_ACTIVE"],
+          distances: [],
+          timestamp: new Date().toISOString(),
+        };
+        setSimulationExecutionStatus(nextFeedback);
+        return {
+          ...reconciledState,
+          simulationAgentState: {
+            ...(reconciledState?.simulationAgentState || {}),
+            hasKlineConfirmation,
+            lastTradeDirection: cooldownState.lastTradeDirection,
+            consecutiveLossCount: cooldownState.consecutiveLossCount,
+            cooldownActive: cooldownState.cooldownActive,
+            cooldownRemainingBars: cooldownState.cooldownRemainingBars,
+          },
+        };
+      }
       const result = simulateDecisionExecution({
         state: reconciledState,
         decision: analysis.aiDecisionOutput,
@@ -2771,11 +2910,17 @@ export default function CryptoSignalWebApp() {
         currentPrice: paperCurrentPrice,
         quantity: selectedQuantity,
         forceSimulation: String(analysis?.finalDecision || "").toUpperCase() === "NO_TRADE",
-        executionSource: "simulation_manual",
+        executionSource,
         orderMode: "simulation",
         signalContext: {
           rsi: analysis?.rsi,
           macd: analysis?.macd,
+          candleOpen: currentCandle?.open,
+          candleHigh: currentCandle?.high,
+          candleLow: currentCandle?.low,
+          candleClose: currentCandle?.close,
+          prevOpen: previousCandle?.open,
+          prevClose: previousCandle?.close,
           currentVolume: latestVolume,
           avgVolume20,
           volumeConfirmed: analysis?.volumeState === "量增",
@@ -2790,6 +2935,10 @@ export default function CryptoSignalWebApp() {
             disagreement: analysis?.multiTimeframe?.disagreement,
             score: analysis?.multiTimeframe?.score,
           },
+          marketRegime: analysis?.marketRegime,
+          breakoutState: analysis?.breakoutState,
+          hasKlineConfirmation,
+          klineConfirmed: hasKlineConfirmation,
           noTradeBars,
           forceProbeEntry,
         },
@@ -2818,8 +2967,16 @@ const isMissedMoveEntry = pendingType === "MISSED_MOVE_ENTRY";
 const isProbeEntryD = pendingType === "PROBE_ENTRY_D";
 const scoringResult = result.confirmationResult?.scoring || null;
 const isRangeStrategy = Boolean(result.confirmationResult?.confirmationState?.rangeMarket);
+const simulationAgentState = {
+  hasKlineConfirmation,
+  lastTradeDirection: cooldownState.lastTradeDirection,
+  consecutiveLossCount: cooldownState.consecutiveLossCount,
+  cooldownActive: cooldownState.cooldownActive,
+  cooldownRemainingBars: cooldownState.cooldownRemainingBars,
+};
       console.debug("[simulation:service-result]", {
         ...manualExecutionMeta,
+        executionSource,
         finalDecision: analysis?.finalDecision || null,
         decisionType: result.confirmationResult?.decisionType || null,
         executionIntent: result.executionIntent || null,
@@ -2832,6 +2989,7 @@ const isRangeStrategy = Boolean(result.confirmationResult?.confirmationState?.ra
         eligibilityInfo: result.eligibilityInfo || null,
         createdPosition: Boolean(result.position),
         createdPendingOrder,
+        ...simulationAgentState,
       });
       const executedState = result.result === "PENDING_CREATED"
         ? applyMarketTickToPaperState(result.state, {
@@ -2995,7 +3153,10 @@ const isRangeStrategy = Boolean(result.confirmationResult?.confirmationState?.ra
         openPositionCount: executedState.openPositions?.length || 0,
         pendingOrderCount: executedState.pendingOrders?.length || 0,
       });
-      return executedState;
+      return {
+        ...executedState,
+        simulationAgentState,
+      };
     });
     setLastDecisionAt(new Date().toISOString());
   };

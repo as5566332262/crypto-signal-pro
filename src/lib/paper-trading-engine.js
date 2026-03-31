@@ -136,8 +136,7 @@ function resolveSideFromDecision(decision) {
 
 function shouldBypassSetupGate(options = {}) {
   const executionSource = String(options?.executionSource || "").toLowerCase();
-  const orderMode = String(options?.orderMode || "").toLowerCase();
-  return executionSource === "simulation_manual" || orderMode === "simulation";
+  return executionSource === "simulation_manual";
 }
 
 function buildConfirmationPayload(decision, currentPrice, signalContext = {}) {
