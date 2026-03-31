@@ -248,12 +248,20 @@ function TradingStateTerminal({
                     <InfoSingleRow label="止盈1 / 止盈2 / 止盈3" value={takeProfitDetailLabel(order)} />
                     <InfoSingleRow label="建立時間" value={formatDate(order.createdAt)} />
                     <InfoSingleRow label="等待原因" value={(order.waitingReasons || []).join(" / ") || order.waitReason || "-"} />
+                    <InfoSingleRow label="isReentryAttempt" value={order.isReentryAttempt ? "true" : "false"} />
                     <InfoPairRow
                       leftLabel="已等待 K 數"
                       leftValue={safeFormatNumber(order.waitedBars, 0)}
                       rightLabel="距現價%"
                       rightValue={order.distanceFromPricePct == null ? "-" : `${safeFormatNumber(order.distanceFromPricePct, 2)}%`}
                     />
+                    <InfoPairRow
+                      leftLabel="reentryCount"
+                      leftValue={safeFormatNumber(order.reentryCount, 0)}
+                      rightLabel="reentryReason"
+                      rightValue={order.reentryReason || "-"}
+                    />
+                    <InfoSingleRow label="reentryAdjustedEntry" value={order.reentryAdjustedEntry ? "true" : "false"} />
                     <InfoSingleRow label="價格漂移取消" value={order.canceledByPriceDrift ? "是" : "否"} />
                   </div>
                   <div className="mt-3 pt-1">
@@ -306,6 +314,8 @@ function TradingStateTerminal({
                         <InfoItem label="scoreGrade / totalScore" value={`${trade.scoreGrade ?? "-"} / ${trade.totalScore ?? "-"}`} className="col-span-2" />
                         <InfoItem label="regime / confirmation" value={`${trade.regime ?? "-"} / ${trade.confirmationState ?? "-"}`} className="col-span-2" />
                         <InfoItem label="進場理由" value={trade.entryReasonDetail ?? trade.entryReason ?? "-"} className="col-span-2" />
+                        <InfoItem label="isReentryAttempt / reentryCount" value={`${trade.isReentryAttempt ? "true" : "false"} / ${trade.reentryCount ?? 0}`} className="col-span-2" />
+                        <InfoItem label="reentryReason / reentryAdjustedEntry" value={`${trade.reentryReason ?? "-"} / ${trade.reentryAdjustedEntry ? "true" : "false"}`} className="col-span-2" />
                         <InfoItem label="最大浮盈 / 最大浮虧" value={`${safeFormatNumber(maxRunupRaw, 2)} / ${safeFormatNumber(maxDrawdownRaw, 2)}`} className="col-span-2" />
                         <InfoItem label="建立/進場/出場" value={`${formatDate(createdAt)} / ${formatDate(enteredAt)} / ${formatDate(closedAt)}`} className="col-span-2" />
                       </div>
@@ -335,6 +345,8 @@ function TradingStateTerminal({
                     <InfoItem label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
                     <InfoItem label="數量" value={formatNumber(order.quantity, 2)} />
                     <InfoItem label="取消原因" value={order.cancelReason || "-"} className="col-span-2" />
+                    <InfoItem label="isReentryAttempt / reentryCount" value={`${order.isReentryAttempt ? "true" : "false"} / ${order.reentryCount ?? 0}`} className="col-span-2" />
+                    <InfoItem label="reentryReason / reentryAdjustedEntry" value={`${order.reentryReason ?? "-"} / ${order.reentryAdjustedEntry ? "true" : "false"}`} className="col-span-2" />
                     <InfoItem label="建立時間" value={formatDate(order.createdAt)} className="col-span-2" />
                     <InfoItem label="取消時間" value={formatDate(order.cancelledAt)} className="col-span-2" />
                   </div>
@@ -574,6 +586,15 @@ export default function PaperTradingSidebar({
                   {Object.entries(accountSnapshot.simulationStats?.pendingTypeWinRate || {}).map(([key, value]) => (
                     <li key={key}>{key}: {formatNumber(value, 1)}%</li>
                   ))}
+                </ul>
+              </div>
+              <div>
+                <div className="mb-1 text-slate-500">Re-entry 統計</div>
+                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                  <li>re-entry 勝率：{formatNumber(accountSnapshot.simulationStats?.reentrySuccessRate, 1)}%</li>
+                  <li>re-entry 平均PnL：{formatNumber(accountSnapshot.simulationStats?.reentryPerformanceComparison?.reentryAvgPnl, 2)}</li>
+                  <li>初始 entry 平均PnL：{formatNumber(accountSnapshot.simulationStats?.reentryPerformanceComparison?.initialAvgPnl, 2)}</li>
+                  <li>re-entry vs 初始樣本：{accountSnapshot.simulationStats?.reentryPerformanceComparison?.reentryCount || 0} / {accountSnapshot.simulationStats?.reentryPerformanceComparison?.initialCount || 0}</li>
                 </ul>
               </div>
               <div>

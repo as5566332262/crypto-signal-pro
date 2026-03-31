@@ -14,6 +14,10 @@ const DEFAULT_PENDING_TIMEOUT_BARS = 4;
 const DEFAULT_PULLBACK_MAX_WAIT_BARS = 6;
 const DEFAULT_TREND_ENTRY_CLAMP_PCT = 0.002;
 const DEFAULT_RANGE_ENTRY_CLAMP_PCT = 0.0008;
+const DEFAULT_REENTRY_MAX_ATTEMPTS = 2;
+const DEFAULT_REENTRY_FAIL_LIMIT = 2;
+const DEFAULT_REENTRY_PULLBACK_ATR_RATIO = 0.15;
+const DEFAULT_REENTRY_MIN_DISTANCE_PCT = 0.0004;
 const REDUCED_CONFIDENCE_TYPES = new Set(["OPPORTUNITY_ENTRY", "FALLBACK_ENTRY", "MISSED_MOVE_ENTRY", "PROBE_ENTRY_D"]);
 const DIRECTIONAL_LOSS_STREAK_THRESHOLD = 2;
 const DIRECTIONAL_COOLDOWN_BARS = 6;
@@ -105,6 +109,118 @@ function createDefaultSymbolIsolationState() {
     cooldownLastCandleTime: null,
     performanceMap: {},
     coarsePerformanceMap: {},
+  };
+}
+
+function buildReentryKey({ symbol, timeframe, side }) {
+  return [symbol || "-", timeframe || "-", side || "-"].join("|");
+}
+
+function isTrendRegime(regime) {
+  const normalized = String(regime || "").toLowerCase();
+  return normalized === "trend" || normalized === "trending";
+}
+
+function resolveReentryReason(cancelReason, { side, triggerPrice, markPrice, atr } = {}) {
+  if (cancelReason === "PRICE_DRIFTED") return "DRIFT";
+  if (cancelReason === "PENDING_TIMEOUT_REEVALUATED") {
+    const trigger = normalizeNumber(triggerPrice);
+    const mark = normalizeNumber(markPrice);
+    const atrValue = normalizeNumber(atr);
+    if (Number.isFinite(trigger) && Number.isFinite(mark)) {
+      const movedWithTrend = side === "LONG" ? mark > trigger : mark < trigger;
+      const movedDistance = Math.abs(mark - trigger);
+      if (movedWithTrend && (!Number.isFinite(atrValue) || movedDistance >= Math.max(atrValue * 0.8, Math.abs(trigger) * 0.002))) {
+        return "MISSED_MOVE";
+      }
+    }
+    return "TIMEOUT";
+  }
+  return null;
+}
+
+function registerReentryCandidate(state, {
+  order,
+  cancelReason,
+  candleTime,
+  timestamp = nowIso(),
+  markPrice,
+}) {
+  if (!order?.symbol || !order?.timeframe || !order?.side) return state;
+  const reentryReason = resolveReentryReason(cancelReason, {
+    side: order.side,
+    triggerPrice: order.triggerPrice,
+    markPrice,
+    atr: order?.placementSnapshot?.atr,
+  });
+  if (!reentryReason) return state;
+  const isTrend = isTrendRegime(order?.regime ?? order?.decisionSnapshot?.marketRegimeLabel ?? order?.decisionSnapshot?.regime);
+  if (!isTrend) return state;
+  const key = buildReentryKey(order);
+  const tracked = state?.reentryTracking?.[key] || {};
+  const nextFailureStreak = order?.isReentryAttempt ? asSafeNumber(tracked.failureStreak) + 1 : asSafeNumber(tracked.failureStreak);
+  const nextStateEntry = {
+    ...tracked,
+    symbol: order.symbol,
+    timeframe: order.timeframe,
+    side: order.side,
+    contextKey: order.decisionContextKey || tracked.contextKey || null,
+    decisionRevision: buildDecisionRevision(order?.decisionSnapshot, order?.timeframe),
+    reentryCount: asSafeNumber(tracked.reentryCount),
+    maxReentryAttempts: asSafeNumber(tracked.maxReentryAttempts, DEFAULT_REENTRY_MAX_ATTEMPTS),
+    failureStreak: nextFailureStreak,
+    lastCancelReason: reentryReason,
+    lastCancelledAt: timestamp,
+    lastCancelledCandleTime: normalizeBarTime(candleTime),
+    lastTriggerPrice: normalizeNumber(order.triggerPrice),
+    lastMarkPrice: normalizeNumber(markPrice),
+    active: true,
+    abandoned: nextFailureStreak >= asSafeNumber(tracked.failLimit, DEFAULT_REENTRY_FAIL_LIMIT),
+    failLimit: asSafeNumber(tracked.failLimit, DEFAULT_REENTRY_FAIL_LIMIT),
+  };
+  return {
+    ...state,
+    reentryTracking: {
+      ...(state?.reentryTracking || {}),
+      [key]: nextStateEntry,
+    },
+  };
+}
+
+function resolveReentryAttempt(state, { decision, symbol, timeframe, side, currentPrice, candleTime }) {
+  const key = buildReentryKey({ symbol, timeframe, side });
+  const tracked = state?.reentryTracking?.[key];
+  if (!tracked?.active || tracked?.abandoned) return null;
+  if (!isTrendRegime(decision?.marketRegimeLabel || decision?.regime)) return null;
+  if (asSafeNumber(tracked.reentryCount) >= asSafeNumber(tracked.maxReentryAttempts, DEFAULT_REENTRY_MAX_ATTEMPTS)) return null;
+  const signalSide = resolveSideFromDecision(decision);
+  if (!signalSide || signalSide !== side) return null;
+  const currentCandleTime = normalizeBarTime(candleTime);
+  if (Number.isFinite(currentCandleTime) && Number.isFinite(tracked.lastCancelledCandleTime) && currentCandleTime < tracked.lastCancelledCandleTime) {
+    return null;
+  }
+  const baseEntry = resolvePlannedEntryPrice(decision, side);
+  const basePrice = normalizeNumber(baseEntry.entryPrice);
+  const mark = normalizeNumber(currentPrice);
+  const atr = normalizeNumber(decision?.executionPlan?.atr ?? decision?.atr);
+  if (!Number.isFinite(basePrice) || !Number.isFinite(mark)) return null;
+  const pullbackOffset = Number.isFinite(atr) && atr > 0
+    ? atr * DEFAULT_REENTRY_PULLBACK_ATR_RATIO
+    : Math.abs(mark) * DEFAULT_REENTRY_MIN_DISTANCE_PCT;
+  const minDistance = Math.max(Math.abs(mark) * DEFAULT_REENTRY_MIN_DISTANCE_PCT, 1e-8);
+  const anchor = side === "LONG" ? mark - Math.max(pullbackOffset, minDistance) : mark + Math.max(pullbackOffset, minDistance);
+  const adjustedEntry = side === "LONG"
+    ? Math.max(basePrice, anchor)
+    : Math.min(basePrice, anchor);
+  const adjustedDistance = Math.abs(adjustedEntry - mark);
+  if (adjustedDistance < minDistance) return null;
+  return {
+    isReentryAttempt: true,
+    reentryCount: asSafeNumber(tracked.reentryCount) + 1,
+    reentryReason: tracked.lastCancelReason || "TIMEOUT",
+    reentryAdjustedEntry: Math.abs(adjustedEntry - basePrice) > 1e-8,
+    adjustedEntryPrice: adjustedEntry,
+    key,
   };
 }
 
@@ -674,6 +790,7 @@ export function createInitialPaperAccountState() {
     performanceMap: {},
     coarsePerformanceMap: {},
     reentryGuards: [],
+    reentryTracking: {},
     orderLifecycleEvents: [],
     waitingDiagnostics: createDefaultWaitingDiagnostics(),
   };
@@ -839,6 +956,10 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
     regime: position.regime || null,
     confirmationState: position.confirmationState || null,
     entryReasonDetail: position.entryReasonDetail || null,
+    isReentryAttempt: Boolean(position.isReentryAttempt),
+    reentryCount: position.reentryCount ?? 0,
+    reentryReason: position.reentryReason ?? null,
+    reentryAdjustedEntry: Boolean(position.reentryAdjustedEntry),
     exitReasonDetail: closeReason,
     maxFavorableExcursion: position.maxFavorableExcursion ?? 0,
     maxAdverseExcursion: position.maxAdverseExcursion ?? 0,
@@ -1070,6 +1191,13 @@ function maybeFillPendingOrders(state, {
         waitedBars: nextWaitBars,
         distancePct,
       }));
+      nextState = registerReentryCandidate(nextState, {
+        order,
+        cancelReason: "PENDING_TIMEOUT_REEVALUATED",
+        candleTime,
+        timestamp,
+        markPrice: tickPrice,
+      });
       nextState = appendOrderLifecycleEvent(nextState, {
         symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PENDING_TIMEOUT_REEVALUATED", triggeredBy, timestamp,
       });
@@ -1091,6 +1219,13 @@ function maybeFillPendingOrders(state, {
         orderId: order.id,
       });
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "PRICE_DRIFTED", timestamp, { triggeredBy }));
+      nextState = registerReentryCandidate(nextState, {
+        order,
+        cancelReason: "PRICE_DRIFTED",
+        candleTime,
+        timestamp,
+        markPrice: tickPrice,
+      });
       nextState = registerReentryGuard(nextState, order, "PRICE_DRIFTED", timestamp, order?.decisionSnapshot, candleTime);
       nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PRICE_DRIFTED", triggeredBy, timestamp });
       return { ...order, status: "CANCELLED", canceledByPriceDrift: true };
@@ -1170,6 +1305,10 @@ function maybeFillPendingOrders(state, {
       entryCandleTime: candleTime ?? null,
       unrealizedPnl: 0,
       entryReason: order.entryReason || null,
+      isReentryAttempt: Boolean(order.isReentryAttempt),
+      reentryCount: order.reentryCount ?? 0,
+      reentryReason: order.reentryReason ?? null,
+      reentryAdjustedEntry: Boolean(order.reentryAdjustedEntry),
       decisionSnapshot: order.decisionSnapshot,
       decisionContextKey: order.decisionContextKey,
       hitTargets: [],
@@ -1434,10 +1573,21 @@ export function simulateDecisionExecution({
     };
   }
   const plannedEntry = resolvePlannedEntryPrice(decision, side);
-  const fallbackEntryPrice = normalizeNumber(currentPrice) ?? plannedEntry.entryPrice ?? normalizeNumber(decision?.price);
+  const reentryAttempt = resolveReentryAttempt(state, {
+    decision,
+    symbol,
+    timeframe,
+    side,
+    currentPrice,
+    candleTime: signalContext?.candleTime,
+  });
+  const fallbackEntryPrice = normalizeNumber(currentPrice) ??
+    reentryAttempt?.adjustedEntryPrice ??
+    plannedEntry.entryPrice ??
+    normalizeNumber(decision?.price);
   const constrainedEntry = applyEntryDistanceConstraint({
     side,
-    entryPrice: bypassSetupGate ? fallbackEntryPrice : plannedEntry.entryPrice,
+    entryPrice: bypassSetupGate ? fallbackEntryPrice : (reentryAttempt?.adjustedEntryPrice ?? plannedEntry.entryPrice),
     currentPrice: normalizeNumber(currentPrice),
     atr: decision?.executionPlan?.atr ?? decision?.atr,
     marketRegime: decision?.marketRegimeLabel || decision?.regime || signalContext?.marketRegime,
@@ -1535,7 +1685,11 @@ export function simulateDecisionExecution({
     }),
     entryReason: decision.entryReason || null,
     entryMode: plannedEntry.mode,
-    entryAdjusted: constrainedEntry.wasAdjusted,
+    entryAdjusted: constrainedEntry.wasAdjusted || Boolean(reentryAttempt?.reentryAdjustedEntry),
+    isReentryAttempt: Boolean(reentryAttempt?.isReentryAttempt),
+    reentryCount: reentryAttempt?.reentryCount ?? 0,
+    reentryReason: reentryAttempt?.reentryReason ?? null,
+    reentryAdjustedEntry: Boolean(reentryAttempt?.reentryAdjustedEntry),
     simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
     riskProfile: REDUCED_CONFIDENCE_TYPES.has(confirmationResult.decisionType) ? "LOW_CONFIDENCE_SMALL_SIZE" : "STANDARD",
     placementSnapshot: {
@@ -1612,7 +1766,10 @@ export function simulateDecisionExecution({
     };
   }
 
-  if (effectiveEligibility.eligibility === "READY_TO_EXECUTE" || (executionIntent === "EXECUTE_NOW" && confirmationResult.canExecute)) {
+  if (
+    !reentryAttempt &&
+    (effectiveEligibility.eligibility === "READY_TO_EXECUTE" || (executionIntent === "EXECUTE_NOW" && confirmationResult.canExecute))
+  ) {
     if (isReentryBlockedByGuard(state, {
       symbol,
       timeframe,
@@ -1663,7 +1820,11 @@ export function simulateDecisionExecution({
       unrealizedPnl: 0,
       entryReason: decision.entryReason || null,
       entryMode: plannedEntry.mode,
-      entryAdjusted: constrainedEntry.wasAdjusted,
+      entryAdjusted: constrainedEntry.wasAdjusted || Boolean(reentryAttempt?.reentryAdjustedEntry),
+      isReentryAttempt: Boolean(reentryAttempt?.isReentryAttempt),
+      reentryCount: reentryAttempt?.reentryCount ?? 0,
+      reentryReason: reentryAttempt?.reentryReason ?? null,
+      reentryAdjustedEntry: Boolean(reentryAttempt?.reentryAdjustedEntry),
       simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
       riskProfile: REDUCED_CONFIDENCE_TYPES.has(confirmationResult.decisionType) ? "LOW_CONFIDENCE_SMALL_SIZE" : "STANDARD",
       decisionSnapshot: decision,
@@ -1677,6 +1838,21 @@ export function simulateDecisionExecution({
       ...state,
       openPositions: [position, ...state.openPositions],
     });
+    if (reentryAttempt?.key) {
+      const tracked = nextState?.reentryTracking?.[reentryAttempt.key] || {};
+      nextState = {
+        ...nextState,
+        reentryTracking: {
+          ...(nextState?.reentryTracking || {}),
+          [reentryAttempt.key]: {
+            ...tracked,
+            active: false,
+            failureStreak: 0,
+            reentryCount: reentryAttempt.reentryCount,
+          },
+        },
+      };
+    }
     nextState = appendOrderLifecycleEvent(nextState, {
       symbol,
       orderId: position.id,
@@ -1721,6 +1897,20 @@ export function simulateDecisionExecution({
   }
 
   const pendingCreation = createPendingOrder({ baseState: state, order: pendingOrder });
+  if (reentryAttempt?.key) {
+    const tracked = pendingCreation.nextState?.reentryTracking?.[reentryAttempt.key] || {};
+    pendingCreation.nextState = {
+      ...pendingCreation.nextState,
+      reentryTracking: {
+        ...(pendingCreation.nextState?.reentryTracking || {}),
+        [reentryAttempt.key]: {
+          ...tracked,
+          reentryCount: reentryAttempt.reentryCount,
+          active: true,
+        },
+      },
+    };
+  }
   const signalToPlaceBars = calculateBarsDelta(
     (state?.waitingDiagnostics?.firstValidSignalByContext || {})[contextKey],
     decisionBarTime
@@ -1813,6 +2003,13 @@ export function reconcilePendingOrdersWithDecision({
 
     if (cancelReason) {
       cancelledOrders.unshift(cancelPendingOrder(order, cancelReason, timestamp, { triggeredBy }));
+      state = registerReentryCandidate(state, {
+        order,
+        cancelReason,
+        candleTime,
+        timestamp,
+        markPrice,
+      });
       if (cancelReason === "PRICE_DRIFTED") {
         state = registerReentryGuard(state, order, cancelReason, timestamp, decision, candleTime);
         state = incrementWaitingReason(state, "canceledByPriceDrift", { symbol: order.symbol, orderId: order.id });
