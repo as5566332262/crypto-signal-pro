@@ -2,6 +2,7 @@ import { evaluateDecisionScore } from "@/lib/decision/scoring-engine";
 
 const FALLBACK_WAIT_BARS = 4;
 const MISSED_MOVE_ATR_RATIO = 1.2;
+const FORCE_PROBE_NO_TRADE_BARS = 12;
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -82,6 +83,43 @@ function resolveMomentumConfirmed(indicators = {}, side) {
   const macdConfirmed =
     !Number.isFinite(macdHistogram) || (side === "SHORT" ? macdHistogram < 0 : macdHistogram > 0);
   return rsiConfirmed && macdConfirmed;
+}
+
+function resolveRangeMarket({ confirmationState = {}, indicators = {}, mtf = {} }) {
+  const mtfDisagreement = normalizeNumber(mtf?.disagreement ?? mtf?.disagreementRatio ?? mtf?.divergence);
+  const mtfDivergent = confirmationState?.mtfAligned === false || (Number.isFinite(mtfDisagreement) && mtfDisagreement >= 0.45);
+  const momentumOutOfSync = confirmationState?.momentumConfirmed === false;
+  const volumeLow = confirmationState?.volumeConfirmed === false;
+  return mtfDivergent && momentumOutOfSync && volumeLow;
+}
+
+function resolveRangeProbeSide({ currentPrice, side, structure = {}, aiDecisionOutput = {}, indicators = {} }) {
+  if (side) return side;
+  const price = normalizeNumber(currentPrice);
+  if (!Number.isFinite(price)) return null;
+  const supportLow = normalizeNumber(
+    structure?.supportLow ?? aiDecisionOutput?.levels?.structureSupportZone?.low ?? aiDecisionOutput?.executionPlan?.rangeLow
+  );
+  const supportHigh = normalizeNumber(
+    structure?.supportHigh ?? aiDecisionOutput?.levels?.structureSupportZone?.high ?? supportLow
+  );
+  const resistanceLow = normalizeNumber(
+    structure?.resistanceLow ?? aiDecisionOutput?.levels?.structureResistanceZone?.low ?? aiDecisionOutput?.executionPlan?.rangeHigh
+  );
+  const resistanceHigh = normalizeNumber(
+    structure?.resistanceHigh ?? aiDecisionOutput?.levels?.structureResistanceZone?.high ?? resistanceLow
+  );
+  const atr = normalizeNumber(indicators?.atr ?? aiDecisionOutput?.executionPlan?.atr ?? aiDecisionOutput?.atr);
+  const tolerance = Number.isFinite(atr) && atr > 0 ? atr * 0.4 : Math.max(Math.abs(price) * 0.002, 1e-8);
+  if (Number.isFinite(supportLow) || Number.isFinite(supportHigh)) {
+    const supportRef = Number.isFinite(supportHigh) ? supportHigh : supportLow;
+    if (Number.isFinite(supportRef) && Math.abs(price - supportRef) <= tolerance) return "LONG";
+  }
+  if (Number.isFinite(resistanceLow) || Number.isFinite(resistanceHigh)) {
+    const resistanceRef = Number.isFinite(resistanceLow) ? resistanceLow : resistanceHigh;
+    if (Number.isFinite(resistanceRef) && Math.abs(price - resistanceRef) <= tolerance) return "SHORT";
+  }
+  return null;
 }
 
 function resolveKlineConfirmed(aiDecisionOutput = {}, indicators = {}) {
@@ -266,6 +304,14 @@ export function runConfirmationEngine({
     hardConditions.missedMoveDistanceReached &&
     hardConditions.riskRewardAcceptable &&
     softConditions.missedMoveSignalCount >= 2;
+  const rsi = normalizeNumber(indicators?.rsi);
+  const rangeMarket = resolveRangeMarket({ confirmationState, indicators, mtf });
+  const rangeProbeSide = resolveRangeProbeSide({ currentPrice, side, structure, aiDecisionOutput, indicators });
+  const dGradeRsiProbeReady = scoring?.scoreGrade === "D" && Number.isFinite(rsi) && (rsi <= 30 || rsi >= 70);
+  const forceProbeByNoTradeBars = Math.max(0, Math.floor(normalizeNumber(indicators?.noTradeBars) || 0)) >= FORCE_PROBE_NO_TRADE_BARS;
+  const forceProbeByFlag = Boolean(indicators?.forceProbeEntry);
+  const probeTriggered = dGradeRsiProbeReady || (rangeMarket && Boolean(rangeProbeSide)) || forceProbeByNoTradeBars || forceProbeByFlag;
+  const probeSide = rangeProbeSide || (Number.isFinite(rsi) ? (rsi <= 30 ? "LONG" : rsi >= 70 ? "SHORT" : side) : side);
 
   let decisionType = scoring?.decisionType || baselineDecisionType;
   if (primaryEntryReady) {
@@ -274,6 +320,8 @@ export function runConfirmationEngine({
     decisionType = "FALLBACK_ENTRY";
   } else if (missedMoveEntryReady) {
     decisionType = "MISSED_MOVE_ENTRY";
+  } else if (probeTriggered) {
+    decisionType = "PROBE_ENTRY_D";
   }
 
   let canExecute = false;
@@ -319,6 +367,10 @@ export function runConfirmationEngine({
       scoring.totalScore >= 54 &&
       confirmationState.priceInZone &&
       confirmationState.mtfAligned;
+  } else if (decisionType === "PROBE_ENTRY_D") {
+    canExecute =
+      (dGradeRsiProbeReady || forceProbeByNoTradeBars || forceProbeByFlag || (rangeMarket && Boolean(rangeProbeSide))) &&
+      (confirmationState.priceInZone || confirmationState.klineConfirmed || breakoutConfirmed || rangeMarket);
   }
 
   return {
@@ -332,9 +384,14 @@ export function runConfirmationEngine({
       zoneWaitBars,
       hardConditions,
       softConditions,
+      rangeMarket,
+      rangeProbeSide: probeSide,
+      dGradeRsiProbeReady,
+      forceProbeByNoTradeBars,
+      forceProbeByFlag,
     },
     canExecute,
-    side,
+    side: probeSide || side,
   };
 }
 
@@ -345,6 +402,8 @@ export function mapDecisionTypeToExecutionIntent(decisionType, confirmationResul
   }
   if (decisionType === "STANDARD_ENTRY") return "PLACE_PENDING";
   if (decisionType === "OPPORTUNITY_ENTRY")
+    return confirmationResult?.canExecute ? "EXECUTE_NOW" : "PLACE_PENDING";
+  if (decisionType === "PROBE_ENTRY_D")
     return confirmationResult?.canExecute ? "EXECUTE_NOW" : "PLACE_PENDING";
   if (decisionType === "WAIT_PULLBACK" || decisionType === "WAIT_BREAKOUT")
     return "PLACE_PENDING";

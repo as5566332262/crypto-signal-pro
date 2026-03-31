@@ -10,7 +10,7 @@ const DECISION_STALE_MS = 30 * 60 * 1000;
 const DEFAULT_PENDING_EXPIRY_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_SHORT_BREAKDOWN_ATR_RATIO = 0.2;
 const DEFAULT_PENDING_DRIFT_ATR_RATIO = 2;
-const REDUCED_CONFIDENCE_TYPES = new Set(["OPPORTUNITY_ENTRY", "FALLBACK_ENTRY", "MISSED_MOVE_ENTRY"]);
+const REDUCED_CONFIDENCE_TYPES = new Set(["OPPORTUNITY_ENTRY", "FALLBACK_ENTRY", "MISSED_MOVE_ENTRY", "PROBE_ENTRY_D"]);
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -35,6 +35,7 @@ function normalizeConfidence(value) {
 }
 
 function getSizingMultiplier(decisionType) {
+  if (decisionType === "PROBE_ENTRY_D") return 0.2;
   if (decisionType === "MISSED_MOVE_ENTRY") return 0.3;
   if (decisionType === "FALLBACK_ENTRY" || decisionType === "OPPORTUNITY_ENTRY") return 0.4;
   return 1;
