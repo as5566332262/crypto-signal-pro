@@ -22,6 +22,18 @@ function reasonLabel(reason) {
   return reasonMap[reason] || reason || "-";
 }
 
+function formatDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : "-";
+}
+
+function toTimestamp(value) {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
 export function PaperAccountCard({ accountSnapshot, formatNumber }) {
   return (
     <Card className="rounded-2xl border-slate-200">
@@ -119,12 +131,6 @@ function TradingStateTerminal({
   const safeFormatNumber = (value, digits = 2) => {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? formatNumber(parsed, digits) : "-";
-  };
-
-  const safeFormatDate = (value) => {
-    if (!value) return "-";
-    const date = new Date(value);
-    return Number.isFinite(date.getTime()) ? date.toLocaleString() : "-";
   };
 
   const showCloseAll = activeTab === "positions" && openPositions.length > 1;
@@ -239,7 +245,7 @@ function TradingStateTerminal({
                       rightValue={formatNumber(order.invalidationPrice, paperDigits)}
                     />
                     <InfoSingleRow label="止盈1 / 止盈2 / 止盈3" value={takeProfitDetailLabel(order)} />
-                    <InfoSingleRow label="建立時間" value={safeFormatDate(order.createdAt)} />
+                    <InfoSingleRow label="建立時間" value={formatDate(order.createdAt)} />
                   </div>
                   <div className="mt-3 pt-1">
                     <Button variant="outline" size="sm" className="h-7 w-full rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => onCancelPendingOrder?.(order.id)}>
@@ -292,7 +298,7 @@ function TradingStateTerminal({
                         <InfoItem label="regime / confirmation" value={`${trade.regime ?? "-"} / ${trade.confirmationState ?? "-"}`} className="col-span-2" />
                         <InfoItem label="進場理由" value={trade.entryReasonDetail ?? trade.entryReason ?? "-"} className="col-span-2" />
                         <InfoItem label="最大浮盈 / 最大浮虧" value={`${safeFormatNumber(maxRunupRaw, 2)} / ${safeFormatNumber(maxDrawdownRaw, 2)}`} className="col-span-2" />
-                        <InfoItem label="建立/進場/出場" value={`${safeFormatDate(createdAt)} / ${safeFormatDate(enteredAt)} / ${safeFormatDate(closedAt)}`} className="col-span-2" />
+                        <InfoItem label="建立/進場/出場" value={`${formatDate(createdAt)} / ${formatDate(enteredAt)} / ${formatDate(closedAt)}`} className="col-span-2" />
                       </div>
                     </div>
                   );
@@ -320,8 +326,8 @@ function TradingStateTerminal({
                     <InfoItem label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
                     <InfoItem label="數量" value={formatNumber(order.quantity, 2)} />
                     <InfoItem label="取消原因" value={order.cancelReason || "-"} className="col-span-2" />
-                    <InfoItem label="建立時間" value={safeFormatDate(order.createdAt)} className="col-span-2" />
-                    <InfoItem label="取消時間" value={safeFormatDate(order.cancelledAt)} className="col-span-2" />
+                    <InfoItem label="建立時間" value={formatDate(order.createdAt)} className="col-span-2" />
+                    <InfoItem label="取消時間" value={formatDate(order.cancelledAt)} className="col-span-2" />
                   </div>
                 </div>
               ))}
@@ -424,7 +430,8 @@ export default function PaperTradingSidebar({
     const timer = window.setInterval(() => setRuntimeNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [simulationLifecycle]);
-  const runtimeSec = simulationStartedAt ? Math.max(0, Math.floor((runtimeNow - new Date(simulationStartedAt).getTime()) / 1000)) : 0;
+  const simulationStartedAtTs = toTimestamp(simulationStartedAt);
+  const runtimeSec = simulationStartedAtTs ? Math.max(0, Math.floor((runtimeNow - simulationStartedAtTs) / 1000)) : 0;
   const runtimeLabel = `${Math.floor(runtimeSec / 3600)}h ${Math.floor((runtimeSec % 3600) / 60)}m ${runtimeSec % 60}s`;
 
   const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[360px]" : "w-full lg:w-[76px]";
@@ -465,13 +472,13 @@ export default function PaperTradingSidebar({
                   <div className="font-semibold">已從本地狀態恢復模擬</div>
                   <div>已恢復模擬狀態</div>
                   <div>上次運行狀態：<span className="font-semibold uppercase">{simulationRestoreInfo.restoredLifecycle || "-"}</span></div>
-                  <div>上次決策時間：<span className="font-semibold">{simulationRestoreInfo.lastDecisionTime ? new Date(simulationRestoreInfo.lastDecisionTime).toLocaleString() : "-"}</span></div>
+                  <div>上次決策時間：<span className="font-semibold">{formatDate(simulationRestoreInfo.lastDecisionTime)}</span></div>
                 </div>
               ) : null}
               <div>目前狀態：<span className="font-semibold uppercase">{simulationLifecycle || "idle"}</span></div>
               <div>是否模擬中：<span className="font-semibold">{simulationLifecycle === "running" ? "是" : "否"}</span></div>
               <div>已運行：<span className="font-semibold">{simulationStartedAt ? runtimeLabel : "-"}</span></div>
-              <div>最近決策：<span className="font-semibold">{lastDecisionAt ? new Date(lastDecisionAt).toLocaleString() : "-"}</span></div>
+              <div>最近決策：<span className="font-semibold">{formatDate(lastDecisionAt)}</span></div>
               <div className="grid grid-cols-3 gap-2 pt-1">
                 <Button className="rounded-xl text-xs" onClick={onStartSimulation}>開始</Button>
                 <Button variant="outline" className="rounded-xl text-xs" onClick={onPauseSimulation}>暫停</Button>
@@ -629,7 +636,7 @@ export default function PaperTradingSidebar({
                     <div>cooldownBarsLeft：{simulationExecutionStatus.cooldownDebug.cooldownBarsLeft ?? "-"}</div>
                   </div>
                 ) : null}
-                <div>時間：{simulationExecutionStatus?.timestamp ? new Date(simulationExecutionStatus.timestamp).toLocaleString() : "-"}</div>
+                <div>時間：{formatDate(simulationExecutionStatus?.timestamp)}</div>
               </CardContent>
             </Card>
             <Button variant="ghost" className="rounded-2xl text-rose-600 hover:bg-rose-50 hover:text-rose-700" onClick={onResetPaperAccount}>重置模擬</Button>
