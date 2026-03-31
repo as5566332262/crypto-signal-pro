@@ -247,6 +247,14 @@ function TradingStateTerminal({
                     />
                     <InfoSingleRow label="止盈1 / 止盈2 / 止盈3" value={takeProfitDetailLabel(order)} />
                     <InfoSingleRow label="建立時間" value={formatDate(order.createdAt)} />
+                    <InfoSingleRow label="等待原因" value={(order.waitingReasons || []).join(" / ") || order.waitReason || "-"} />
+                    <InfoPairRow
+                      leftLabel="已等待 K 數"
+                      leftValue={safeFormatNumber(order.waitedBars, 0)}
+                      rightLabel="距現價%"
+                      rightValue={order.distanceFromPricePct == null ? "-" : `${safeFormatNumber(order.distanceFromPricePct, 2)}%`}
+                    />
+                    <InfoSingleRow label="價格漂移取消" value={order.canceledByPriceDrift ? "是" : "否"} />
                   </div>
                   <div className="mt-3 pt-1">
                     <Button variant="outline" size="sm" className="h-7 w-full rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => onCancelPendingOrder?.(order.id)}>
@@ -528,6 +536,29 @@ export default function PaperTradingSidebar({
               <InfoItem label="最大回撤" value={formatNumber(accountSnapshot.simulationStats?.maxDrawdown, 2)} />
               <InfoItem label="多單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.longWinRate, 1)}%`} />
               <InfoItem label="空單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.shortWinRate, 1)}%`} />
+              </div>
+              <div>
+                <div className="mb-1 text-slate-500">等待效率</div>
+                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                  <li>first valid signal → place order：{formatNumber(accountSnapshot.simulationStats?.avgSignalToPlaceBars, 2)} K</li>
+                  <li>place order → fill：{formatNumber(accountSnapshot.simulationStats?.avgPlaceToFillBars, 2)} K</li>
+                </ul>
+              </div>
+              <div>
+                <div className="mb-1 text-slate-500">阻擋原因排行</div>
+                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                  {(accountSnapshot.simulationStats?.waitingReasonRanking || []).slice(0, 8).map((item) => (
+                    <li key={item.reason}>{item.reason}: {item.count}</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <div className="mb-1 text-slate-500">各 Symbol 平均等待</div>
+                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                  {Object.entries(accountSnapshot.simulationStats?.averageWaitBySymbol || {}).map(([key, value]) => (
+                    <li key={key}>{key}: {formatNumber(value, 2)} K</li>
+                  ))}
+                </ul>
               </div>
               <div>
                 <div className="mb-1 text-slate-500">各 decisionType 勝率</div>

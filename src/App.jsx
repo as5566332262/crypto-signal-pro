@@ -526,6 +526,25 @@ function calculateSimulationStats(accountSnapshot, symbol) {
       ...stat,
     }))
     .sort((a, b) => b.totalTrades - a.totalTrades);
+  const waitingDiagnostics = accountSnapshot.waitingDiagnostics || {};
+  const signalToPlaceBarsSeries = (waitingDiagnostics.signalToPlaceBars || []).filter((value) => Number.isFinite(Number(value)));
+  const placeToFillBarsSeries = (waitingDiagnostics.placeToFillBars || []).filter((value) => Number.isFinite(Number(value)));
+  const avgSignalToPlaceBars = signalToPlaceBarsSeries.length
+    ? signalToPlaceBarsSeries.reduce((sum, value) => sum + Number(value), 0) / signalToPlaceBarsSeries.length
+    : 0;
+  const avgPlaceToFillBars = placeToFillBarsSeries.length
+    ? placeToFillBarsSeries.reduce((sum, value) => sum + Number(value), 0) / placeToFillBarsSeries.length
+    : 0;
+  const waitingReasonRanking = Object.entries(waitingDiagnostics.reasonCounts || {})
+    .map(([reason, count]) => ({ reason, count: Number(count) || 0 }))
+    .sort((a, b) => b.count - a.count);
+  const averageWaitBySymbol = Object.fromEntries(
+    Object.entries(waitingDiagnostics.symbolWaitBars || {}).map(([symbolKey, rows]) => {
+      const validRows = (rows || []).filter((value) => Number.isFinite(Number(value))).map(Number);
+      const avg = validRows.length ? validRows.reduce((sum, value) => sum + value, 0) / validRows.length : 0;
+      return [symbolKey, avg];
+    })
+  );
 
   return {
     totalTrades,
@@ -547,6 +566,10 @@ function calculateSimulationStats(accountSnapshot, symbol) {
     coarsePerformanceMap: coarsePerformance.allTimeMap,
     coarsePerformanceRecentMap: coarsePerformance.recentMap,
     coarsePerformanceRows,
+    avgSignalToPlaceBars,
+    avgPlaceToFillBars,
+    waitingReasonRanking,
+    averageWaitBySymbol,
   };
 }
 

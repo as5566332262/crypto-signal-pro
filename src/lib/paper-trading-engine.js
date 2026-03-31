@@ -10,11 +10,26 @@ const DECISION_STALE_MS = 30 * 60 * 1000;
 const DEFAULT_PENDING_EXPIRY_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_SHORT_BREAKDOWN_ATR_RATIO = 0.2;
 const DEFAULT_PENDING_DRIFT_ATR_RATIO = 2;
+const DEFAULT_PENDING_TIMEOUT_BARS = 4;
+const DEFAULT_PULLBACK_MAX_WAIT_BARS = 6;
+const DEFAULT_TREND_ENTRY_CLAMP_PCT = 0.002;
+const DEFAULT_RANGE_ENTRY_CLAMP_PCT = 0.0008;
 const REDUCED_CONFIDENCE_TYPES = new Set(["OPPORTUNITY_ENTRY", "FALLBACK_ENTRY", "MISSED_MOVE_ENTRY", "PROBE_ENTRY_D"]);
 const DIRECTIONAL_LOSS_STREAK_THRESHOLD = 2;
 const DIRECTIONAL_COOLDOWN_BARS = 6;
 const PERFORMANCE_MIN_SAMPLE_SIZE = 10;
 const RECENT_PERFORMANCE_WINDOW = 20;
+const WAITING_REASON_KEYS = [
+  "blockedByKlineConfirmation",
+  "blockedByRangeFilter",
+  "blockedByLocationFilter",
+  "blockedByPerformanceFilter",
+  "blockedByCooldown",
+  "waitingForPullback",
+  "waitingForBreakout",
+  "pendingTooFarFromPrice",
+  "canceledByPriceDrift",
+];
 
 export const DEFAULT_PERFORMANCE_DEBUG_STATE = {
   currentSetupKey: "-",
@@ -34,6 +49,36 @@ function buildPerformanceDebugState(overrides = {}) {
     ...DEFAULT_PERFORMANCE_DEBUG_STATE,
     ...overrides,
   };
+}
+
+function createEmptyWaitingReasonCounter() {
+  return WAITING_REASON_KEYS.reduce((acc, key) => {
+    acc[key] = 0;
+    return acc;
+  }, {});
+}
+
+function createDefaultWaitingDiagnostics() {
+  return {
+    reasonCounts: createEmptyWaitingReasonCounter(),
+    symbolWaitBars: {},
+    firstValidSignalByContext: {},
+    signalToPlaceBars: [],
+    placeToFillBars: [],
+    recentEvents: [],
+  };
+}
+
+function normalizeBarTime(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function calculateBarsDelta(fromBarTime, toBarTime) {
+  const from = normalizeBarTime(fromBarTime);
+  const to = normalizeBarTime(toBarTime);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return null;
+  return Math.max(0, Math.floor(to - from));
 }
 
 function normalizeNumber(value) {
@@ -385,7 +430,7 @@ function resolvePlannedEntryPrice(decision, side) {
   return { entryPrice: triggerPrice, mode };
 }
 
-function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr }) {
+function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr, marketRegime }) {
   if (!Number.isFinite(entryPrice) || !Number.isFinite(currentPrice)) {
     return { entryPrice, wasAdjusted: false, distance: undefined, isRejected: false };
   }
@@ -403,13 +448,32 @@ function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr }) {
     }
     return { entryPrice, wasAdjusted: false, distance, isRejected: true, rejectionReason: "SHORT_ENTRY_UNREALISTIC" };
   }
+  const normalizedRegime = String(marketRegime || "").toUpperCase();
+  const isRangeRegime = normalizedRegime === "RANGE" || normalizedRegime === "RANGING";
+  const isTrendRegime = normalizedRegime === "TREND" || normalizedRegime === "TRENDING";
   if (!Number.isFinite(atrValue) || atrValue <= 0) {
     return { entryPrice, wasAdjusted: false, distance, isRejected: false };
   }
-  if (distance <= atrValue * 0.5) {
+  const distanceThresholdAtr = isTrendRegime ? 0.6 : 0.5;
+  if (distance <= atrValue * distanceThresholdAtr) {
     return { entryPrice, wasAdjusted: false, distance, isRejected: false };
   }
-  return { entryPrice: currentPrice + atrValue * 0.3, wasAdjusted: true, distance, isRejected: false };
+  if (isRangeRegime) {
+    return { entryPrice, wasAdjusted: false, distance, isRejected: true, rejectionReason: "ENTRY_TOO_FAR_IN_RANGE" };
+  }
+  const direction = side === "SHORT" ? -1 : 1;
+  const tightenedByAtr = currentPrice + direction * atrValue * 0.2;
+  const clampPct = isTrendRegime ? DEFAULT_TREND_ENTRY_CLAMP_PCT : DEFAULT_RANGE_ENTRY_CLAMP_PCT;
+  const clampByPct = currentPrice * (1 + direction * clampPct);
+  const adjustedEntry = side === "SHORT"
+    ? Math.max(Math.min(entryPrice, tightenedByAtr), clampByPct)
+    : Math.min(Math.max(entryPrice, tightenedByAtr), clampByPct);
+  return {
+    entryPrice: adjustedEntry,
+    wasAdjusted: adjustedEntry !== entryPrice,
+    distance,
+    isRejected: false,
+  };
 }
 
 function isDecisionContextStale(decision) {
@@ -611,6 +675,7 @@ export function createInitialPaperAccountState() {
     coarsePerformanceMap: {},
     reentryGuards: [],
     orderLifecycleEvents: [],
+    waitingDiagnostics: createDefaultWaitingDiagnostics(),
   };
 }
 
@@ -620,6 +685,43 @@ function appendOrderLifecycleEvent(state, event) {
     ...state,
     orderLifecycleEvents: nextEvents,
   };
+}
+
+function appendWaitingDiagnosticEvent(state, event = {}) {
+  const diagnostics = state?.waitingDiagnostics || createDefaultWaitingDiagnostics();
+  const nextEvent = {
+    id: createId("wait"),
+    timestamp: event.timestamp || nowIso(),
+    ...event,
+  };
+  return {
+    ...state,
+    waitingDiagnostics: {
+      ...diagnostics,
+      recentEvents: [nextEvent, ...(diagnostics.recentEvents || [])].slice(0, 500),
+    },
+  };
+}
+
+function incrementWaitingReason(state, reasonKey, context = {}) {
+  if (!reasonKey || !WAITING_REASON_KEYS.includes(reasonKey)) return state;
+  const diagnostics = state?.waitingDiagnostics || createDefaultWaitingDiagnostics();
+  const nextReasonCounts = {
+    ...createEmptyWaitingReasonCounter(),
+    ...(diagnostics.reasonCounts || {}),
+    [reasonKey]: asSafeNumber(diagnostics?.reasonCounts?.[reasonKey]) + 1,
+  };
+  return appendWaitingDiagnosticEvent({
+    ...state,
+    waitingDiagnostics: {
+      ...diagnostics,
+      reasonCounts: nextReasonCounts,
+    },
+  }, {
+    type: "reason",
+    reasonKey,
+    ...context,
+  });
 }
 
 function buildDecisionRevision(decision, timeframe) {
@@ -887,6 +989,23 @@ function resolveExpiryTimestamp(decision, createdAtIso) {
   return new Date(expiresAtMs).toISOString();
 }
 
+function resolveWaitingReasonKeys({ effectiveEligibility, confirmationResult, blockedByPerformanceFilter, cooldownActive, entryMode, constrainedEntry }) {
+  const keys = [];
+  if (blockedByPerformanceFilter) keys.push("blockedByPerformanceFilter");
+  if (cooldownActive) keys.push("blockedByCooldown");
+  if (!confirmationResult?.confirmationState?.klineConfirmed) keys.push("blockedByKlineConfirmation");
+  if (confirmationResult?.confirmationState?.blockedByRangeFilter) keys.push("blockedByRangeFilter");
+  if (confirmationResult?.confirmationState?.blockedByLocationFilter) keys.push("blockedByLocationFilter");
+  if (entryMode === "pullback") keys.push("waitingForPullback");
+  if (entryMode === "breakout") keys.push("waitingForBreakout");
+  if (constrainedEntry?.isRejected && String(constrainedEntry?.rejectionReason || "").includes("TOO_FAR")) {
+    keys.push("pendingTooFarFromPrice");
+  }
+  if (effectiveEligibility?.reasonCode === "WAITING_CONFIRMATION" && entryMode === "pullback") keys.push("waitingForPullback");
+  if (effectiveEligibility?.reasonCode === "WAITING_CONFIRMATION" && entryMode === "breakout") keys.push("waitingForBreakout");
+  return Array.from(new Set(keys));
+}
+
 function isOrderExpired(order, timestamp) {
   const expiresAtMs = new Date(order?.expiresAt || "").getTime();
   const nowMs = new Date(timestamp).getTime();
@@ -904,11 +1023,13 @@ function isOrderPriceDrifted(order, tickPrice) {
 function maybeFillPendingOrders(state, {
   tickPrice, candleClose, rsi, macd, ma20, candleTime, symbol, timestamp = nowIso(), triggeredBy = "MARKET_TICK",
 }) {
+  const normalizedCandleTime = normalizeBarTime(candleTime);
   let nextState = {
     ...state,
     pendingOrders: [...state.pendingOrders],
     cancelledOrders: [...(state.cancelledOrders || [])],
     openPositions: [...state.openPositions],
+    waitingDiagnostics: state?.waitingDiagnostics || createDefaultWaitingDiagnostics(),
   };
   console.debug("[paper-trading] pending orders check", {
     pendingOrdersCount: (nextState.pendingOrders || []).filter((order) => order.status === "PENDING").length,
@@ -919,16 +1040,60 @@ function maybeFillPendingOrders(state, {
   nextState.pendingOrders = nextState.pendingOrders.map((order) => {
     if (order.status !== "PENDING") return order;
     if (symbol && order.symbol !== symbol) return order;
+    const nextWaitBars = Number.isFinite(normalizedCandleTime)
+      ? calculateBarsDelta(order.createdCandleTime ?? order.placementSnapshot?.createdCandleTime, normalizedCandleTime)
+      : asSafeNumber(order.waitedBars);
+    const distancePct = Number.isFinite(tickPrice) && Number.isFinite(order.triggerPrice) && tickPrice !== 0
+      ? (Math.abs(order.triggerPrice - tickPrice) / Math.abs(tickPrice)) * 100
+      : null;
+    const observedOrder = {
+      ...order,
+      waitedBars: nextWaitBars,
+      distanceFromPricePct: distancePct,
+      canceledByPriceDrift: false,
+    };
+    if (
+      order.entryMode === "pullback" &&
+      Number.isFinite(nextWaitBars) &&
+      nextWaitBars >= asSafeNumber(order.maxWaitBars, DEFAULT_PULLBACK_MAX_WAIT_BARS)
+    ) {
+      nextState = incrementWaitingReason(nextState, "waitingForPullback", {
+        symbol: order.symbol,
+        orderId: order.id,
+        waitedBars: nextWaitBars,
+      });
+      const refreshedEntry = Number.isFinite(tickPrice)
+        ? (order.side === "SHORT" ? tickPrice * 1.001 : tickPrice * 0.999)
+        : order.triggerPrice;
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "PENDING_TIMEOUT_REEVALUATED", timestamp, {
+        triggeredBy,
+        waitedBars: nextWaitBars,
+        distancePct,
+      }));
+      nextState = appendOrderLifecycleEvent(nextState, {
+        symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PENDING_TIMEOUT_REEVALUATED", triggeredBy, timestamp,
+      });
+      return {
+        ...order,
+        status: "CANCELLED",
+        canceledByPriceDrift: false,
+        refreshSuggestion: refreshedEntry,
+      };
+    }
     if (isOrderExpired(order, timestamp)) {
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "EXPIRED", timestamp, { triggeredBy }));
       nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "EXPIRED", triggeredBy, timestamp });
       return { ...order, status: "CANCELLED" };
     }
     if (isOrderPriceDrifted(order, tickPrice)) {
+      nextState = incrementWaitingReason(nextState, "canceledByPriceDrift", {
+        symbol: order.symbol,
+        orderId: order.id,
+      });
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "PRICE_DRIFTED", timestamp, { triggeredBy }));
       nextState = registerReentryGuard(nextState, order, "PRICE_DRIFTED", timestamp, order?.decisionSnapshot, candleTime);
       nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PRICE_DRIFTED", triggeredBy, timestamp });
-      return { ...order, status: "CANCELLED" };
+      return { ...order, status: "CANCELLED", canceledByPriceDrift: true };
     }
     if (isPreEntryInvalidated(order, tickPrice)) {
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp, { triggeredBy }));
@@ -946,7 +1111,7 @@ function maybeFillPendingOrders(state, {
       shouldFill: fillEvaluation.shouldFill,
       fillReason: fillEvaluation.reason,
     });
-    if (!fillEvaluation.shouldFill) return order;
+    if (!fillEvaluation.shouldFill) return observedOrder;
 
     const confirmation = runConfirmationEngine(
       buildConfirmationPayload(order.decisionSnapshot, tickPrice, {
@@ -960,8 +1125,14 @@ function maybeFillPendingOrders(state, {
       })
     );
     if (!confirmation.canExecute) {
+      const waitingReasonKey = order.entryMode === "pullback" ? "waitingForPullback" : "waitingForBreakout";
+      nextState = incrementWaitingReason(nextState, waitingReasonKey, {
+        symbol: order.symbol,
+        orderId: order.id,
+        waitedBars: nextWaitBars,
+      });
       return {
-        ...order,
+        ...observedOrder,
         lastConfirmation: confirmation,
         waitReason: "等待 confirmation-engine 條件成立",
       };
@@ -1003,6 +1174,8 @@ function maybeFillPendingOrders(state, {
       decisionContextKey: order.decisionContextKey,
       hitTargets: [],
       createdAt: order.createdAt || timestamp,
+      signalToPlaceBars: order.signalToPlaceBars ?? null,
+      placeToFillBars: nextWaitBars,
       ...resolveTradeMetadata({
         decision: order.decisionSnapshot,
         confirmationResult: confirmation,
@@ -1016,6 +1189,20 @@ function maybeFillPendingOrders(state, {
       }),
     };
     nextState.openPositions.push(position);
+    const diagnostics = nextState?.waitingDiagnostics || createDefaultWaitingDiagnostics();
+    nextState.waitingDiagnostics = {
+      ...diagnostics,
+      placeToFillBars: [nextWaitBars, ...(diagnostics.placeToFillBars || [])]
+        .filter((value) => Number.isFinite(value))
+        .slice(0, 500),
+      symbolWaitBars: {
+        ...(diagnostics.symbolWaitBars || {}),
+        [order.symbol]: [
+          nextWaitBars,
+          ...((diagnostics.symbolWaitBars || {})[order.symbol] || []),
+        ].filter((value) => Number.isFinite(value)).slice(0, 300),
+      },
+    };
     nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "FILLED", reason: fillEvaluation.reason, triggeredBy, timestamp });
     console.info("[paper-trading] pending order executed", {
       orderId: order.id,
@@ -1026,7 +1213,7 @@ function maybeFillPendingOrders(state, {
       fillReason: fillEvaluation.reason,
       executedAt: timestamp,
     });
-    return { ...order, status: "FILLED", filledAt: timestamp };
+    return { ...observedOrder, status: "FILLED", filledAt: timestamp };
   });
 
   nextState.pendingOrders = nextState.pendingOrders.filter((order) => order.status === "PENDING");
@@ -1091,6 +1278,7 @@ export function simulateDecisionExecution({
   triggeredBy = "DECISION_ENGINE",
 }) {
   const basePerformanceDebug = buildPerformanceDebugState();
+  const decisionBarTime = normalizeBarTime(signalContext?.candleTime);
   if (!state) {
     return { state, result: "NO_DECISION", ...basePerformanceDebug };
   }
@@ -1146,6 +1334,16 @@ export function simulateDecisionExecution({
     };
   }
 
+  if (confirmationResult?.confirmationState?.blockedByRangeFilter) {
+    state = incrementWaitingReason(state, "blockedByRangeFilter", { symbol, timeframe });
+  }
+  if (confirmationResult?.confirmationState?.blockedByLocationFilter) {
+    state = incrementWaitingReason(state, "blockedByLocationFilter", { symbol, timeframe });
+  }
+  if (!confirmationResult?.confirmationState?.klineConfirmed) {
+    state = incrementWaitingReason(state, "blockedByKlineConfirmation", { symbol, timeframe });
+  }
+
   if (effectiveEligibility.eligibility === "BLOCKED" && !bypassSetupGate) {
     return { state, result: effectiveEligibility.reasonCode, eligibilityInfo: effectiveEligibility, ...basePerformanceDebug };
   }
@@ -1192,8 +1390,10 @@ export function simulateDecisionExecution({
   });
 
   if (blockedByPerformanceFilter && !bypassSetupGate) {
+    let nextStateWithDiag = state;
+    nextStateWithDiag = incrementWaitingReason(nextStateWithDiag, "blockedByPerformanceFilter", { symbol, timeframe });
     return {
-      state,
+      state: nextStateWithDiag,
       result: "BLOCKED_BY_PERFORMANCE_FILTER",
       executionIntent: "WATCH_ONLY",
       confirmationResult: {
@@ -1213,8 +1413,9 @@ export function simulateDecisionExecution({
   }
   const cooldownState = getCooldownStateForSide(state, side, symbol);
   if (cooldownState.cooldownActive) {
+    const nextStateWithDiag = incrementWaitingReason(state, "blockedByCooldown", { symbol, timeframe, side });
     return {
-      state,
+      state: nextStateWithDiag,
       result: "DIRECTIONAL_COOLDOWN_ACTIVE",
       executionIntent: "WATCH_ONLY",
       confirmationResult: {
@@ -1239,7 +1440,11 @@ export function simulateDecisionExecution({
     entryPrice: bypassSetupGate ? fallbackEntryPrice : plannedEntry.entryPrice,
     currentPrice: normalizeNumber(currentPrice),
     atr: decision?.executionPlan?.atr ?? decision?.atr,
+    marketRegime: decision?.marketRegimeLabel || decision?.regime || signalContext?.marketRegime,
   });
+  if (constrainedEntry.isRejected && String(constrainedEntry.rejectionReason || "").includes("TOO_FAR")) {
+    state = incrementWaitingReason(state, "pendingTooFarFromPrice", { symbol, timeframe, side });
+  }
   const triggerPrice = normalizeNumber(constrainedEntry.entryPrice ?? fallbackEntryPrice);
   if (constrainedEntry.isRejected) {
     if (bypassSetupGate) {
@@ -1320,6 +1525,14 @@ export function simulateDecisionExecution({
     status: "PENDING",
     expiresAt: resolveExpiryTimestamp(decision, nowIso()),
     waitReason: effectiveEligibility.reason,
+    waitingReasons: resolveWaitingReasonKeys({
+      effectiveEligibility,
+      confirmationResult,
+      blockedByPerformanceFilter: false,
+      cooldownActive: cooldownState.cooldownActive,
+      entryMode: plannedEntry.mode,
+      constrainedEntry,
+    }),
     entryReason: decision.entryReason || null,
     entryMode: plannedEntry.mode,
     entryAdjusted: constrainedEntry.wasAdjusted,
@@ -1341,7 +1554,14 @@ export function simulateDecisionExecution({
       mtf: signalContext?.mtf ?? decision?.mtf ?? null,
       decisionAction: decision?.action ?? decision?.executionPlan?.action ?? null,
       setupType: decision?.setupType ?? decision?.executionPlan?.setupType ?? null,
+      createdCandleTime: decisionBarTime,
     },
+    createdCandleTime: decisionBarTime,
+    maxWaitBars: plannedEntry.mode === "pullback" ? DEFAULT_PULLBACK_MAX_WAIT_BARS : DEFAULT_PENDING_TIMEOUT_BARS,
+    waitedBars: 0,
+    distanceFromPricePct: Number.isFinite(Number(currentPrice)) && Number.isFinite(triggerPrice) && Number(currentPrice) !== 0
+      ? (Math.abs(triggerPrice - Number(currentPrice)) / Math.abs(Number(currentPrice))) * 100
+      : null,
     decisionSnapshot: decision,
     decisionContextKey: contextKey,
     ...tradeMetadata,
@@ -1501,6 +1721,27 @@ export function simulateDecisionExecution({
   }
 
   const pendingCreation = createPendingOrder({ baseState: state, order: pendingOrder });
+  const signalToPlaceBars = calculateBarsDelta(
+    (state?.waitingDiagnostics?.firstValidSignalByContext || {})[contextKey],
+    decisionBarTime
+  );
+  if (Number.isFinite(decisionBarTime)) {
+    pendingCreation.nextState = {
+      ...pendingCreation.nextState,
+      waitingDiagnostics: {
+        ...(pendingCreation.nextState.waitingDiagnostics || createDefaultWaitingDiagnostics()),
+        firstValidSignalByContext: {
+          ...((pendingCreation.nextState.waitingDiagnostics || createDefaultWaitingDiagnostics()).firstValidSignalByContext || {}),
+          [contextKey]: decisionBarTime,
+        },
+        signalToPlaceBars: [
+          signalToPlaceBars ?? 0,
+          ...(((pendingCreation.nextState.waitingDiagnostics || createDefaultWaitingDiagnostics()).signalToPlaceBars) || []),
+        ].filter((value) => Number.isFinite(value)).slice(0, 500),
+      },
+    };
+    pendingOrder.signalToPlaceBars = signalToPlaceBars ?? 0;
+  }
   const stateWithLifecycle = appendOrderLifecycleEvent(pendingCreation.nextState, {
     symbol,
     orderId: pendingOrder.id,
@@ -1551,6 +1792,9 @@ export function reconcilePendingOrdersWithDecision({
 
     let cancelReason = null;
     const referenceAtr = normalizeNumber(order?.placementSnapshot?.atr ?? decisionAtr);
+    const waitedBars = Number.isFinite(Number(candleTime))
+      ? calculateBarsDelta(order.createdCandleTime ?? order?.placementSnapshot?.createdCandleTime, candleTime)
+      : asSafeNumber(order.waitedBars);
 
     if (isOrderExpired(order, timestamp)) {
       cancelReason = "EXPIRED";
@@ -1563,12 +1807,15 @@ export function reconcilePendingOrdersWithDecision({
       if (movedDistance > referenceAtr * DEFAULT_PENDING_DRIFT_ATR_RATIO) {
         cancelReason = "STRUCTURE_CHANGED";
       }
+    } else if (Number.isFinite(waitedBars) && waitedBars >= asSafeNumber(order.maxWaitBars, DEFAULT_PENDING_TIMEOUT_BARS)) {
+      cancelReason = "PENDING_TIMEOUT_REEVALUATED";
     }
 
     if (cancelReason) {
       cancelledOrders.unshift(cancelPendingOrder(order, cancelReason, timestamp, { triggeredBy }));
       if (cancelReason === "PRICE_DRIFTED") {
         state = registerReentryGuard(state, order, cancelReason, timestamp, decision, candleTime);
+        state = incrementWaitingReason(state, "canceledByPriceDrift", { symbol: order.symbol, orderId: order.id });
       }
       state = appendOrderLifecycleEvent(state, {
         symbol: order.symbol,
