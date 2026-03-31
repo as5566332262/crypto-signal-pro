@@ -1,5 +1,8 @@
 import { evaluateDecisionScore } from "@/lib/decision/scoring-engine";
 
+const FALLBACK_WAIT_BARS = 4;
+const MISSED_MOVE_ATR_RATIO = 1.2;
+
 function normalizeNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -110,6 +113,75 @@ function resolveRiskRewardAcceptable(aiDecisionOutput = {}) {
   return rr >= 1.4;
 }
 
+function resolveZoneWaitBars(indicators = {}, aiDecisionOutput = {}) {
+  const direct = normalizeNumber(
+    indicators?.zoneWaitBars ??
+      indicators?.barsInZoneWithoutConfirmation ??
+      aiDecisionOutput?.executionPlan?.zoneWaitBars ??
+      aiDecisionOutput?.zoneWaitBars
+  );
+  if (!Number.isFinite(direct)) return 0;
+  return Math.max(0, Math.floor(direct));
+}
+
+function resolveDistanceFromEntryZone({
+  currentPrice,
+  structure = {},
+  aiDecisionOutput = {},
+}) {
+  const price = normalizeNumber(currentPrice);
+  const zoneLow = normalizeNumber(
+    structure?.zoneLow ?? aiDecisionOutput?.executionPlan?.entryLow ?? aiDecisionOutput?.entryLow ?? structure?.supportLow
+  );
+  const zoneHigh = normalizeNumber(
+    structure?.zoneHigh ?? aiDecisionOutput?.executionPlan?.entryHigh ?? aiDecisionOutput?.entryHigh ?? structure?.resistanceHigh
+  );
+  if (!Number.isFinite(price) || !Number.isFinite(zoneLow) || !Number.isFinite(zoneHigh)) return null;
+  const low = Math.min(zoneLow, zoneHigh);
+  const high = Math.max(zoneLow, zoneHigh);
+  if (price >= low && price <= high) return 0;
+  if (price < low) return low - price;
+  return price - high;
+}
+
+function resolveMissedMoveSignals({ side, indicators = {}, structure = {} }) {
+  const rsi = normalizeNumber(indicators?.rsi);
+  const currentVolume = normalizeNumber(indicators?.volume?.current ?? indicators?.currentVolume);
+  const avgVolume = normalizeNumber(indicators?.volume?.avg20 ?? indicators?.avgVolume20);
+  const macdHistogram = normalizeNumber(indicators?.macd?.histogram ?? indicators?.macdHistogram);
+  const prevMacdHistogram = normalizeNumber(indicators?.macd?.prevHistogram ?? indicators?.prevMacdHistogram);
+  const reversalTag = String(
+    indicators?.reversalStructure ??
+      structure?.reversalStructure ??
+      structure?.microStructure ??
+      structure?.reversalPattern ??
+      ""
+  ).toLowerCase();
+
+  const rsiExtreme = Number.isFinite(rsi)
+    ? side === "SHORT"
+      ? rsi >= 65
+      : rsi <= 35
+    : false;
+  const momentumFading = Number.isFinite(macdHistogram) && Number.isFinite(prevMacdHistogram)
+    ? Math.abs(macdHistogram) < Math.abs(prevMacdHistogram) * 0.75
+    : Boolean(indicators?.momentumFading);
+  const volumeDeclining =
+    Number.isFinite(currentVolume) && Number.isFinite(avgVolume) && avgVolume > 0
+      ? currentVolume <= avgVolume * 0.85
+      : Boolean(indicators?.volumeDeclining);
+  const reversalStructure = reversalTag.includes("lower_high") || reversalTag.includes("higher_low") || Boolean(indicators?.reversalStructure);
+
+  const signals = {
+    rsiExtreme,
+    momentumFading,
+    volumeDeclining,
+    reversalStructure,
+  };
+  const signalCount = Object.values(signals).filter(Boolean).length;
+  return { signals, signalCount };
+}
+
 export function runConfirmationEngine({
   aiDecisionOutput,
   currentPrice,
@@ -129,6 +201,33 @@ export function runConfirmationEngine({
 
   const breakoutConfirmed = resolveBreakoutConfirmed(aiDecisionOutput, currentPrice, indicators);
   const riskRewardAcceptable = resolveRiskRewardAcceptable(aiDecisionOutput);
+  const zoneWaitBars = resolveZoneWaitBars(indicators, aiDecisionOutput);
+  const missedMove = resolveMissedMoveSignals({ side, indicators, structure });
+  const atr = normalizeNumber(indicators?.atr ?? aiDecisionOutput?.executionPlan?.atr ?? aiDecisionOutput?.atr);
+  const zoneDistance = resolveDistanceFromEntryZone({ currentPrice, structure, aiDecisionOutput });
+  const missedMoveDistanceReached =
+    Number.isFinite(zoneDistance) &&
+    Number.isFinite(atr) &&
+    atr > 0 &&
+    zoneDistance >= atr * MISSED_MOVE_ATR_RATIO;
+  const hardConditions = {
+    hasActionableSide: Boolean(side),
+    mtfAligned: confirmationState.mtfAligned,
+    riskRewardAcceptable,
+    momentumConfirmed: confirmationState.momentumConfirmed,
+    priceInZone: confirmationState.priceInZone,
+    zoneWaitReached: zoneWaitBars >= FALLBACK_WAIT_BARS,
+    missedMoveDistanceReached,
+  };
+
+  const softConditions = {
+    klineConfirmed: confirmationState.klineConfirmed,
+    volumeConfirmed: confirmationState.volumeConfirmed,
+    breakoutConfirmed,
+    zoneWaitBars,
+    missedMoveSignals: missedMove.signals,
+    missedMoveSignalCount: missedMove.signalCount,
+  };
 
   const scoring = evaluateDecisionScore({
     aiDecisionOutput,
@@ -136,6 +235,8 @@ export function runConfirmationEngine({
     confirmationState: {
       ...confirmationState,
       breakoutConfirmed,
+      zoneWaitBars,
+      missedMoveSignalCount: missedMove.signalCount,
     },
     indicators,
     structure,
@@ -144,11 +245,48 @@ export function runConfirmationEngine({
     fallbackDecisionType: baselineDecisionType,
   });
 
-  const decisionType = scoring?.decisionType || baselineDecisionType;
+  const primaryEntryReady =
+    hardConditions.hasActionableSide &&
+    hardConditions.mtfAligned &&
+    hardConditions.momentumConfirmed &&
+    hardConditions.priceInZone &&
+    softConditions.klineConfirmed &&
+    softConditions.volumeConfirmed &&
+    hardConditions.riskRewardAcceptable;
+  const fallbackEntryReady =
+    hardConditions.hasActionableSide &&
+    hardConditions.mtfAligned &&
+    hardConditions.priceInZone &&
+    hardConditions.zoneWaitReached &&
+    hardConditions.riskRewardAcceptable &&
+    (softConditions.klineConfirmed || softConditions.volumeConfirmed || softConditions.breakoutConfirmed);
+  const missedMoveEntryReady =
+    hardConditions.hasActionableSide &&
+    hardConditions.mtfAligned &&
+    hardConditions.missedMoveDistanceReached &&
+    hardConditions.riskRewardAcceptable &&
+    softConditions.missedMoveSignalCount >= 2;
+
+  let decisionType = scoring?.decisionType || baselineDecisionType;
+  if (primaryEntryReady) {
+    decisionType = "IMMEDIATE_ENTRY";
+  } else if (fallbackEntryReady) {
+    decisionType = "FALLBACK_ENTRY";
+  } else if (missedMoveEntryReady) {
+    decisionType = "MISSED_MOVE_ENTRY";
+  }
 
   let canExecute = false;
   if (decisionType === "IMMEDIATE_ENTRY") {
-    canExecute = confirmationState.mtfAligned && confirmationState.momentumConfirmed;
+    canExecute = primaryEntryReady;
+  } else if (decisionType === "FALLBACK_ENTRY") {
+    canExecute =
+      fallbackEntryReady &&
+      scoring.totalScore >= 52;
+  } else if (decisionType === "MISSED_MOVE_ENTRY") {
+    canExecute =
+      missedMoveEntryReady &&
+      scoring.totalScore >= 50;
   } else if (decisionType === "OPPORTUNITY_ENTRY") {
     const relaxedOpportunitySignal =
       confirmationState.priceInZone || confirmationState.klineConfirmed || breakoutConfirmed;
@@ -191,6 +329,9 @@ export function runConfirmationEngine({
       ...confirmationState,
       breakoutConfirmed,
       riskRewardAcceptable,
+      zoneWaitBars,
+      hardConditions,
+      softConditions,
     },
     canExecute,
     side,
@@ -199,19 +340,15 @@ export function runConfirmationEngine({
 
 export function mapDecisionTypeToExecutionIntent(decisionType, confirmationResult = null) {
   if (decisionType === "IMMEDIATE_ENTRY") return "EXECUTE_NOW";
-if (decisionType === "IMMEDIATE_ENTRY") return "EXECUTE_NOW";
-
-if (decisionType === "STANDARD_ENTRY") return "PLACE_PENDING";
-
-if (decisionType === "OPPORTUNITY_ENTRY")
-  return confirmationResult?.canExecute ? "EXECUTE_NOW" : "PLACE_PENDING";
-
-if (decisionType === "WAIT_PULLBACK" || decisionType === "WAIT_BREAKOUT")
-  return "PLACE_PENDING";
-
-if (decisionType === "CONFIRMATION_REQUIRED")
-  return "WATCH_AND_ARM";
-
-return "WATCH_ONLY";
+  if (decisionType === "FALLBACK_ENTRY" || decisionType === "MISSED_MOVE_ENTRY") {
+    return confirmationResult?.canExecute ? "EXECUTE_NOW" : "PLACE_PENDING";
+  }
+  if (decisionType === "STANDARD_ENTRY") return "PLACE_PENDING";
+  if (decisionType === "OPPORTUNITY_ENTRY")
+    return confirmationResult?.canExecute ? "EXECUTE_NOW" : "PLACE_PENDING";
+  if (decisionType === "WAIT_PULLBACK" || decisionType === "WAIT_BREAKOUT")
+    return "PLACE_PENDING";
+  if (decisionType === "CONFIRMATION_REQUIRED")
+    return "WATCH_AND_ARM";
   return "WATCH_ONLY";
 }

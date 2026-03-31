@@ -2533,7 +2533,8 @@ const pendingType =
       ? "BREAKOUT_ENTRY"
       : confirmationDecisionType || entryTiming || null;
 
-const isOpportunityEntry = pendingType === "OPPORTUNITY_ENTRY";
+const isOpportunityEntry = pendingType === "OPPORTUNITY_ENTRY" || pendingType === "FALLBACK_ENTRY";
+const isMissedMoveEntry = pendingType === "MISSED_MOVE_ENTRY";
 const scoringResult = result.confirmationResult?.scoring || null;
       console.debug("[simulation:service-result]", {
         ...manualExecutionMeta,
@@ -2570,13 +2571,17 @@ const scoringResult = result.confirmationResult?.scoring || null;
           status: "EXECUTED",
           statusLabel: simulatedNonRecommended
             ? "模擬掛單（非建議）"
-            : isOpportunityEntry
-              ? "可嘗試進場（低信心）"
+            : isMissedMoveEntry
+              ? "錯過行情進場（反彈 / 回檔）"
+              : isOpportunityEntry
+                ? "次優進場（低信心）"
               : "已立即模擬進場",
           reason: simulatedNonRecommended
             ? "已覆寫 AI NO TRADE 並建立模擬持倉"
-            : isOpportunityEntry
-              ? "非最佳 setup，已以小倉位嘗試進場"
+            : isMissedMoveEntry
+              ? "價格已脫離原區間，偵測到反轉 / 回檔訊號，已以更小倉位進場"
+              : isOpportunityEntry
+                ? "價格在區間停留過久仍未完美確認，已以小倉位嘗試進場"
               : "觸發條件已成立，系統已建立持倉",
           unmetConditions: [],
           distances: [],
@@ -2588,13 +2593,17 @@ const scoringResult = result.confirmationResult?.scoring || null;
           status: "PENDING",
           statusLabel: simulatedNonRecommended
             ? "模擬掛單（非建議）"
-            : isOpportunityEntry
-              ? "可嘗試進場（低信心）"
+            : isMissedMoveEntry
+              ? "錯過行情進場（反彈 / 回檔）"
+              : isOpportunityEntry
+                ? "次優進場（低信心）"
               : "已建立條件掛單",
           reason: simulatedNonRecommended
             ? "已建立模擬掛單（非建議）"
-            : isOpportunityEntry
-              ? "非最佳 setup，建議小倉位並放寬條件掛單"
+            : isMissedMoveEntry
+              ? "價格已遠離原進場區，改以反轉/回檔訊號掛單，並降低倉位"
+              : isOpportunityEntry
+                ? "在進場區久候未出現完整確認，已放寬條件並降低倉位掛單"
               : "已建立條件掛單，等待條件成立後進場",
           pendingOrder: result.pendingOrder,
           unmetConditions: [],
