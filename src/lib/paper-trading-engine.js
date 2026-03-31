@@ -69,12 +69,101 @@ function resolvePendingType(decisionType, decision) {
   return decisionType || "UNKNOWN";
 }
 
-function resolveTradeMetadata({ decision, confirmationResult, signalContext = {} }) {
+function resolveRsiZone(rsiValue) {
+  const rsi = normalizeNumber(rsiValue);
+  if (!Number.isFinite(rsi)) return "NEUTRAL";
+  if (rsi >= 60) return "RSI_HIGH";
+  if (rsi <= 40) return "RSI_LOW";
+  return "NEUTRAL";
+}
+
+function resolveNearLevelFlag(price, low, high) {
+  const referencePrice = normalizeNumber(price);
+  const lowValue = normalizeNumber(low);
+  const highValue = normalizeNumber(high);
+  if (!Number.isFinite(referencePrice) || (!Number.isFinite(lowValue) && !Number.isFinite(highValue))) return false;
+  const nearestDistance = Number.isFinite(lowValue) && Number.isFinite(highValue)
+    ? Math.min(Math.abs(referencePrice - lowValue), Math.abs(referencePrice - highValue))
+    : Number.isFinite(lowValue)
+      ? Math.abs(referencePrice - lowValue)
+      : Math.abs(referencePrice - highValue);
+  const tolerance = Math.abs(referencePrice) * 0.005;
+  return nearestDistance <= Math.max(tolerance, 1e-8);
+}
+
+function buildSetupContext({ decision, confirmationResult, signalContext = {}, side }) {
   const decisionType = resolveDecisionType(decision, confirmationResult);
   const scoring = confirmationResult?.scoring || decision?.scoring || {};
+  const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice ?? signalContext?.candleClose);
+  const structure = signalContext?.structure ?? decision?.structure ?? decision?.executionPlan?.structure ?? {};
   return {
+    marketRegime: decision?.marketRegimeLabel || decision?.regime || signalContext?.marketRegime || "UNKNOWN",
+    direction: side || resolveSideFromDecision(decision) || "UNKNOWN",
     decisionType,
     pendingType: resolvePendingType(decisionType, decision),
+    hasKlineConfirmation: Boolean(signalContext?.hasKlineConfirmation ?? signalContext?.klineConfirmed),
+    rsiZone: resolveRsiZone(signalContext?.rsi ?? decision?.rsi),
+    isNearSupport: resolveNearLevelFlag(triggerPrice, structure?.supportLow, structure?.supportHigh),
+    isNearResistance: resolveNearLevelFlag(triggerPrice, structure?.resistanceLow, structure?.resistanceHigh),
+    scoreGrade: scoring?.scoreGrade || null,
+    confidenceLevel: scoring?.confidenceLevel || null,
+  };
+}
+
+function buildSetupKey(setupContext = {}) {
+  const safe = (value) => String(value == null ? "UNKNOWN" : value).toUpperCase();
+  return [
+    safe(setupContext.marketRegime),
+    safe(setupContext.direction),
+    safe(setupContext.decisionType),
+    safe(setupContext.pendingType),
+    safe(setupContext.hasKlineConfirmation ? "KLINE_TRUE" : "KLINE_FALSE"),
+    safe(setupContext.rsiZone),
+    safe(setupContext.isNearSupport ? "NEAR_SUPPORT_TRUE" : "NEAR_SUPPORT_FALSE"),
+    safe(setupContext.isNearResistance ? "NEAR_RESISTANCE_TRUE" : "NEAR_RESISTANCE_FALSE"),
+    safe(setupContext.scoreGrade),
+    safe(setupContext.confidenceLevel),
+  ].join("|");
+}
+
+function buildPerformanceMap(closedTrades = []) {
+  const map = {};
+  for (const trade of closedTrades) {
+    const setupContext = trade?.setupContext || {};
+    const setupKey = trade?.setupKey || buildSetupKey(setupContext);
+    if (!map[setupKey]) {
+      map[setupKey] = {
+        setupContext,
+        totalTrades: 0,
+        wins: 0,
+        losses: 0,
+        winRate: 0,
+        avgPnl: 0,
+        totalPnl: 0,
+      };
+    }
+    const pnl = asSafeNumber(trade?.realizedPnl);
+    map[setupKey].totalTrades += 1;
+    if (pnl > 0) map[setupKey].wins += 1;
+    else map[setupKey].losses += 1;
+    map[setupKey].totalPnl += pnl;
+  }
+  Object.values(map).forEach((item) => {
+    item.winRate = item.totalTrades ? (item.wins / item.totalTrades) * 100 : 0;
+    item.avgPnl = item.totalTrades ? item.totalPnl / item.totalTrades : 0;
+  });
+  return map;
+}
+
+function resolveTradeMetadata({ decision, confirmationResult, signalContext = {}, side }) {
+  const setupContext = buildSetupContext({ decision, confirmationResult, signalContext, side });
+  const setupKey = buildSetupKey(setupContext);
+  const scoring = confirmationResult?.scoring || decision?.scoring || {};
+  return {
+    decisionType: setupContext.decisionType,
+    pendingType: setupContext.pendingType,
+    setupContext,
+    setupKey,
     scoreGrade: scoring?.scoreGrade || null,
     totalScore: normalizeNumber(scoring?.totalScore),
     regime: decision?.marketRegimeLabel || decision?.regime || null,
@@ -424,6 +513,7 @@ export function createInitialPaperAccountState() {
       mode: "fixed_quantity",
       quantity: DEFAULT_POSITION_SIZE,
     },
+    performanceMap: {},
   };
 }
 
@@ -496,6 +586,8 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
     exitReasonDetail: closeReason,
     maxFavorableExcursion: position.maxFavorableExcursion ?? 0,
     maxAdverseExcursion: position.maxAdverseExcursion ?? 0,
+    setupContext: position.setupContext || null,
+    setupKey: position.setupKey || null,
   };
 
   const nextOpen = state.openPositions.filter((item) => item.id !== positionId);
@@ -528,6 +620,7 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
     longCooldownBars: triggerLongCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(state.longCooldownBars),
     shortCooldownBars: triggerShortCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(state.shortCooldownBars),
     lastTradeDirection: position.side || null,
+    performanceMap: buildPerformanceMap([closedTrade, ...state.closedTrades]),
   });
 }
 
@@ -708,6 +801,13 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
       ...resolveTradeMetadata({
         decision: order.decisionSnapshot,
         confirmationResult: confirmation,
+        signalContext: {
+          ...order?.placementSnapshot,
+          rsi,
+          hasKlineConfirmation: true,
+          klineConfirmed: true,
+        },
+        side: order.side,
       }),
     };
     nextState.openPositions.push(position);
@@ -803,7 +903,6 @@ export function simulateDecisionExecution({
       : { state, result: "NO_DECISION" };
   }
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
-  const tradeMetadata = resolveTradeMetadata({ decision, confirmationResult, signalContext });
   const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
   console.debug("[paper-engine:simulateDecisionExecution:before-validator]", {
     symbol,
@@ -845,6 +944,44 @@ export function simulateDecisionExecution({
   if (!side) {
     return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility };
   }
+  const tradeMetadata = resolveTradeMetadata({ decision, confirmationResult, signalContext, side });
+  const performanceMap = buildPerformanceMap(state?.closedTrades || []);
+  const currentSetupKey = tradeMetadata.setupKey;
+  const currentSetupStats = performanceMap[currentSetupKey] || {
+    totalTrades: 0,
+    wins: 0,
+    losses: 0,
+    winRate: 0,
+    avgPnl: 0,
+    totalPnl: 0,
+  };
+  const blockedByPerformanceFilter =
+    currentSetupStats.totalTrades >= 10 &&
+    currentSetupStats.winRate < 40 &&
+    currentSetupStats.avgPnl < 0;
+  if (blockedByPerformanceFilter && !bypassSetupGate) {
+    return {
+      state,
+      result: "BLOCKED_BY_PERFORMANCE_FILTER",
+      executionIntent: "WATCH_ONLY",
+      confirmationResult: {
+        ...confirmationResult,
+        canExecute: false,
+        decisionType: "NO_TRADE",
+      },
+      currentSetupKey,
+      currentSetupWinRate: currentSetupStats.winRate,
+      currentSetupSampleSize: currentSetupStats.totalTrades,
+      blockedByPerformanceFilter: true,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        eligibility: "WATCH_ONLY",
+        reasonCode: "BLOCKED_BY_PERFORMANCE_FILTER",
+        reason: `setup 歷史表現不足（樣本 ${currentSetupStats.totalTrades}，勝率 ${currentSetupStats.winRate.toFixed(1)}%，avgPnl ${currentSetupStats.avgPnl.toFixed(2)}）`,
+        executionIntent: "WATCH_ONLY",
+      },
+    };
+  }
   const cooldownState = getCooldownStateForSide(state, side);
   if (cooldownState.cooldownActive) {
     return {
@@ -863,6 +1000,10 @@ export function simulateDecisionExecution({
         reason: `${side} directional cooldown active (${cooldownState.cooldownBarsLeft} bars left)`,
       },
       cooldownDebug: cooldownState,
+      currentSetupKey,
+      currentSetupWinRate: currentSetupStats.winRate,
+      currentSetupSampleSize: currentSetupStats.totalTrades,
+      blockedByPerformanceFilter: false,
     };
   }
   const plannedEntry = resolvePlannedEntryPrice(decision, side);
@@ -997,6 +1138,10 @@ export function simulateDecisionExecution({
       result: "WATCH_ONLY",
       executionIntent,
       confirmationResult,
+      currentSetupKey,
+      currentSetupWinRate: currentSetupStats.winRate,
+      currentSetupSampleSize: currentSetupStats.totalTrades,
+      blockedByPerformanceFilter: false,
       eligibilityInfo: {
         ...effectiveEligibility,
         executionIntent,
@@ -1011,6 +1156,10 @@ export function simulateDecisionExecution({
       result: "WATCH_AND_ARM",
       executionIntent,
       confirmationResult,
+      currentSetupKey,
+      currentSetupWinRate: currentSetupStats.winRate,
+      currentSetupSampleSize: currentSetupStats.totalTrades,
+      blockedByPerformanceFilter: false,
       eligibilityInfo: {
         ...effectiveEligibility,
         executionIntent,
@@ -1065,6 +1214,10 @@ export function simulateDecisionExecution({
       result: "EXECUTED_IMMEDIATELY",
       executionIntent: "EXECUTE_NOW",
       confirmationResult,
+      currentSetupKey,
+      currentSetupWinRate: currentSetupStats.winRate,
+      currentSetupSampleSize: currentSetupStats.totalTrades,
+      blockedByPerformanceFilter: false,
       position,
       eligibilityInfo: effectiveEligibility,
     };
@@ -1077,6 +1230,10 @@ export function simulateDecisionExecution({
     result: "PENDING_CREATED",
     executionIntent: "PLACE_PENDING",
     confirmationResult,
+    currentSetupKey,
+    currentSetupWinRate: currentSetupStats.winRate,
+    currentSetupSampleSize: currentSetupStats.totalTrades,
+    blockedByPerformanceFilter: false,
     pendingOrder,
     pendingCreation,
     eligibilityInfo: effectiveEligibility,
@@ -1242,4 +1399,10 @@ export const paperTradingConstants = {
   DEFAULT_BALANCE,
   DEFAULT_POSITION_SIZE,
   DEFAULT_LEVERAGE,
+};
+
+export const paperTradingAnalytics = {
+  buildSetupContext,
+  buildSetupKey,
+  buildPerformanceMap,
 };
