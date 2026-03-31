@@ -731,7 +731,21 @@ export default function PaperTradingSidebar({
                   <InfoItem label="已運行多久" value={simulationStartedAt ? runtimeLabel : "-"} />
                   <InfoItem label="最新 decision time" value={formatDate(currentSimulationStatus?.lastDecisionAt || lastDecisionAt)} />
                   <InfoItem label="當前 simulation phase" value={simulationPhaseLabel(currentSimulationStatus?.currentPhase)} />
-                  <InfoItem label="當前等待原因" value={currentSimulationStatus?.waitingReason || "等待下一根 K 線確認"} className="col-span-2" />
+                  <InfoItem
+                    label="當前等待原因"
+                    value={currentSimulationStatus?.waitingReason || "等待下一根 K 線確認"}
+                    className="col-span-2"
+                    valueClassName="whitespace-normal leading-relaxed"
+                  />
+                  <InfoItem label="Target Entry Zone" value={currentSimulationStatus?.targetEntryZone || "-"} />
+                  <InfoItem
+                    label="Current Price"
+                    value={
+                      Number.isFinite(Number(currentSimulationStatus?.currentPrice))
+                        ? formatNumber(Number(currentSimulationStatus.currentPrice), paperDigits)
+                        : "-"
+                    }
+                  />
                   <InfoItem label="最近一次未下單原因" value={currentSimulationStatus?.lastBlockReason || "-"} className="col-span-2" />
                   <InfoItem label="已有 pending order" value={yesNoLabel(currentSimulationStatus?.hasPendingOrder)} />
                   <InfoItem label="已有 open position" value={yesNoLabel(currentSimulationStatus?.hasOpenPosition)} />
@@ -740,6 +754,15 @@ export default function PaperTradingSidebar({
                   <InfoItem label="performance filter 阻擋" value={yesNoLabel(currentSimulationStatus?.blockedByPerformanceFilter)} />
                   <InfoItem label="execution 允許下單" value={yesNoLabel(currentSimulationStatus?.executionAllowed)} />
                   <InfoItem label="最後 agent decision" value={currentSimulationStatus?.lastDecisionSummary || currentSimulationStatus?.latestDecisionResult || "-"} className="col-span-2" />
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                  <div className="mb-1 text-[11px] font-semibold text-slate-500">未滿足條件（關鍵 2-3 項）</div>
+                  <ul className="space-y-1 text-[11px] text-slate-700">
+                    {(currentSimulationStatus?.unmetConditions || []).slice(0, 3).map((condition, index) => (
+                      <li key={`${condition}-${index}`}>• {condition}</li>
+                    ))}
+                    {!currentSimulationStatus?.unmetConditions?.length ? <li className="text-slate-500">目前無待補條件</li> : null}
+                  </ul>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                   <div className="mb-1 text-[11px] font-semibold text-slate-500">最近 5 筆模擬事件</div>
