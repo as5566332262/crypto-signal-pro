@@ -1756,6 +1756,7 @@ function maybeFillPendingOrders(state, {
       createdAt: order.createdAt || timestamp,
       signalToPlaceBars: order.signalToPlaceBars ?? null,
       placeToFillBars: nextWaitBars,
+      sourceFunction: checkedFunctionName,
       ...resolveTradeMetadata({
         decision: order.decisionSnapshot,
         confirmationResult: order.decisionSnapshot?.confirmationResult || null,
@@ -2301,6 +2302,17 @@ export function simulateDecisionExecution({
 
   const pendingCreation = createPendingOrder({ baseState: state, order: pendingOrder });
   if (pendingCreation.created) {
+    console.info("[PENDING_CREATED]", {
+      orderId: pendingOrder.id,
+      symbol: pendingOrder.symbol,
+      side: pendingOrder.side,
+      orderType: pendingOrder.orderType,
+      entry: pendingOrder.entryPrice,
+      triggerPrice: pendingOrder.triggerPrice,
+      currentPrice: normalizeNumber(currentPrice),
+      createdAt: pendingOrder.createdAt,
+      sourceFunction: "simulateDecisionExecution.createPendingOrder",
+    });
     console.info("[PENDING_CREATED_FROM_DECISION]", {
       orderId: pendingOrder.id,
       entry: pendingOrder.entryPrice,

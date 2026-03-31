@@ -3524,7 +3524,19 @@ const simulationAgentState = {
         createdPendingOrder,
         ...simulationAgentState,
       });
-      const executedState = result.result === "PENDING_CREATED"
+      const shouldRunImmediateFillCheck = result.result === "PENDING_CREATED" && !createdPendingOrder;
+      if (result.result === "PENDING_CREATED" && createdPendingOrder) {
+        console.debug("[SIM_PENDING_GUARD]", {
+          symbol: paperMarketSymbol,
+          orderId: result.pendingOrder?.id || null,
+          reason: "SKIP_IMMEDIATE_FILL_ON_CREATE",
+          sourceFunction: "runSimulationStep",
+          note: "first cycle after pending create does not run fill check",
+          currentPrice: paperCurrentPrice,
+          entryPrice: result.pendingOrder?.entryPrice ?? null,
+        });
+      }
+      const executedState = shouldRunImmediateFillCheck
         ? applyMarketTickToPaperState(result.state, {
           price: paperCurrentPrice,
           symbol: paperMarketSymbol,
