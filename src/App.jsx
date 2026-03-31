@@ -92,8 +92,13 @@ function createDefaultSymbolSimulationState() {
     lastDecisionAt: null,
     currentPhase: "idle",
     waitingReason: "尚未啟動模擬",
+    waitingReasonDetails: null,
     targetEntryZone: null,
     currentPrice: null,
+    distanceToEntry: null,
+    entryDistanceLabel: null,
+    nearEntry: false,
+    nearEntryHint: null,
     unmetConditions: [],
     lastBlockReason: null,
     recentSimulationEvents: [],
@@ -137,8 +142,13 @@ function normalizeSimulationStateBySymbol(raw) {
         : {},
       currentPhase: item?.currentPhase || "idle",
       waitingReason: item?.waitingReason || "尚未啟動模擬",
+      waitingReasonDetails: item?.waitingReasonDetails && typeof item.waitingReasonDetails === "object" ? item.waitingReasonDetails : null,
       targetEntryZone: item?.targetEntryZone || null,
       currentPrice: Number.isFinite(Number(item?.currentPrice)) ? Number(item.currentPrice) : null,
+      distanceToEntry: Number.isFinite(Number(item?.distanceToEntry)) ? Number(item.distanceToEntry) : null,
+      entryDistanceLabel: item?.entryDistanceLabel || null,
+      nearEntry: Boolean(item?.nearEntry),
+      nearEntryHint: item?.nearEntryHint || null,
       unmetConditions: Array.isArray(item?.unmetConditions) ? item.unmetConditions.slice(0, 3) : [],
       lastBlockReason: item?.lastBlockReason || null,
       recentSimulationEvents: Array.isArray(item?.recentSimulationEvents) ? item.recentSimulationEvents.slice(0, 5) : [],
@@ -588,6 +598,21 @@ function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diag
   const sideText = action === "SHORT" ? "反彈壓力區" : "回踩支撐區";
   const currentMomentum = action === "SHORT" ? mtfBias?.tf15m || "bullish" : mtfBias?.tf15m || "bearish";
   const expectedMomentum = action === "SHORT" ? "bearish" : "bullish";
+  const nearEntryThresholdPct = 0.8;
+  const distanceToEntryRaw = targetZone && Number.isFinite(safePrice)
+    ? (action === "SHORT" ? targetZone.high - safePrice : safePrice - targetZone.low)
+    : null;
+  const distanceToEntry = Number.isFinite(distanceToEntryRaw) ? Math.max(distanceToEntryRaw, 0) : null;
+  const distancePct = Number.isFinite(distanceToEntry) && targetZone?.low
+    ? (distanceToEntry / Math.abs(targetZone.low)) * 100
+    : null;
+  const nearEntry = Number.isFinite(distancePct) ? distancePct < nearEntryThresholdPct : false;
+  const entryDistanceLabel = Number.isFinite(distanceToEntry)
+    ? `${action === "SHORT" ? "距離壓力區尚差" : "距離支撐區尚差"}：${formatNumber(distanceToEntry)} USDT`
+    : null;
+  const nearEntryHint = nearEntry
+    ? "價格接近支撐區，可提前掛單（若啟用預掛模式）"
+    : null;
 
   const keyConditions = [];
   if (targetZone && Number.isFinite(safePrice)) {
@@ -595,16 +620,39 @@ function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diag
       `等待價格${sideText}：${formatNumber(targetZone.low)} – ${formatNumber(targetZone.high)}（現價 ${formatNumber(safePrice)}）`
     );
   }
+  if (entryDistanceLabel) keyConditions.push(entryDistanceLabel);
+  if (nearEntry) keyConditions.push("接近進場區，可考慮預掛單");
   keyConditions.push(`等待 ${timeframe} 動能轉為 ${expectedMomentum}（目前 ${currentMomentum}）`);
   keyConditions.push(...(Array.isArray(diagnostics) ? diagnostics : []));
   if (targetZone) keyConditions.push("等待價格進入 entry 區間後才建立掛單");
 
   const unmetConditions = [...new Set(keyConditions)].filter(Boolean).slice(0, 3);
   const waitingReason = unmetConditions.length ? unmetConditions.join("；") : "等待下一根 K 線確認";
+  const structuredUnmet = [];
+  if (Number.isFinite(distanceToEntry) && distanceToEntry > 0) {
+    structuredUnmet.push(`價格尚未回踩（差 ${formatNumber(distanceToEntry)}）`);
+  }
+  structuredUnmet.push(`15m 動能尚未轉${expectedMomentum === "bullish" ? "多" : "空"}`);
+  for (const item of Array.isArray(diagnostics) ? diagnostics : []) {
+    if (item && structuredUnmet.length < 3 && !structuredUnmet.includes(item)) structuredUnmet.push(item);
+  }
+  const waitingReasonDetails = {
+    currentPrice: Number.isFinite(safePrice) ? formatNumber(safePrice) : "-",
+    targetEntryZone: targetZone ? `${formatNumber(targetZone.low)} – ${formatNumber(targetZone.high)}` : "-",
+    unmetConditions: structuredUnmet.slice(0, 3),
+    status: nearEntry
+      ? ["接近進場區，可考慮預掛單", "價格接近支撐區，可提前掛單（若啟用預掛模式）"]
+      : ["尚未進入進場區 → 不建立委託"],
+  };
   return {
     waitingReason,
+    waitingReasonDetails,
     targetEntryZone: targetZone ? `${formatNumber(targetZone.low)} – ${formatNumber(targetZone.high)}` : "-",
     currentPrice: Number.isFinite(safePrice) ? safePrice : null,
+    distanceToEntry,
+    entryDistanceLabel,
+    nearEntry,
+    nearEntryHint,
     unmetConditions,
   };
 }
@@ -2946,8 +2994,13 @@ export default function CryptoSignalWebApp() {
         lastDecisionAt: state.lastDecisionAt,
         currentPhase: state.currentPhase || "idle",
         waitingReason: state.waitingReason || "-",
+        waitingReasonDetails: state.waitingReasonDetails || null,
         targetEntryZone: state.targetEntryZone || "-",
         currentPrice: state.currentPrice,
+        distanceToEntry: state.distanceToEntry,
+        entryDistanceLabel: state.entryDistanceLabel || null,
+        nearEntry: Boolean(state.nearEntry),
+        nearEntryHint: state.nearEntryHint || null,
         unmetConditions: Array.isArray(state.unmetConditions) ? state.unmetConditions.slice(0, 3) : [],
         lastBlockReason: state.lastBlockReason || "-",
         hasPendingOrder: Array.isArray(state.pendingOrders) && state.pendingOrders.length > 0,
@@ -3310,8 +3363,13 @@ export default function CryptoSignalWebApp() {
     updateSimulationStateForSymbol(paperSymbol, {
       currentPhase: "analyzing_strategy",
       waitingReason: "策略分析中",
+      waitingReasonDetails: null,
       targetEntryZone: null,
       currentPrice: Number.isFinite(paperCurrentPrice) ? paperCurrentPrice : null,
+      distanceToEntry: null,
+      entryDistanceLabel: null,
+      nearEntry: false,
+      nearEntryHint: null,
       unmetConditions: [],
     });
     const manualExecutionMeta = {
@@ -3332,8 +3390,13 @@ export default function CryptoSignalWebApp() {
       }),
         currentPhase: "waiting_market_data",
         waitingReason: "尚未收到新市場資料",
+        waitingReasonDetails: null,
         targetEntryZone: null,
         currentPrice: Number.isFinite(paperCurrentPrice) ? paperCurrentPrice : null,
+        distanceToEntry: null,
+        entryDistanceLabel: null,
+        nearEntry: false,
+        nearEntryHint: null,
         unmetConditions: [],
         lastBlockReason: "目前不在該交易幣種畫面",
         lastDecisionSummary: "等待資料",
@@ -3355,8 +3418,13 @@ export default function CryptoSignalWebApp() {
       }),
         currentPhase: "waiting_market_data",
         waitingReason: "尚未收到新市場資料",
+        waitingReasonDetails: null,
         targetEntryZone: null,
         currentPrice: Number.isFinite(paperCurrentPrice) ? paperCurrentPrice : null,
+        distanceToEntry: null,
+        entryDistanceLabel: null,
+        nearEntry: false,
+        nearEntryHint: null,
         unmetConditions: [],
         lastBlockReason: "尚未取得即時價格或決策",
         lastDecisionSummary: "等待資料",
@@ -3473,8 +3541,13 @@ export default function CryptoSignalWebApp() {
         updateSimulationStateForSymbol(paperSymbol, {
           currentPhase: "cooldown",
           waitingReason: "cooldown 尚未結束",
+          waitingReasonDetails: null,
           targetEntryZone: null,
           currentPrice: Number.isFinite(paperCurrentPrice) ? paperCurrentPrice : null,
+          distanceToEntry: null,
+          entryDistanceLabel: null,
+          nearEntry: false,
+          nearEntryHint: null,
           unmetConditions: ["等待 cooldown 結束後再重新評估進場"],
           lastBlockReason: "cooldown 尚未結束",
           lastDecisionSummary: "不交易（cooldown 中）",
@@ -3827,8 +3900,13 @@ const simulationAgentState = {
         executionStatus: normalizeSimulationExecutionStatus(nextFeedback),
         currentPhase: mappedPhase,
         waitingReason,
+        waitingReasonDetails: isNonWaitingState ? null : waitingDetails.waitingReasonDetails,
         targetEntryZone: isNonWaitingState ? null : waitingDetails.targetEntryZone,
         currentPrice: isNonWaitingState ? null : waitingDetails.currentPrice,
+        distanceToEntry: isNonWaitingState ? null : waitingDetails.distanceToEntry,
+        entryDistanceLabel: isNonWaitingState ? null : waitingDetails.entryDistanceLabel,
+        nearEntry: isNonWaitingState ? false : waitingDetails.nearEntry,
+        nearEntryHint: isNonWaitingState ? null : waitingDetails.nearEntryHint,
         unmetConditions: isNonWaitingState ? [] : waitingDetails.unmetConditions,
         lastBlockReason: blockReason,
         lastDecisionSummary: decisionSummary,
@@ -3919,8 +3997,13 @@ const simulationAgentState = {
       startedAt,
       currentPhase: "initializing",
       waitingReason: "初始化中",
+      waitingReasonDetails: null,
       targetEntryZone: null,
       currentPrice: null,
+      distanceToEntry: null,
+      entryDistanceLabel: null,
+      nearEntry: false,
+      nearEntryHint: null,
       unmetConditions: [],
       lastDecisionSummary: "等待確認",
       rehydrate: {
@@ -3938,8 +4021,13 @@ const simulationAgentState = {
       isSimulating: false,
       currentPhase: "stopped",
       waitingReason: "模擬已暫停",
+      waitingReasonDetails: null,
       targetEntryZone: null,
       currentPrice: null,
+      distanceToEntry: null,
+      entryDistanceLabel: null,
+      nearEntry: false,
+      nearEntryHint: null,
       unmetConditions: [],
     });
     appendSimulationEvent(paperSymbol, "simulation paused");
@@ -3956,8 +4044,13 @@ const simulationAgentState = {
       elapsedTime: elapsed,
       currentPhase: "stopped",
       waitingReason: "模擬已停止",
+      waitingReasonDetails: null,
       targetEntryZone: null,
       currentPrice: null,
+      distanceToEntry: null,
+      entryDistanceLabel: null,
+      nearEntry: false,
+      nearEntryHint: null,
       unmetConditions: [],
     });
     appendSimulationEvent(paperSymbol, "simulation stopped");
