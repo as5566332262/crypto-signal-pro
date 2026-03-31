@@ -520,6 +520,7 @@ function mapExecutionBlockedReason(resultCode, decision) {
     SHORT_ENTRY_UNREALISTIC: "空單掛單位置不合理（距現價過遠）",
     SHORT_BREAKDOWN_ATR_REQUIRED: "空單跌破掛單缺少 ATR，無法驗證距離",
     BLOCKED_BY_PERFORMANCE_FILTER: "此 setup 歷史勝率與平均損益過差，已轉為觀察模式",
+    ENTRY_BLOCKED_INVALID_RANGE_LONG: "目前位於區間上方，風險報酬不佳，不進場",
   };
   return reasonMap[resultCode] || "條件不足，已轉為觀察模式";
 }
@@ -2505,10 +2506,15 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
   const rrGoodButLocationBad = (tradePlan.rrBest || 0) >= 1.5 && dimensionScores.structurePosition < 5.2;
   const structureRangeWidth = Math.abs((levels.nearestResistance || price) - (levels.nearestSupport || price));
   const rangeMiddle = ((levels.nearestResistance || price) + (levels.nearestSupport || price)) / 2;
+  const rangeUpperHalfThreshold = (levels.nearestSupport || price) + structureRangeWidth * 0.5;
   const isRangeMiddlePosition =
     structureRangeWidth > 0 &&
     Math.abs(price - rangeMiddle) <= structureRangeWidth * 0.18 &&
     breakoutState === "區間內";
+  const isRangeUpperHalfPosition =
+    structureRangeWidth > 0 &&
+    breakoutState === "區間內" &&
+    price > rangeUpperHalfThreshold;
 
   if (marketRegime === "weak trend" || marketRegime === "ranging") {
     waitReasons.push("市場偏弱趨勢/震盪");
@@ -2563,6 +2569,12 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
     waitForConditions.push("等待價格靠近區間邊界或有效突破");
     entryScoreAdjusted -= 1.1;
     confidenceScorePenalty += 1;
+  }
+  if (bias === "偏多" && isRangeUpperHalfPosition) {
+    waitReasons.push("目前位於區間上方，風險報酬不佳，不進場");
+    waitForConditions.push("等待價格回到區間下半部或靠近支撐再評估");
+    entryScoreAdjusted -= 1.3;
+    confidenceScorePenalty += 2;
   }
 
   if (momentumUnclear) {
@@ -2628,7 +2640,9 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
   const finalDecision = integrateDecisionWithTiming(directionalDecision, entryTiming);
   const noEntryReason =
     entryTiming === "NO_SETUP"
-      ? marketRegime === "weak trend" || marketRegime === "ranging"
+      ? marketRegime === "ranging" && bias === "偏多" && isRangeUpperHalfPosition
+        ? "目前位於區間上方，風險報酬不佳，不進場"
+        : marketRegime === "weak trend" || marketRegime === "ranging"
         ? "市場仍在弱趨勢 / 區間震盪，結構與動能尚未形成可執行訊號"
         : mtfDisagreement > mtfAlignedRatio
         ? "多週期分歧仍大，方向尚未收斂"

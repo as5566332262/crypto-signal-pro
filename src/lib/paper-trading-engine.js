@@ -16,6 +16,8 @@ const DEFAULT_PULLBACK_MAX_WAIT_BARS = 6;
 const DEFAULT_TREND_ENTRY_CLAMP_PCT = 0.002;
 const DEFAULT_RANGE_ENTRY_CLAMP_PCT = 0.0008;
 const PRE_ARM_LONG_UPPER_ZONE_BUFFER_RATIO = 0.2;
+const RANGE_LONG_UPPER_HALF_THRESHOLD = 0.5;
+const RANGE_LONG_NEAR_RESISTANCE_RATIO = 0.15;
 const DEFAULT_REENTRY_MAX_ATTEMPTS = 2;
 const DEFAULT_REENTRY_FAIL_LIMIT = 2;
 const DEFAULT_REENTRY_PULLBACK_ATR_RATIO = 0.15;
@@ -654,6 +656,21 @@ function shouldBlockInvalidRangeLongEntry({
     const rangeLow = Math.min(...rangeLowCandidates);
     const rangeWidth = upperBoundary - rangeLow;
     if (rangeWidth > 0) {
+      const currentPositionRatio = (currentPrice - rangeLow) / rangeWidth;
+      const currentDistanceToUpper = upperBoundary - currentPrice;
+      if (currentPositionRatio > RANGE_LONG_UPPER_HALF_THRESHOLD) {
+        return "LONG_BLOCKED_UPPER_HALF_RANGE";
+      }
+      if (currentDistanceToUpper <= rangeWidth * RANGE_LONG_NEAR_RESISTANCE_RATIO) {
+        console.warn("[BLOCK_LONG_NEAR_RESISTANCE]", {
+          currentPrice,
+          upperBoundary,
+          rangeLow,
+          rangeWidth,
+          currentDistanceToUpper,
+        });
+        return "LONG_BLOCKED_NEAR_RESISTANCE";
+      }
       const distanceToUpper = upperBoundary - entryPrice;
       if (distanceToUpper <= rangeWidth * 0.2) return "LONG_ENTRY_NEAR_UPPER_ZONE";
     }
@@ -688,13 +705,30 @@ function evaluateConditionalPendingEligibility({
     Number.isFinite(upperBoundary) &&
     rangeWidth > 0 &&
     (upperBoundary - entryPrice) <= rangeWidth * PRE_ARM_LONG_UPPER_ZONE_BUFFER_RATIO;
+  const currentInUpperHalf = side === "LONG" &&
+    Number.isFinite(currentPrice) &&
+    Number.isFinite(lowerBoundary) &&
+    rangeWidth > 0 &&
+    ((currentPrice - lowerBoundary) / rangeWidth) > RANGE_LONG_UPPER_HALF_THRESHOLD;
+  const currentNearResistance = side === "LONG" &&
+    Number.isFinite(currentPrice) &&
+    Number.isFinite(upperBoundary) &&
+    rangeWidth > 0 &&
+    (upperBoundary - currentPrice) <= rangeWidth * RANGE_LONG_NEAR_RESISTANCE_RATIO;
   const longEntryAboveCurrent = side === "LONG" && canEvaluatePrice && entryPrice > currentPrice;
   const reasons = [];
   if (allowedStrategy) reasons.push("strategyType 為 range/pullback");
   if (hasEntryZone) reasons.push("已識別有效 entry zone（支撐區）");
   if (side !== "LONG" || !longEntryAboveCurrent) reasons.push("LONG entry 未高於 currentPrice");
   if (side !== "LONG" || !nearUpperZone) reasons.push("未靠近 zoneHigh/resistance");
-  const eligible = allowedStrategy && hasEntryZone && !longEntryAboveCurrent && !nearUpperZone;
+  if (side !== "LONG" || !currentInUpperHalf) reasons.push("currentPrice 未位於區間上半段");
+  if (side !== "LONG" || !currentNearResistance) reasons.push("currentPrice 未接近 resistance");
+  const eligible = allowedStrategy &&
+    hasEntryZone &&
+    !longEntryAboveCurrent &&
+    !nearUpperZone &&
+    !currentInUpperHalf &&
+    !currentNearResistance;
 
   return {
     eligible,
@@ -703,6 +737,8 @@ function evaluateConditionalPendingEligibility({
     hasEntryZone,
     longEntryAboveCurrent,
     nearUpperZone,
+    currentInUpperHalf,
+    currentNearResistance,
     reasons,
     autoCancelConditions: [
       "結構破壞（STRUCTURE_CHANGED）",
