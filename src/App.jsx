@@ -29,6 +29,7 @@ const INTERVAL_OPTIONS = [
 const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 
 const PAPER_ACCOUNT_STORAGE_KEY = "crypto-signal-pro-paper-account-v7";
+const SIMULATION_SNAPSHOT_STORAGE_KEY = "crypto-signal-pro-simulation-snapshot-v1";
 const PAPER_SUPPORTED_SYMBOLS = ["BTC", "ETH", "SOL"];
 
 function loadPaperAccount() {
@@ -51,6 +52,63 @@ function loadPaperAccount() {
     };
   } catch {
     return createInitialPaperAccountState();
+  }
+}
+
+function loadSimulationSnapshot() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SIMULATION_SNAPSHOT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const fallbackAccount = loadPaperAccount();
+    const normalizedLifecycle = ["running", "paused", "stopped", "idle"].includes(parsed?.simulationLifecycle)
+      ? parsed.simulationLifecycle
+      : "idle";
+    const normalizedPaperAccount = {
+      ...fallbackAccount,
+      ...(parsed?.paperAccount || {}),
+      openPositions: Array.isArray(parsed?.openPositions)
+        ? parsed.openPositions
+        : Array.isArray(parsed?.paperAccount?.openPositions)
+          ? parsed.paperAccount.openPositions
+          : [],
+      pendingOrders: Array.isArray(parsed?.pendingOrders)
+        ? parsed.pendingOrders
+        : Array.isArray(parsed?.paperAccount?.pendingOrders)
+          ? parsed.paperAccount.pendingOrders
+          : [],
+      closedTrades: Array.isArray(parsed?.closedTrades)
+        ? parsed.closedTrades
+        : Array.isArray(parsed?.paperAccount?.closedTrades)
+          ? parsed.paperAccount.closedTrades
+          : [],
+      simulationOrderConfig: {
+        mode: "fixed_quantity",
+        quantity: Number(parsed?.simulationOrderConfig?.quantity || parsed?.paperAccount?.simulationOrderConfig?.quantity) > 0
+          ? Number(parsed?.simulationOrderConfig?.quantity || parsed?.paperAccount?.simulationOrderConfig?.quantity)
+          : 50,
+      },
+    };
+
+    return {
+      simulationLifecycle: normalizedLifecycle,
+      simulationStartTime: parsed?.simulationStartTime || null,
+      lastDecisionTime: parsed?.lastDecisionTime || null,
+      currentSymbol: parsed?.currentSymbol || "SOL",
+      marketSymbol: parsed?.marketSymbol || "SOLUSDT",
+      timeframe: parsed?.timeframe || "15m",
+      simulationStats: parsed?.simulationStats || null,
+      paperAccount: normalizedPaperAccount,
+      restoredAt: new Date().toISOString(),
+      restoredPositionsCount: normalizedPaperAccount.openPositions.length,
+      restoredPendingCount: normalizedPaperAccount.pendingOrders.length,
+    };
+  } catch (error) {
+    console.debug("[simulation:persistence] restore failed", error);
+    return null;
   }
 }
 
@@ -2399,6 +2457,8 @@ async function fetchBinanceKlines(symbol, timeframe, limit = 240) {
 }
 
 export default function CryptoSignalWebApp() {
+  const restoredSnapshot = useMemo(() => loadSimulationSnapshot(), []);
+
   useEffect(() => {
     try {
       const updateSW = registerSW({ immediate: true });
@@ -2408,8 +2468,8 @@ export default function CryptoSignalWebApp() {
     }
   }, []);
 
-  const [symbol, setSymbol] = useState("SOLUSDT");
-  const [timeframe, setTimeframe] = useState("15m");
+  const [symbol, setSymbol] = useState(() => restoredSnapshot?.marketSymbol || "SOLUSDT");
+  const [timeframe, setTimeframe] = useState(() => restoredSnapshot?.timeframe || "15m");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [analysis, setAnalysis] = useState(null);
@@ -2417,13 +2477,26 @@ export default function CryptoSignalWebApp() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastUpdated, setLastUpdated] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [paperSymbol, setPaperSymbol] = useState("SOL");
-  const [paperAccount, setPaperAccount] = useState(() => loadPaperAccount());
+  const [paperSymbol, setPaperSymbol] = useState(() => restoredSnapshot?.currentSymbol || "SOL");
+  const [paperAccount, setPaperAccount] = useState(() => restoredSnapshot?.paperAccount || loadPaperAccount());
   const [simulationExecutionStatus, setSimulationExecutionStatus] = useState(null);
-  const [simulationLifecycle, setSimulationLifecycle] = useState("idle");
-  const [simulationStartedAt, setSimulationStartedAt] = useState(null);
-  const [lastDecisionAt, setLastDecisionAt] = useState(null);
+  const [simulationLifecycle, setSimulationLifecycle] = useState(() => restoredSnapshot?.simulationLifecycle || "idle");
+  const [simulationStartedAt, setSimulationStartedAt] = useState(() => restoredSnapshot?.simulationStartTime || null);
+  const [lastDecisionAt, setLastDecisionAt] = useState(() => restoredSnapshot?.lastDecisionTime || null);
+  const [simulationRestoreInfo, setSimulationRestoreInfo] = useState(() =>
+    restoredSnapshot
+      ? {
+        restored: true,
+        restoredAt: restoredSnapshot.restoredAt,
+        restoredLifecycle: restoredSnapshot.simulationLifecycle,
+        restoredPositionsCount: restoredSnapshot.restoredPositionsCount,
+        restoredPendingCount: restoredSnapshot.restoredPendingCount,
+        lastDecisionTime: restoredSnapshot.lastDecisionTime,
+      }
+      : null
+  );
   const lastProcessedCandleRef = useRef(null);
+  const hasLoggedResumeAfterRestoreRef = useRef(false);
 
   const loadData = async (nextSymbol = symbol, nextTimeframe = timeframe) => {
     setIsLoading(true);
@@ -2458,11 +2531,6 @@ export default function CryptoSignalWebApp() {
     const timer = window.setInterval(() => loadData(symbol, timeframe), 30000);
     return () => window.clearInterval(timer);
   }, [autoRefresh, symbol, timeframe]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(PAPER_ACCOUNT_STORAGE_KEY, JSON.stringify(paperAccount));
-  }, [paperAccount]);
 
   const currentCandle = candles[candles.length - 1];
 
@@ -2567,6 +2635,68 @@ export default function CryptoSignalWebApp() {
       diagnostics,
     };
   }, [paperAccount]);
+
+  useEffect(() => {
+    if (!simulationRestoreInfo?.restored) return;
+    console.debug("[simulation:persistence] simulation state restored", {
+      restoredLifecycle: simulationRestoreInfo.restoredLifecycle,
+      restoredPositionsCount: simulationRestoreInfo.restoredPositionsCount,
+      restoredPendingCount: simulationRestoreInfo.restoredPendingCount,
+      restoredAt: simulationRestoreInfo.restoredAt,
+      lastDecisionTime: simulationRestoreInfo.lastDecisionTime,
+    });
+    console.debug("[simulation:persistence] restored lifecycle", simulationRestoreInfo.restoredLifecycle);
+    console.debug("[simulation:persistence] restored positions count", simulationRestoreInfo.restoredPositionsCount);
+    console.debug("[simulation:persistence] restored pending count", simulationRestoreInfo.restoredPendingCount);
+  }, [simulationRestoreInfo]);
+
+  useEffect(() => {
+    if (!simulationRestoreInfo?.restored || simulationLifecycle !== "running" || hasLoggedResumeAfterRestoreRef.current) return;
+    hasLoggedResumeAfterRestoreRef.current = true;
+    console.debug("[simulation:persistence] agent resumed after restore", {
+      lifecycle: simulationLifecycle,
+      restoredAt: simulationRestoreInfo.restoredAt,
+    });
+  }, [simulationLifecycle, simulationRestoreInfo]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const snapshot = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      simulationLifecycle,
+      paperAccount: {
+        ...paperAccount,
+        simulationStats: accountSnapshot.simulationStats,
+      },
+      openPositions: paperAccount.openPositions || [],
+      pendingOrders: paperAccount.pendingOrders || [],
+      closedTrades: paperAccount.closedTrades || [],
+      simulationStats: accountSnapshot.simulationStats,
+      simulationStartTime: simulationStartedAt,
+      lastDecisionTime: lastDecisionAt,
+      currentSymbol: paperSymbol,
+      marketSymbol: symbol,
+      timeframe,
+      simulationOrderConfig: paperAccount.simulationOrderConfig || { mode: "fixed_quantity", quantity: 50 },
+    };
+    window.localStorage.setItem(SIMULATION_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
+    window.localStorage.setItem(PAPER_ACCOUNT_STORAGE_KEY, JSON.stringify(paperAccount));
+    console.debug("[simulation:persistence] simulation state saved", {
+      lifecycle: simulationLifecycle,
+      positions: snapshot.openPositions.length,
+      pending: snapshot.pendingOrders.length,
+    });
+  }, [
+    simulationLifecycle,
+    paperAccount,
+    accountSnapshot.simulationStats,
+    simulationStartedAt,
+    lastDecisionAt,
+    paperSymbol,
+    symbol,
+    timeframe,
+  ]);
 
   const runSimulationStep = ({ mode = "manual_click", executionSource = "simulation_manual" } = {}) => {
     const manualExecutionMeta = {
@@ -2961,6 +3091,7 @@ const isRangeStrategy = Boolean(result.confirmationResult?.confirmationState?.ra
           simulationLifecycle={simulationLifecycle}
           simulationStartedAt={simulationStartedAt}
           lastDecisionAt={lastDecisionAt}
+          simulationRestoreInfo={simulationRestoreInfo}
           onClosePosition={handleClosePosition}
           onCancelPendingOrder={handleCancelPendingOrder}
           onResetPaperAccount={handleResetPaperAccount}

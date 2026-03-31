@@ -378,6 +378,7 @@ export default function PaperTradingSidebar({
   simulationLifecycle,
   simulationStartedAt,
   lastDecisionAt,
+  simulationRestoreInfo,
 }) {
   const [runtimeNow, setRuntimeNow] = React.useState(Date.now());
   React.useEffect(() => {
@@ -421,6 +422,14 @@ export default function PaperTradingSidebar({
           <Card className="rounded-2xl border-slate-200">
             <CardHeader className="pb-2"><CardTitle className="text-sm">模擬生命週期</CardTitle></CardHeader>
             <CardContent className="space-y-2 text-xs">
+              {simulationRestoreInfo?.restored ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-2 text-emerald-800">
+                  <div className="font-semibold">已從本地狀態恢復模擬</div>
+                  <div>已恢復模擬狀態</div>
+                  <div>上次運行狀態：<span className="font-semibold uppercase">{simulationRestoreInfo.restoredLifecycle || "-"}</span></div>
+                  <div>上次決策時間：<span className="font-semibold">{simulationRestoreInfo.lastDecisionTime ? new Date(simulationRestoreInfo.lastDecisionTime).toLocaleString() : "-"}</span></div>
+                </div>
+              ) : null}
               <div>目前狀態：<span className="font-semibold uppercase">{simulationLifecycle || "idle"}</span></div>
               <div>是否模擬中：<span className="font-semibold">{simulationLifecycle === "running" ? "是" : "否"}</span></div>
               <div>已運行：<span className="font-semibold">{simulationStartedAt ? runtimeLabel : "-"}</span></div>
