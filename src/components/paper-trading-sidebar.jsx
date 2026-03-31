@@ -561,9 +561,9 @@ function TradingStateTerminal({
 function InfoItem({ label, value, className = "", valueClassName = "" }) {
   const safeValue = toPrimitiveText(value);
   return (
-    <div className={`min-w-0 ${className}`}>
-      <div className="text-[11px] text-slate-500">{label}</div>
-      <div className={`mt-0.5 min-w-0 whitespace-nowrap font-semibold text-slate-800 ${valueClassName}`}>{safeValue}</div>
+    <div className={`min-w-0 w-full ${className}`}>
+      <div className="text-[11px] leading-5 text-slate-500">{label}</div>
+      <div className={`mt-0.5 min-w-0 whitespace-pre-wrap break-words font-semibold leading-relaxed text-slate-800 [overflow-wrap:anywhere] ${valueClassName}`}>{safeValue}</div>
     </div>
   );
 }
@@ -751,7 +751,7 @@ export default function PaperTradingSidebar({
             </CardHeader>
             {showSimulationStatusPanel ? (
               <CardContent className="space-y-3 text-xs text-slate-700">
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <InfoItem label="當前 Symbol" value={currentSimulationStatus?.symbol || `${paperSymbol}USDT`} />
                   <InfoItem label="模擬執行中" value={yesNoLabel(currentSimulationStatus?.isSimulating)} />
                   <InfoItem label="啟動時間" value={formatDate(currentSimulationStatus?.startedAt || simulationStartedAt)} />
@@ -764,7 +764,11 @@ export default function PaperTradingSidebar({
                     className="col-span-2"
                     valueClassName="whitespace-normal leading-relaxed"
                   />
-                  <InfoItem label="Target Entry Zone" value={currentSimulationStatus?.targetEntryZone || "-"} />
+                  <InfoItem
+                    label="Target Entry Zone"
+                    value={currentSimulationStatus?.targetEntryZone || "-"}
+                    className="sm:col-span-2"
+                  />
                   <InfoItem
                     label="Current Price"
                     value={
@@ -773,7 +777,11 @@ export default function PaperTradingSidebar({
                         : "-"
                     }
                   />
-                  <InfoItem label="最近一次未下單原因" value={currentSimulationStatus?.lastBlockReason || "-"} className="col-span-2" />
+                  <InfoItem
+                    label="最近一次未下單原因"
+                    value={currentSimulationStatus?.lastBlockReason || "-"}
+                    className="sm:col-span-2"
+                  />
                   <InfoItem label="已有 pending order" value={yesNoLabel(currentSimulationStatus?.hasPendingOrder)} />
                   <InfoItem label="已有 open position" value={yesNoLabel(currentSimulationStatus?.hasOpenPosition)} />
                   <InfoItem label="cooldown 啟用中" value={yesNoLabel(currentSimulationStatus?.cooldownActive)} />
@@ -784,9 +792,9 @@ export default function PaperTradingSidebar({
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                   <div className="mb-1 text-[11px] font-semibold text-slate-500">未滿足條件（關鍵 2-3 項）</div>
-                  <ul className="space-y-1 text-[11px] text-slate-700">
+                  <ul className="space-y-1 text-[11px] leading-relaxed text-slate-700">
                     {(currentSimulationStatus?.unmetConditions || []).slice(0, 3).map((condition, index) => (
-                      <li key={`${condition}-${index}`}>• {condition}</li>
+                      <li key={`${condition}-${index}`} className="break-words whitespace-pre-wrap [overflow-wrap:anywhere]">• {condition}</li>
                     ))}
                     {!currentSimulationStatus?.unmetConditions?.length ? <li className="text-slate-500">目前無待補條件</li> : null}
                   </ul>
