@@ -643,6 +643,17 @@ function evaluateImmediateExecutionReadiness({ decision, side, triggerPrice, mar
   };
 }
 
+function resolveExecutionOrderType(decision) {
+  const normalized = String(
+    decision?.executionPlan?.orderType ??
+    decision?.orderType ??
+    decision?.executionPlan?.entryType ??
+    ""
+  ).trim().toUpperCase();
+  if (normalized.includes("MARKET")) return "MARKET";
+  return "LIMIT";
+}
+
 export function getSimulationEligibility(decision, currentPrice, signalContext = {}, options = {}) {
   const bypassSetupGate = shouldBypassSetupGate(options);
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
@@ -658,6 +669,7 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
   }
 
   const side = resolveSideFromDecision(decision);
+  const executionOrderType = resolveExecutionOrderType(decision);
   const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
   const invalidationPrice = normalizeNumber(decision?.executionPlan?.invalidationPrice ?? decision?.invalidationPrice);
   const markPrice = normalizeNumber(currentPrice);
@@ -715,7 +727,7 @@ export function getSimulationEligibility(decision, currentPrice, signalContext =
     markPrice,
     signalContext,
   });
-  if (executionReadiness.readyToExecute) {
+  if (executionReadiness.readyToExecute && executionOrderType === "MARKET") {
     return {
       eligibility: "READY_TO_EXECUTE",
       reasonCode: "TRIGGER_READY",
@@ -1627,6 +1639,7 @@ function maybeFillPendingOrders(state, {
       orderId: order.id,
       symbol: order.symbol,
       side: order.side,
+      orderType: order.orderType || "LIMIT",
       entry: orderEntryPrice,
       tickPrice: orderTickPrice,
       currentPrice: orderTickPrice,
@@ -1709,6 +1722,7 @@ function maybeFillPendingOrders(state, {
       symbol: order.symbol,
       timeframe: order.timeframe,
       side: order.side,
+      orderType: order.orderType || "LIMIT",
       status: "OPEN",
       entryPrice,
       triggerPrice: order.triggerPrice,
@@ -1806,7 +1820,14 @@ function maybeFillPendingOrders(state, {
       entry: orderEntryPrice,
       symbol: order.symbol,
       filledPrice: entryPrice,
+      orderType: order.orderType || "LIMIT",
       triggerSource: resolvedTriggerSource,
+    });
+    console.info("[POSITION_CREATED]", {
+      orderId: order.id,
+      sourceFunction: checkedFunctionName,
+      filledPrice: entryPrice,
+      orderType: order.orderType || "LIMIT",
     });
     continue;
   }
@@ -1950,6 +1971,7 @@ export function simulateDecisionExecution({
   }
 
   const side = resolveSideFromDecision(decision) || (bypassSetupGate ? resolveManualSimulationSide(decision) : null);
+  const executionOrderType = resolveExecutionOrderType(decision);
   if (!side) {
     return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility, ...basePerformanceDebug };
   }
@@ -2123,6 +2145,7 @@ export function simulateDecisionExecution({
     symbol,
     timeframe,
     side,
+    orderType: "LIMIT",
     entryPrice: triggerPrice,
     triggerPrice,
     invalidationPrice,
@@ -2236,6 +2259,7 @@ export function simulateDecisionExecution({
   }
 
   if (
+    executionOrderType === "MARKET" &&
     !reentryAttempt &&
     (effectiveEligibility.eligibility === "READY_TO_EXECUTE" || (executionIntent === "EXECUTE_NOW" && confirmationResult.canExecute))
   ) {
@@ -2273,6 +2297,7 @@ export function simulateDecisionExecution({
       symbol,
       timeframe,
       side,
+      orderType: "MARKET",
       status: "OPEN",
       entryPrice,
       triggerPrice,
@@ -2336,6 +2361,12 @@ export function simulateDecisionExecution({
       triggeredBy,
       timestamp,
     });
+    console.info("[POSITION_CREATED]", {
+      orderId: position.id,
+      sourceFunction: "simulateDecisionExecution",
+      filledPrice: entryPrice,
+      orderType: "MARKET",
+    });
     return {
       state: nextState,
       result: "EXECUTED_IMMEDIATELY",
@@ -2372,6 +2403,14 @@ export function simulateDecisionExecution({
   }
 
   const pendingCreation = createPendingOrder({ baseState: state, order: pendingOrder });
+  if (pendingCreation.created) {
+    console.info("[ORDER_CREATED]", {
+      orderId: pendingOrder.id,
+      side: pendingOrder.side,
+      orderType: pendingOrder.orderType,
+      entry: pendingOrder.entryPrice,
+    });
+  }
   if (reentryAttempt?.key) {
     const tracked = pendingCreation.nextState?.reentryTracking?.[reentryAttempt.key] || {};
     pendingCreation.nextState = {
