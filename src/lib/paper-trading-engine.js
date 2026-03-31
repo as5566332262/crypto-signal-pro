@@ -21,6 +21,7 @@ const DEFAULT_REENTRY_PULLBACK_ATR_RATIO = 0.15;
 const DEFAULT_REENTRY_MIN_DISTANCE_PCT = 0.0004;
 const MAX_ACCOUNT_TRACE_HISTORY = 2000;
 const MAX_ACCOUNT_ERROR_TRACE_HISTORY = 400;
+const MAX_SYMBOL_INTEGRITY_TRACE_HISTORY = 2000;
 const ACCOUNT_SURGE_ABS_THRESHOLD = 10000;
 const ACCOUNT_SURGE_RATIO_THRESHOLD = 5;
 const REDUCED_CONFIDENCE_TYPES = new Set(["OPPORTUNITY_ENTRY", "FALLBACK_ENTRY", "MISSED_MOVE_ENTRY", "PROBE_ENTRY_D"]);
@@ -98,6 +99,23 @@ function normalizeNumber(value) {
 function asSafeNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function isTradeEligibleForStats(trade) {
+  return !Boolean(trade?.invalidTrade);
+}
+
+function validateSymbolBinding({ tradeSymbol, positionSymbol, marketSymbolUsed }) {
+  if (tradeSymbol && positionSymbol && tradeSymbol !== positionSymbol) {
+    return { valid: false, reason: "TRADE_POSITION_SYMBOL_MISMATCH" };
+  }
+  if (marketSymbolUsed && positionSymbol && marketSymbolUsed !== positionSymbol) {
+    return { valid: false, reason: "POSITION_MARKET_SYMBOL_MISMATCH" };
+  }
+  if (marketSymbolUsed && tradeSymbol && marketSymbolUsed !== tradeSymbol) {
+    return { valid: false, reason: "TRADE_MARKET_SYMBOL_MISMATCH" };
+  }
+  return { valid: true, reason: null };
 }
 
 function nowIso() {
@@ -806,6 +824,8 @@ export function createInitialPaperAccountState() {
     lifecycleTrace: [],
     pendingFillChecks: [],
     pendingCancelTrace: [],
+    symbolIntegrityTrace: [],
+    symbolIntegrityErrorTrace: [],
     waitingDiagnostics: createDefaultWaitingDiagnostics(),
     accountTrace: [],
     accountErrorTrace: [],
@@ -894,6 +914,34 @@ function appendPendingFillCheck(state, payload) {
   return {
     ...state,
     pendingFillChecks: [payload, ...(state?.pendingFillChecks || [])].slice(0, 1000),
+  };
+}
+
+function appendSymbolIntegrityTrace(state, payload = {}) {
+  const trace = {
+    timestamp: payload.timestamp || nowIso(),
+    tradeId: payload.tradeId || null,
+    positionId: payload.positionId || null,
+    tradeSymbol: payload.tradeSymbol || null,
+    positionSymbol: payload.positionSymbol || null,
+    selectedSymbolAtThatMoment: payload.selectedSymbolAtThatMoment ?? null,
+    marketSymbolUsed: payload.marketSymbolUsed || null,
+    entryPriceSource: payload.entryPriceSource || null,
+    exitPriceSource: payload.exitPriceSource || null,
+    pnlComputedFromSymbols: payload.pnlComputedFromSymbols || null,
+    functionName: payload.functionName || "unknown",
+    eventType: payload.eventType || "TRADE_UPDATE",
+    valid: payload.valid !== false,
+    reason: payload.reason || null,
+  };
+  const nextTrace = [trace, ...(state?.symbolIntegrityTrace || [])].slice(0, MAX_SYMBOL_INTEGRITY_TRACE_HISTORY);
+  const nextErrorTrace = trace.valid
+    ? (state?.symbolIntegrityErrorTrace || [])
+    : [trace, ...(state?.symbolIntegrityErrorTrace || [])].slice(0, MAX_ACCOUNT_ERROR_TRACE_HISTORY);
+  return {
+    ...state,
+    symbolIntegrityTrace: nextTrace,
+    symbolIntegrityErrorTrace: nextErrorTrace,
   };
 }
 
@@ -1003,8 +1051,9 @@ function cancelPendingOrder(order, reason, timestamp = nowIso(), metadata = {}) 
 
 function deriveAccountMetrics(state) {
   const closedTrades = Array.isArray(state?.closedTrades) ? state.closedTrades : [];
+  const validClosedTrades = closedTrades.filter((trade) => isTradeEligibleForStats(trade));
   const openPositions = Array.isArray(state?.openPositions) ? state.openPositions : [];
-  const realizedPnl = closedTrades.reduce((sum, trade) => sum + asSafeNumber(trade?.realizedPnl), 0);
+  const realizedPnl = validClosedTrades.reduce((sum, trade) => sum + asSafeNumber(trade?.realizedPnl), 0);
   const cash = DEFAULT_BALANCE + realizedPnl;
   const unrealizedPnl = openPositions.reduce((sum, position) => sum + asSafeNumber(position?.unrealizedPnl), 0);
   const marginUsed = openPositions.reduce(
@@ -1110,6 +1159,35 @@ function closePosition(state, {
   if (index < 0) return state;
 
   const position = state.openPositions[index];
+  const bindingCheck = validateSymbolBinding({
+    tradeSymbol: position.symbol,
+    positionSymbol: position.symbol,
+    marketSymbolUsed,
+  });
+  if (!bindingCheck.valid) {
+    console.error("[paper-trading] blocked closePosition due to symbol mismatch", {
+      positionId,
+      positionSymbol: position.symbol,
+      marketSymbolUsed,
+      selectedSymbolAtThatMoment,
+      reason: bindingCheck.reason,
+    });
+    return appendSymbolIntegrityTrace(state, {
+      timestamp: closedAt,
+      positionId: position.id,
+      tradeSymbol: position.symbol,
+      positionSymbol: position.symbol,
+      selectedSymbolAtThatMoment,
+      marketSymbolUsed,
+      entryPriceSource: "position.entryPrice",
+      exitPriceSource: "closePosition.exitPrice",
+      pnlComputedFromSymbols: `${position.symbol}->${marketSymbolUsed || "-"}`,
+      functionName: "closePosition",
+      eventType: "BLOCKED_CLOSE",
+      valid: false,
+      reason: bindingCheck.reason,
+    });
+  }
   const resolvedExitPrice = asSafeNumber(exitPrice, position.currentPrice);
   const realizedPnl = getPnl(position.side, position.entryPrice, resolvedExitPrice, position.quantity);
   const pnlPercent = position.entryPrice ? (realizedPnl / (position.entryPrice * position.quantity)) * 100 : 0;
@@ -1146,16 +1224,30 @@ function closePosition(state, {
     exitReasonDetail: closeReason,
     maxFavorableExcursion: position.maxFavorableExcursion ?? 0,
     maxAdverseExcursion: position.maxAdverseExcursion ?? 0,
+    maxRunup: position.maxFavorableExcursion ?? 0,
+    maxDrawdown: position.maxAdverseExcursion ?? 0,
     setupContext: position.setupContext || null,
     setupKey: position.setupKey || null,
+    invalidTrade: false,
+    invalidTradeReason: null,
   };
+  const hasFiniteTradeNumbers = [
+    closedTrade.entryPrice,
+    closedTrade.exitPrice,
+    closedTrade.quantity,
+    closedTrade.realizedPnl,
+  ].every((value) => Number.isFinite(Number(value)));
+  if (!hasFiniteTradeNumbers) {
+    closedTrade.invalidTrade = true;
+    closedTrade.invalidTradeReason = "NON_FINITE_TRADE_FIELDS";
+  }
 
   const nextOpen = state.openPositions.filter((item) => item.id !== positionId);
   const symbol = position.symbol;
   const symbolState = getSymbolIsolationState(state, symbol);
-  const symbolClosedTrades = [closedTrade, ...state.closedTrades].filter((trade) => trade?.symbol === symbol);
-  const isLosingTrade = realizedPnl < 0;
-  const isWinningTrade = realizedPnl > 0;
+  const symbolClosedTrades = [closedTrade, ...state.closedTrades].filter((trade) => trade?.symbol === symbol && isTradeEligibleForStats(trade));
+  const isLosingTrade = !closedTrade.invalidTrade && realizedPnl < 0;
+  const isWinningTrade = !closedTrade.invalidTrade && realizedPnl > 0;
   const nextLongLossStreak = position.side === "LONG"
     ? isLosingTrade
       ? asSafeNumber(symbolState.longLossStreak) + 1
@@ -1185,7 +1277,7 @@ function closePosition(state, {
       coarsePerformanceMap: buildPerformanceMap(symbolClosedTrades, (setupContext, trade) => trade?.coarseSetupKey || buildCoarseSetupKey(setupContext)),
     },
   };
-  const recalculated = recalculateAccountState({
+  let recalculated = recalculateAccountState({
     ...state,
     openPositions: nextOpen,
     closedTrades: [closedTrade, ...state.closedTrades],
@@ -1203,6 +1295,22 @@ function closePosition(state, {
     affectedSymbol: symbol,
     eventType: "CLOSE_POSITION",
     sourceFunction: "closePosition",
+  });
+  recalculated = appendSymbolIntegrityTrace(recalculated, {
+    timestamp: closedAt,
+    tradeId: closedTrade.id,
+    positionId: position.id,
+    tradeSymbol: closedTrade.symbol,
+    positionSymbol: position.symbol,
+    selectedSymbolAtThatMoment,
+    marketSymbolUsed: marketSymbolUsed || symbol,
+    entryPriceSource: "position.entryPrice",
+    exitPriceSource: "closePosition.exitPrice",
+    pnlComputedFromSymbols: `${position.symbol}->${closedTrade.symbol}`,
+    functionName: "closePosition",
+    eventType: "CLOSE_POSITION",
+    valid: !closedTrade.invalidTrade,
+    reason: closedTrade.invalidTradeReason,
   });
   return appendPositionLifecycleEvent(recalculated, {
     timestamp: closedAt,
@@ -1615,6 +1723,21 @@ function maybeFillPendingOrders(state, {
       }),
     };
     nextState.openPositions.push(position);
+    nextState = appendSymbolIntegrityTrace(nextState, {
+      timestamp,
+      positionId: position.id,
+      tradeSymbol: position.symbol,
+      positionSymbol: position.symbol,
+      selectedSymbolAtThatMoment,
+      marketSymbolUsed: order.symbol,
+      entryPriceSource: "pendingOrder.triggerPrice",
+      exitPriceSource: null,
+      pnlComputedFromSymbols: position.symbol,
+      functionName: "maybeFillPendingOrders",
+      eventType: "OPEN_POSITION",
+      valid: true,
+      reason: null,
+    });
     const diagnostics = nextState?.waitingDiagnostics || createDefaultWaitingDiagnostics();
     nextState.waitingDiagnostics = {
       ...diagnostics,
@@ -2437,6 +2560,44 @@ export function applyMarketTickToPaperState(
   });
   const updatedPositions = nextState.openPositions.map((position) => {
     if (symbol && position.symbol !== symbol) return position;
+    const bindingCheck = validateSymbolBinding({
+      tradeSymbol: position.symbol,
+      positionSymbol: position.symbol,
+      marketSymbolUsed: symbol,
+    });
+    if (!bindingCheck.valid) {
+      nextState = appendSymbolIntegrityTrace(nextState, {
+        timestamp,
+        positionId: position.id,
+        tradeSymbol: position.symbol,
+        positionSymbol: position.symbol,
+        selectedSymbolAtThatMoment,
+        marketSymbolUsed: symbol,
+        entryPriceSource: "position.entryPrice",
+        exitPriceSource: null,
+        pnlComputedFromSymbols: `${position.symbol}->${symbol || "-"}`,
+        functionName: "applyMarketTickToPaperState.updatePositions",
+        eventType: "BLOCKED_POSITION_UPDATE",
+        valid: false,
+        reason: bindingCheck.reason,
+      });
+      return position;
+    }
+    nextState = appendSymbolIntegrityTrace(nextState, {
+      timestamp,
+      positionId: position.id,
+      tradeSymbol: position.symbol,
+      positionSymbol: position.symbol,
+      selectedSymbolAtThatMoment,
+      marketSymbolUsed: symbol,
+      entryPriceSource: "position.entryPrice",
+      exitPriceSource: null,
+      pnlComputedFromSymbols: position.symbol,
+      functionName: "applyMarketTickToPaperState.updatePositions",
+      eventType: "UPDATE_UNREALIZED",
+      valid: true,
+      reason: null,
+    });
     return {
       ...maybeAdjustPositionRisk({
         ...position,
@@ -2468,6 +2629,29 @@ export function applyMarketTickToPaperState(
   const toClose = [];
   for (const position of nextState.openPositions) {
     if (symbol && position.symbol !== symbol) continue;
+    const bindingCheck = validateSymbolBinding({
+      tradeSymbol: position.symbol,
+      positionSymbol: position.symbol,
+      marketSymbolUsed: symbol,
+    });
+    if (!bindingCheck.valid) {
+      nextState = appendSymbolIntegrityTrace(nextState, {
+        timestamp,
+        positionId: position.id,
+        tradeSymbol: position.symbol,
+        positionSymbol: position.symbol,
+        selectedSymbolAtThatMoment,
+        marketSymbolUsed: symbol,
+        entryPriceSource: "position.entryPrice",
+        exitPriceSource: "applyMarketTickToPaperState.exitPrice",
+        pnlComputedFromSymbols: `${position.symbol}->${symbol || "-"}`,
+        functionName: "applyMarketTickToPaperState.closeDetection",
+        eventType: "BLOCKED_CLOSE_DETECTION",
+        valid: false,
+        reason: bindingCheck.reason,
+      });
+      continue;
+    }
     const closeReason = detectPositionCloseReason(position, tickPrice);
     if (closeReason) {
       toClose.push({ positionId: position.id, closeReason });
@@ -2563,6 +2747,8 @@ export function normalizePaperAccountState(state, { eventType = "RESTORE", sourc
     pendingOrders: Array.isArray(state?.pendingOrders) ? state.pendingOrders : [],
     cancelledOrders: Array.isArray(state?.cancelledOrders) ? state.cancelledOrders : [],
     closedTrades: Array.isArray(state?.closedTrades) ? state.closedTrades : [],
+    symbolIntegrityTrace: Array.isArray(state?.symbolIntegrityTrace) ? state.symbolIntegrityTrace : [],
+    symbolIntegrityErrorTrace: Array.isArray(state?.symbolIntegrityErrorTrace) ? state.symbolIntegrityErrorTrace : [],
   }, {
     eventType,
     sourceFunction,

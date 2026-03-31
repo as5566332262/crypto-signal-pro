@@ -104,6 +104,9 @@ function normalizeClosedTrade(trade, index, formatNumber, paperDigits) {
         : null,
     maxRunupDrawdown: `${toSafeNumberText(maxRunupRaw, formatNumber, 2)} / ${toSafeNumberText(maxDrawdownRaw, formatNumber, 2)}`,
     timeSummary: `${formatDate(createdAt)} / ${formatDate(enteredAt)} / ${formatDate(closedAt)}`,
+    invalidTrade: Boolean(trade.invalidTrade),
+    invalidTradeReason: toPrimitiveText(trade.invalidTradeReason),
+    sourceConsistency: trade.invalidTrade ? "異常" : "一致",
   };
 }
 
@@ -404,6 +407,7 @@ function TradingStateTerminal({
                           valueClassName={trade.hasRealizedPnl ? (trade.pnlPositive ? "text-emerald-600" : "text-rose-600") : ""}
                         />
                         <InfoItem label="平倉原因" value={trade.closeReason} className="col-span-2" />
+                        <InfoItem label="來源一致性" value={trade.sourceConsistency} className="col-span-2" />
                         <InfoItem label="decisionType" value={trade.decisionType} className="col-span-2" />
                         <InfoItem label="pendingType" value={trade.pendingType} className="col-span-2" />
                         <InfoItem label="scoreGrade / totalScore" value={trade.scoreSummary} className="col-span-2" />
@@ -413,6 +417,14 @@ function TradingStateTerminal({
                         {trade.reentryReasonSummary ? <InfoItem label="reentryReason / reentryAdjustedEntry" value={trade.reentryReasonSummary} className="col-span-2" /> : null}
                         <InfoItem label="最大浮盈 / 最大浮虧" value={trade.maxRunupDrawdown} className="col-span-2" />
                         <InfoItem label="建立/進場/出場" value={trade.timeSummary} className="col-span-2" />
+                        {trade.invalidTrade ? (
+                          <InfoItem
+                            label="資料狀態"
+                            value={`此筆資料異常，已排除統計（${trade.invalidTradeReason || "-"})`}
+                            className="col-span-2"
+                            valueClassName="text-amber-700"
+                          />
+                        ) : null}
                       </div>
                     </div>
                   </CardRenderErrorBoundary>
