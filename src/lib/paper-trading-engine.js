@@ -702,12 +702,21 @@ function maybeAdjustPositionRisk(position, tickPrice) {
   return position;
 }
 
-function shouldFillOrder(order, tickPrice) {
+function evaluatePendingOrderFill(order, tickPrice) {
   const triggerPrice = asSafeNumber(order.triggerPrice);
-  if (!triggerPrice) return false;
-  if (!Number.isFinite(tickPrice)) return false;
-  if (order.side === "LONG") return tickPrice >= triggerPrice;
-  return tickPrice <= triggerPrice;
+  if (!Number.isFinite(triggerPrice) || !Number.isFinite(tickPrice)) {
+    return { shouldFill: false, reason: null };
+  }
+  // Limit order fill rule:
+  // LONG: buy at/under entry, SHORT: sell at/above entry.
+  // This also handles price gaps/crosses (not relying on strict equality).
+  if (order.side === "LONG" && tickPrice <= triggerPrice) {
+    return { shouldFill: true, reason: "PRICE_CROSSED" };
+  }
+  if (order.side === "SHORT" && tickPrice >= triggerPrice) {
+    return { shouldFill: true, reason: "PRICE_CROSSED" };
+  }
+  return { shouldFill: false, reason: null };
 }
 
 function hasActiveTrapSignal(decisionSnapshot) {
@@ -786,6 +795,11 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
     cancelledOrders: [...(state.cancelledOrders || [])],
     openPositions: [...state.openPositions],
   };
+  console.debug("[paper-trading] pending orders check", {
+    pendingOrdersCount: (nextState.pendingOrders || []).filter((order) => order.status === "PENDING").length,
+    tickPrice,
+    timestamp,
+  });
 
   nextState.pendingOrders = nextState.pendingOrders.map((order) => {
     if (order.status !== "PENDING") return order;
@@ -801,7 +815,18 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp));
       return { ...order, status: "CANCELLED" };
     }
-    if (!shouldFillOrder(order, tickPrice)) return order;
+    const fillEvaluation = evaluatePendingOrderFill(order, tickPrice);
+    console.debug("[paper-trading] pending order fill evaluation", {
+      orderId: order.id,
+      symbol: order.symbol,
+      timeframe: order.timeframe,
+      side: order.side,
+      triggerPrice: order.triggerPrice,
+      tickPrice,
+      shouldFill: fillEvaluation.shouldFill,
+      fillReason: fillEvaluation.reason,
+    });
+    if (!fillEvaluation.shouldFill) return order;
 
     const confirmation = runConfirmationEngine(
       buildConfirmationPayload(order.decisionSnapshot, tickPrice, {
@@ -822,7 +847,7 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
       };
     }
 
-    const entryPrice = asSafeNumber(candleClose ?? tickPrice, order.triggerPrice);
+    const entryPrice = asSafeNumber(order.triggerPrice, tickPrice);
     const normalizedLevels = normalizeDirectionalLevels({
       side: order.side,
       referencePrice: entryPrice,
@@ -877,6 +902,7 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
       timeframe: order.timeframe,
       side: order.side,
       entryPrice,
+      fillReason: fillEvaluation.reason,
       executedAt: timestamp,
     });
     return { ...order, status: "FILLED", filledAt: timestamp };
