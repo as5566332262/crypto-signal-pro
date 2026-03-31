@@ -733,6 +733,18 @@ export default function PaperTradingSidebar({
                   <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-slate-700 space-y-1">
                     <div className="font-semibold text-amber-800">Cooldown Debug</div>
                     <DebugField label="hasKlineConfirmation" value={simulationExecutionStatus.hasKlineConfirmation ? "true" : "false"} />
+                    <DebugField label="isTrendRelaxed" value={simulationExecutionStatus.isTrendRelaxed ? "true" : "false"} />
+                    <DebugField label="forcedTradeRelaxation" value={simulationExecutionStatus.forcedTradeRelaxation ? "true" : "false"} />
+                    <DebugField
+                      label="relaxationLevel"
+                      value={simulationExecutionStatus.relaxationLevel
+                        ? [
+                          simulationExecutionStatus.relaxationLevel.rr ? "RR" : null,
+                          simulationExecutionStatus.relaxationLevel.kline ? "Kline" : null,
+                          simulationExecutionStatus.relaxationLevel.location ? "Location" : null,
+                        ].filter(Boolean).join(" / ") || "-"
+                        : "-"}
+                    />
                     <DebugField label="lastTradeDirection" value={simulationExecutionStatus.cooldownDebug.lastTradeDirection || "-"} />
                     <DebugField label="longLossStreak" value={simulationExecutionStatus.cooldownDebug.longLossStreak ?? "-"} />
                     <DebugField label="shortLossStreak" value={simulationExecutionStatus.cooldownDebug.shortLossStreak ?? "-"} />
