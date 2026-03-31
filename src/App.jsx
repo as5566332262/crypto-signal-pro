@@ -545,6 +545,19 @@ function calculateSimulationStats(accountSnapshot, symbol) {
       return [symbolKey, avg];
     })
   );
+  const reentryTrades = scopedClosedTrades.filter((trade) => Boolean(trade?.isReentryAttempt));
+  const initialTrades = scopedClosedTrades.filter((trade) => !trade?.isReentryAttempt);
+  const reentryWins = reentryTrades.filter((trade) => Number(trade.realizedPnl) > 0).length;
+  const initialWins = initialTrades.filter((trade) => Number(trade.realizedPnl) > 0).length;
+  const sumPnl = (rows) => rows.reduce((sum, trade) => sum + Number(trade?.realizedPnl || 0), 0);
+  const reentryPerformanceComparison = {
+    reentryCount: reentryTrades.length,
+    initialCount: initialTrades.length,
+    reentryWinRate: reentryTrades.length ? (reentryWins / reentryTrades.length) * 100 : 0,
+    initialWinRate: initialTrades.length ? (initialWins / initialTrades.length) * 100 : 0,
+    reentryAvgPnl: reentryTrades.length ? sumPnl(reentryTrades) / reentryTrades.length : 0,
+    initialAvgPnl: initialTrades.length ? sumPnl(initialTrades) / initialTrades.length : 0,
+  };
 
   return {
     totalTrades,
@@ -570,6 +583,8 @@ function calculateSimulationStats(accountSnapshot, symbol) {
     avgPlaceToFillBars,
     waitingReasonRanking,
     averageWaitBySymbol,
+    reentrySuccessRate: reentryPerformanceComparison.reentryWinRate,
+    reentryPerformanceComparison,
   };
 }
 
