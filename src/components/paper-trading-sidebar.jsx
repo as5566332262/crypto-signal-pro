@@ -88,10 +88,24 @@ function TradingStateTerminal({
   onCancelPendingOrder,
 }) {
   const [activeTab, setActiveTab] = React.useState("positions");
+  const normalizedClosedTrades = React.useMemo(() => {
+    if (!Array.isArray(closedTrades)) {
+      console.error("[TradingStateTerminal] closedTrades is not an array:", closedTrades);
+      return [];
+    }
+    console.log("[TradingStateTerminal] closedTrades.length =", closedTrades.length);
+    return closedTrades.filter((trade, index) => {
+      const valid = trade && typeof trade === "object";
+      if (!valid) {
+        console.error("[TradingStateTerminal] Invalid closed trade item filtered out:", { index, trade });
+      }
+      return valid;
+    });
+  }, [closedTrades]);
   const tabItems = [
     { key: "positions", label: "持有倉位", count: openPositions.length },
     { key: "pending", label: "當前委託", count: pendingOrders.length },
-    { key: "closed", label: "已平倉", count: closedTrades.length },
+    { key: "closed", label: "已平倉", count: normalizedClosedTrades.length },
     { key: "cancelled", label: "已取消", count: cancelledOrders.length },
   ];
 
@@ -102,7 +116,16 @@ function TradingStateTerminal({
       item.takeProfit3 ? `止盈3 ${formatNumber(item.takeProfit3, paperDigits)}` : null,
     ].filter(Boolean).join(" / ") || "-";
 
-  const formatDate = (value) => (value ? new Date(value).toLocaleString() : "-");
+  const safeFormatNumber = (value, digits = 2) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? formatNumber(parsed, digits) : "-";
+  };
+
+  const safeFormatDate = (value) => {
+    if (!value) return "-";
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toLocaleString() : "-";
+  };
 
   const showCloseAll = activeTab === "positions" && openPositions.length > 1;
   const showCancelAll = activeTab === "pending" && pendingOrders.length > 1;
@@ -216,7 +239,7 @@ function TradingStateTerminal({
                       rightValue={formatNumber(order.invalidationPrice, paperDigits)}
                     />
                     <InfoSingleRow label="止盈1 / 止盈2 / 止盈3" value={takeProfitDetailLabel(order)} />
-                    <InfoSingleRow label="建立時間" value={formatDate(order.createdAt)} />
+                    <InfoSingleRow label="建立時間" value={safeFormatDate(order.createdAt)} />
                   </div>
                   <div className="mt-3 pt-1">
                     <Button variant="outline" size="sm" className="h-7 w-full rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => onCancelPendingOrder?.(order.id)}>
@@ -230,38 +253,53 @@ function TradingStateTerminal({
         ) : null}
 
         {activeTab === "closed" ? (
-          closedTrades.length ? (
+          normalizedClosedTrades.length ? (
             <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
-              {closedTrades.map((trade) => {
-                const pnlPositive = Number(trade.realizedPnl || 0) >= 0;
-                return (
-                  <div key={trade.id} className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="text-sm font-semibold text-slate-800">{trade.symbol}</div>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${trade.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
-                        {sideLabel(trade.side)}
-                      </span>
+              {normalizedClosedTrades.map((trade, index) => {
+                try {
+                  const realizedPnlRaw = trade.realizedPnl ?? trade.pnl;
+                  const realizedPnlNumber = Number(realizedPnlRaw);
+                  const hasRealizedPnl = Number.isFinite(realizedPnlNumber);
+                  const pnlPositive = hasRealizedPnl ? realizedPnlNumber >= 0 : true;
+                  const maxRunupRaw = trade.maxRunup ?? trade.maxFavorableExcursion;
+                  const maxDrawdownRaw = trade.maxDrawdown ?? trade.maxAdverseExcursion;
+                  const closeReasonRaw = trade.closeReason ?? trade.exitReason ?? trade.reason;
+                  const createdAt = trade.createdAt ?? trade.entryTime;
+                  const enteredAt = trade.enteredAt ?? trade.entryTime;
+                  const closedAt = trade.closedAt ?? trade.exitTime;
+
+                  return (
+                    <div key={trade.id || `${trade.symbol || "unknown"}-${index}`} className="rounded-xl border border-slate-200 bg-white p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="text-sm font-semibold text-slate-800">{trade.symbol || "-"}</div>
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${trade.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                          {sideLabel(trade.side)}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                        <InfoItem label="進場價" value={safeFormatNumber(trade.entryPrice, paperDigits)} />
+                        <InfoItem label="出場價" value={safeFormatNumber(trade.exitPrice, paperDigits)} />
+                        <InfoItem label="數量" value={safeFormatNumber(trade.quantity, 2)} />
+                        <InfoItem
+                          label="已實現損益"
+                          value={hasRealizedPnl ? `${pnlPositive ? "+" : ""}${safeFormatNumber(realizedPnlNumber, 2)} USDT` : "-"}
+                          valueClassName={hasRealizedPnl ? (pnlPositive ? "text-emerald-600" : "text-rose-600") : ""}
+                        />
+                        <InfoItem label="平倉原因" value={reasonLabel(closeReasonRaw)} className="col-span-2" />
+                        <InfoItem label="decisionType" value={trade.decisionType ?? "-"} className="col-span-2" />
+                        <InfoItem label="pendingType" value={trade.pendingType ?? "-"} className="col-span-2" />
+                        <InfoItem label="scoreGrade / totalScore" value={`${trade.scoreGrade ?? "-"} / ${trade.totalScore ?? "-"}`} className="col-span-2" />
+                        <InfoItem label="regime / confirmation" value={`${trade.regime ?? "-"} / ${trade.confirmationState ?? "-"}`} className="col-span-2" />
+                        <InfoItem label="進場理由" value={trade.entryReasonDetail ?? trade.entryReason ?? "-"} className="col-span-2" />
+                        <InfoItem label="最大浮盈 / 最大浮虧" value={`${safeFormatNumber(maxRunupRaw, 2)} / ${safeFormatNumber(maxDrawdownRaw, 2)}`} className="col-span-2" />
+                        <InfoItem label="建立/進場/出場" value={`${safeFormatDate(createdAt)} / ${safeFormatDate(enteredAt)} / ${safeFormatDate(closedAt)}`} className="col-span-2" />
+                      </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                      <InfoItem label="進場價" value={formatNumber(trade.entryPrice, paperDigits)} />
-                      <InfoItem label="出場價" value={formatNumber(trade.exitPrice, paperDigits)} />
-                      <InfoItem label="數量" value={formatNumber(trade.quantity, 2)} />
-                      <InfoItem
-                        label="已實現損益"
-                        value={`${pnlPositive ? "+" : ""}${formatNumber(trade.realizedPnl, 2)} USDT`}
-                        valueClassName={pnlPositive ? "text-emerald-600" : "text-rose-600"}
-                      />
-                      <InfoItem label="平倉原因" value={reasonLabel(trade.closeReason)} className="col-span-2" />
-                      <InfoItem label="decisionType" value={trade.decisionType || "-"} className="col-span-2" />
-                      <InfoItem label="pendingType" value={trade.pendingType || "-"} className="col-span-2" />
-                      <InfoItem label="scoreGrade / totalScore" value={`${trade.scoreGrade || "-"} / ${trade.totalScore ?? "-"}`} className="col-span-2" />
-                      <InfoItem label="regime / confirmation" value={`${trade.regime || "-"} / ${trade.confirmationState || "-"}`} className="col-span-2" />
-                      <InfoItem label="進場理由" value={trade.entryReasonDetail || trade.entryReason || "-"} className="col-span-2" />
-                      <InfoItem label="最大浮盈 / 最大浮虧" value={`${formatNumber(trade.maxFavorableExcursion, 2)} / ${formatNumber(trade.maxAdverseExcursion, 2)}`} className="col-span-2" />
-                      <InfoItem label="建立/進場/出場" value={`${formatDate(trade.createdAt)} / ${formatDate(trade.enteredAt)} / ${formatDate(trade.closedAt)}`} className="col-span-2" />
-                    </div>
-                  </div>
-                );
+                  );
+                } catch (error) {
+                  console.error("[TradingStateTerminal] Failed to render closed trade card:", { index, trade, error });
+                  return null;
+                }
               })}
             </div>
           ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">無交易紀錄</div>
@@ -282,8 +320,8 @@ function TradingStateTerminal({
                     <InfoItem label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
                     <InfoItem label="數量" value={formatNumber(order.quantity, 2)} />
                     <InfoItem label="取消原因" value={order.cancelReason || "-"} className="col-span-2" />
-                    <InfoItem label="建立時間" value={formatDate(order.createdAt)} className="col-span-2" />
-                    <InfoItem label="取消時間" value={formatDate(order.cancelledAt)} className="col-span-2" />
+                    <InfoItem label="建立時間" value={safeFormatDate(order.createdAt)} className="col-span-2" />
+                    <InfoItem label="取消時間" value={safeFormatDate(order.cancelledAt)} className="col-span-2" />
                   </div>
                 </div>
               ))}
@@ -299,7 +337,7 @@ function InfoItem({ label, value, className = "", valueClassName = "" }) {
   return (
     <div className={`min-w-0 ${className}`}>
       <div className="text-[11px] text-slate-500">{label}</div>
-      <div className={`mt-0.5 min-w-0 whitespace-nowrap font-semibold text-slate-800 ${valueClassName}`}>{value || "-"}</div>
+      <div className={`mt-0.5 min-w-0 whitespace-nowrap font-semibold text-slate-800 ${valueClassName}`}>{value ?? "-"}</div>
     </div>
   );
 }
@@ -308,7 +346,7 @@ function InlineLabelValue({ label, value, valueClassName = "" }) {
   return (
     <div className="min-w-0 whitespace-nowrap text-[13px] font-medium text-slate-700">
       <span className="text-slate-500">{label}：</span>
-      <span className={`font-semibold text-slate-800 ${valueClassName}`}>{value || "-"}</span>
+      <span className={`font-semibold text-slate-800 ${valueClassName}`}>{value ?? "-"}</span>
     </div>
   );
 }
