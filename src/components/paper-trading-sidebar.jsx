@@ -456,7 +456,17 @@ export default function PaperTradingSidebar({
   lastDecisionAt,
   simulationRestoreInfo,
 }) {
+  const [showAnalysisPanel, setShowAnalysisPanel] = React.useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("paperTrading.showAnalysisPanel") === "true";
+  });
   const [runtimeNow, setRuntimeNow] = React.useState(Date.now());
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("paperTrading.showAnalysisPanel", showAnalysisPanel ? "true" : "false");
+  }, [showAnalysisPanel]);
+
   React.useEffect(() => {
     if (simulationLifecycle !== "running") return undefined;
     const timer = window.setInterval(() => setRuntimeNow(Date.now()), 1000);
@@ -534,118 +544,139 @@ export default function PaperTradingSidebar({
           />
           <DebugStateCard accountSnapshot={accountSnapshot} />
           <Card className="rounded-2xl border-slate-200">
-            <CardHeader className="pb-2"><CardTitle className="text-sm">模擬績效統計</CardTitle></CardHeader>
-            <CardContent className="space-y-3 text-xs">
-              <div className="grid grid-cols-2 gap-2">
-              <InfoItem label="總交易數" value={accountSnapshot.simulationStats?.totalTrades} />
-              <InfoItem label="勝率" value={`${formatNumber(accountSnapshot.simulationStats?.winRate, 1)}%`} />
-              <InfoItem label="總損益" value={formatNumber(accountSnapshot.simulationStats?.totalPnl, 2)} />
-              <InfoItem label="已實現損益" value={formatNumber(accountSnapshot.simulationStats?.realizedPnl, 2)} />
-              <InfoItem label="未實現損益" value={formatNumber(accountSnapshot.simulationStats?.unrealizedPnl, 2)} />
-              <InfoItem label="平均盈虧比" value={formatNumber(accountSnapshot.simulationStats?.avgRR, 2)} />
-              <InfoItem label="最大連勝" value={accountSnapshot.simulationStats?.maxWinStreak} />
-              <InfoItem label="最大連敗" value={accountSnapshot.simulationStats?.maxLossStreak} />
-              <InfoItem label="最大回撤" value={formatNumber(accountSnapshot.simulationStats?.maxDrawdown, 2)} />
-              <InfoItem label="多單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.longWinRate, 1)}%`} />
-              <InfoItem label="空單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.shortWinRate, 1)}%`} />
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-sm">分析面板</CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-lg px-2 text-xs"
+                  onClick={() => setShowAnalysisPanel((prev) => !prev)}
+                >
+                  {showAnalysisPanel ? "隱藏分析面板" : "顯示分析面板"}
+                </Button>
               </div>
-              <div>
-                <div className="mb-1 text-slate-500">等待效率</div>
-                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                  <li>first valid signal → place order：{formatNumber(accountSnapshot.simulationStats?.avgSignalToPlaceBars, 2)} K</li>
-                  <li>place order → fill：{formatNumber(accountSnapshot.simulationStats?.avgPlaceToFillBars, 2)} K</li>
-                </ul>
-              </div>
-              <div>
-                <div className="mb-1 text-slate-500">阻擋原因排行</div>
-                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                  {(accountSnapshot.simulationStats?.waitingReasonRanking || []).slice(0, 8).map((item) => (
-                    <li key={item.reason}>{item.reason}: {item.count}</li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <div className="mb-1 text-slate-500">各 Symbol 平均等待</div>
-                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                  {Object.entries(accountSnapshot.simulationStats?.averageWaitBySymbol || {}).map(([key, value]) => (
-                    <li key={key}>{key}: {formatNumber(value, 2)} K</li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <div className="mb-1 text-slate-500">各 decisionType 勝率</div>
-                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                  {Object.entries(accountSnapshot.simulationStats?.decisionTypeWinRate || {}).map(([key, value]) => (
-                    <li key={key}>{key}: {formatNumber(value, 1)}%</li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <div className="mb-1 text-slate-500">各 pendingType 勝率</div>
-                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                  {Object.entries(accountSnapshot.simulationStats?.pendingTypeWinRate || {}).map(([key, value]) => (
-                    <li key={key}>{key}: {formatNumber(value, 1)}%</li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <div className="mb-1 text-slate-500">Re-entry 統計</div>
-                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                  <li>re-entry 勝率：{formatNumber(accountSnapshot.simulationStats?.reentrySuccessRate, 1)}%</li>
-                  <li>re-entry 平均PnL：{formatNumber(accountSnapshot.simulationStats?.reentryPerformanceComparison?.reentryAvgPnl, 2)}</li>
-                  <li>初始 entry 平均PnL：{formatNumber(accountSnapshot.simulationStats?.reentryPerformanceComparison?.initialAvgPnl, 2)}</li>
-                  <li>re-entry vs 初始樣本：{accountSnapshot.simulationStats?.reentryPerformanceComparison?.reentryCount || 0} / {accountSnapshot.simulationStats?.reentryPerformanceComparison?.initialCount || 0}</li>
-                </ul>
-              </div>
-              <div>
-                <div className="mb-1 text-slate-500">Full Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
-                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
-                  {(accountSnapshot.simulationStats?.performanceRows || []).slice(0, 8).map((row, index) => (
-                    <li key={row?.setupKey || `full-${index}`}>
-                      {row?.setupKey || "-"}: {row?.totalTrades ?? 0} 筆 / {formatNumber(row?.winRate, 1)}% / {formatNumber(row?.avgPnl, 2)}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <div className="mb-1 text-slate-500">Coarse Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
-                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
-                  {(accountSnapshot.simulationStats?.coarsePerformanceRows || []).slice(0, 8).map((row) => (
-                    <li key={`coarse-${row?.setupKey || "unknown"}`}>
-                      {row?.setupKey || "-"}: {row?.totalTrades ?? 0} 筆 / {formatNumber(row?.winRate, 1)}% / {formatNumber(row?.avgPnl, 2)}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <div className="mb-1 text-slate-500">Recent vs All-time（Full Setup）</div>
-                <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
-                  {Object.entries(accountSnapshot.simulationStats?.performanceRecentMap || {}).slice(0, 8).map(([setupKey, row]) => {
-                    const allTime = accountSnapshot.simulationStats?.performanceMap?.[setupKey];
-                    return (
-                      <li key={`recent-${setupKey}`}>
-                        {setupKey}: recent {row?.totalTrades ?? 0}/{formatNumber(row?.winRate, 1)}%/{formatNumber(row?.avgPnl, 2)}
-                        {" "}vs all {allTime?.totalTrades || 0}/{formatNumber(allTime?.winRate, 1)}%/{formatNumber(allTime?.avgPnl, 2)}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            </CardContent>
+            </CardHeader>
           </Card>
-          <Card className="rounded-2xl border-slate-200">
-            <CardHeader className="pb-2"><CardTitle className="text-sm">Review / Diagnostics</CardTitle></CardHeader>
-            <CardContent className="space-y-2 text-xs">
-              <div className="text-slate-500">低勝率 setup</div>
-              <ul className="list-disc space-y-1 pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
-                {(accountSnapshot.diagnostics?.reviewLines || []).map((line) => <li key={line}>{line}</li>)}
-              </ul>
-              <div className="text-slate-500">Suggested Adjustments</div>
-              <ul className="list-disc space-y-1 pl-4 [overflow-wrap:anywhere] break-words">
-                {(accountSnapshot.diagnostics?.suggestions || []).map((line) => <li key={line}>{line}</li>)}
-              </ul>
-            </CardContent>
-          </Card>
+
+          {showAnalysisPanel ? (
+            <>
+              <Card className="rounded-2xl border-slate-200">
+                <CardHeader className="pb-2"><CardTitle className="text-sm">模擬績效統計</CardTitle></CardHeader>
+                <CardContent className="space-y-3 text-xs">
+                  <div className="grid grid-cols-2 gap-2">
+                    <InfoItem label="總交易數" value={accountSnapshot.simulationStats?.totalTrades} />
+                    <InfoItem label="勝率" value={`${formatNumber(accountSnapshot.simulationStats?.winRate, 1)}%`} />
+                    <InfoItem label="總損益" value={formatNumber(accountSnapshot.simulationStats?.totalPnl, 2)} />
+                    <InfoItem label="已實現損益" value={formatNumber(accountSnapshot.simulationStats?.realizedPnl, 2)} />
+                    <InfoItem label="未實現損益" value={formatNumber(accountSnapshot.simulationStats?.unrealizedPnl, 2)} />
+                    <InfoItem label="平均盈虧比" value={formatNumber(accountSnapshot.simulationStats?.avgRR, 2)} />
+                    <InfoItem label="最大連勝" value={accountSnapshot.simulationStats?.maxWinStreak} />
+                    <InfoItem label="最大連敗" value={accountSnapshot.simulationStats?.maxLossStreak} />
+                    <InfoItem label="最大回撤" value={formatNumber(accountSnapshot.simulationStats?.maxDrawdown, 2)} />
+                    <InfoItem label="多單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.longWinRate, 1)}%`} />
+                    <InfoItem label="空單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.shortWinRate, 1)}%`} />
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">等待效率</div>
+                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                      <li>first valid signal → place order：{formatNumber(accountSnapshot.simulationStats?.avgSignalToPlaceBars, 2)} K</li>
+                      <li>place order → fill：{formatNumber(accountSnapshot.simulationStats?.avgPlaceToFillBars, 2)} K</li>
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">阻擋原因排行</div>
+                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                      {(accountSnapshot.simulationStats?.waitingReasonRanking || []).slice(0, 8).map((item) => (
+                        <li key={item.reason}>{item.reason}: {item.count}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">各 Symbol 平均等待</div>
+                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                      {Object.entries(accountSnapshot.simulationStats?.averageWaitBySymbol || {}).map(([key, value]) => (
+                        <li key={key}>{key}: {formatNumber(value, 2)} K</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">各 decisionType 勝率</div>
+                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                      {Object.entries(accountSnapshot.simulationStats?.decisionTypeWinRate || {}).map(([key, value]) => (
+                        <li key={key}>{key}: {formatNumber(value, 1)}%</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">各 pendingType 勝率</div>
+                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                      {Object.entries(accountSnapshot.simulationStats?.pendingTypeWinRate || {}).map(([key, value]) => (
+                        <li key={key}>{key}: {formatNumber(value, 1)}%</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">Re-entry 統計</div>
+                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                      <li>re-entry 勝率：{formatNumber(accountSnapshot.simulationStats?.reentrySuccessRate, 1)}%</li>
+                      <li>re-entry 平均PnL：{formatNumber(accountSnapshot.simulationStats?.reentryPerformanceComparison?.reentryAvgPnl, 2)}</li>
+                      <li>初始 entry 平均PnL：{formatNumber(accountSnapshot.simulationStats?.reentryPerformanceComparison?.initialAvgPnl, 2)}</li>
+                      <li>re-entry vs 初始樣本：{accountSnapshot.simulationStats?.reentryPerformanceComparison?.reentryCount || 0} / {accountSnapshot.simulationStats?.reentryPerformanceComparison?.initialCount || 0}</li>
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">Full Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
+                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
+                      {(accountSnapshot.simulationStats?.performanceRows || []).slice(0, 8).map((row, index) => (
+                        <li key={row?.setupKey || `full-${index}`}>
+                          {row?.setupKey || "-"}: {row?.totalTrades ?? 0} 筆 / {formatNumber(row?.winRate, 1)}% / {formatNumber(row?.avgPnl, 2)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">Coarse Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
+                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
+                      {(accountSnapshot.simulationStats?.coarsePerformanceRows || []).slice(0, 8).map((row) => (
+                        <li key={`coarse-${row?.setupKey || "unknown"}`}>
+                          {row?.setupKey || "-"}: {row?.totalTrades ?? 0} 筆 / {formatNumber(row?.winRate, 1)}% / {formatNumber(row?.avgPnl, 2)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">Recent vs All-time（Full Setup）</div>
+                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
+                      {Object.entries(accountSnapshot.simulationStats?.performanceRecentMap || {}).slice(0, 8).map(([setupKey, row]) => {
+                        const allTime = accountSnapshot.simulationStats?.performanceMap?.[setupKey];
+                        return (
+                          <li key={`recent-${setupKey}`}>
+                            {setupKey}: recent {row?.totalTrades ?? 0}/{formatNumber(row?.winRate, 1)}%/{formatNumber(row?.avgPnl, 2)}
+                            {" "}vs all {allTime?.totalTrades || 0}/{formatNumber(allTime?.winRate, 1)}%/{formatNumber(allTime?.avgPnl, 2)}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border-slate-200">
+                <CardHeader className="pb-2"><CardTitle className="text-sm">Review / Diagnostics</CardTitle></CardHeader>
+                <CardContent className="space-y-2 text-xs">
+                  <div className="text-slate-500">低勝率 setup</div>
+                  <ul className="list-disc space-y-1 pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
+                    {(accountSnapshot.diagnostics?.reviewLines || []).map((line) => <li key={line}>{line}</li>)}
+                  </ul>
+                  <div className="text-slate-500">Suggested Adjustments</div>
+                  <ul className="list-disc space-y-1 pl-4 [overflow-wrap:anywhere] break-words">
+                    {(accountSnapshot.diagnostics?.suggestions || []).map((line) => <li key={line}>{line}</li>)}
+                  </ul>
+                </CardContent>
+              </Card>
+            </>
+          ) : null}
 
           <div className="grid grid-cols-1 gap-2">
             <Button
@@ -662,114 +693,116 @@ export default function PaperTradingSidebar({
               </div>
             ) : null}
 
-            <Card className="rounded-2xl border-slate-200">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">最近一次執行結果</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-xs text-slate-600">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-slate-500">狀態</span>
-                  <span className="rounded-md bg-slate-100 px-2 py-0.5 font-semibold text-slate-800">
-                    {simulationExecutionStatus?.statusLabel || "-"}
-                  </span>
-                </div>
-                <div className="text-slate-700">原因：{simulationExecutionStatus?.reason || "-"}</div>
-                {simulationExecutionStatus?.scoring ? (
-                  <div className="rounded-lg border border-violet-200 bg-violet-50 p-2 text-slate-700 space-y-1">
-                    <div className="font-semibold text-violet-800">Scoring 引擎</div>
-                    <DebugField label="總分" value={simulationExecutionStatus.scoring.totalScore ?? "-"} />
-                    <DebugField label="等級" value={simulationExecutionStatus.scoring.scoreGrade || "-"} />
-                    <DebugField label="信心" value={simulationExecutionStatus.scoring.confidenceLevel || "-"} />
-                    {simulationExecutionStatus.scoring.keyPositiveFactors?.length ? (
-                      <div>
-                        <div className="text-[11px] text-violet-700">關鍵加分</div>
-                        <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                          {simulationExecutionStatus.scoring.keyPositiveFactors.map((item) => (
-                            <li key={`plus-${item.label}`}>{item.label}（+{item.impact}）</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {simulationExecutionStatus.scoring.keyNegativeFactors?.length ? (
-                      <div>
-                        <div className="text-[11px] text-rose-700">關鍵扣分</div>
-                        <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                          {simulationExecutionStatus.scoring.keyNegativeFactors.map((item) => (
-                            <li key={`minus-${item.label}`}>{item.label}（{item.impact}）</li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
+            {showAnalysisPanel ? (
+              <Card className="rounded-2xl border-slate-200">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">最近一次執行結果</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-xs text-slate-600">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-500">狀態</span>
+                    <span className="rounded-md bg-slate-100 px-2 py-0.5 font-semibold text-slate-800">
+                      {simulationExecutionStatus?.statusLabel || "-"}
+                    </span>
                   </div>
-                ) : null}
-                {simulationExecutionStatus?.pendingOrder ? (
-                  <div className="rounded-lg border border-sky-200 bg-sky-50 p-2 text-slate-700">
-                    <div>掛單方向：{sideLabel(simulationExecutionStatus.pendingOrder.side)}</div>
-                    <div>觸發價格：{formatNumber(simulationExecutionStatus.pendingOrder.triggerPrice, paperDigits)}</div>
-                    <div>失效價格：{formatNumber(simulationExecutionStatus.pendingOrder.invalidationPrice, paperDigits)}</div>
+                  <div className="text-slate-700">原因：{simulationExecutionStatus?.reason || "-"}</div>
+                  {simulationExecutionStatus?.scoring ? (
+                    <div className="rounded-lg border border-violet-200 bg-violet-50 p-2 text-slate-700 space-y-1">
+                      <div className="font-semibold text-violet-800">Scoring 引擎</div>
+                      <DebugField label="總分" value={simulationExecutionStatus.scoring.totalScore ?? "-"} />
+                      <DebugField label="等級" value={simulationExecutionStatus.scoring.scoreGrade || "-"} />
+                      <DebugField label="信心" value={simulationExecutionStatus.scoring.confidenceLevel || "-"} />
+                      {simulationExecutionStatus.scoring.keyPositiveFactors?.length ? (
+                        <div>
+                          <div className="text-[11px] text-violet-700">關鍵加分</div>
+                          <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                            {simulationExecutionStatus.scoring.keyPositiveFactors.map((item) => (
+                              <li key={`plus-${item.label}`}>{item.label}（+{item.impact}）</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      {simulationExecutionStatus.scoring.keyNegativeFactors?.length ? (
+                        <div>
+                          <div className="text-[11px] text-rose-700">關鍵扣分</div>
+                          <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
+                            {simulationExecutionStatus.scoring.keyNegativeFactors.map((item) => (
+                              <li key={`minus-${item.label}`}>{item.label}（{item.impact}）</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {simulationExecutionStatus?.pendingOrder ? (
+                    <div className="rounded-lg border border-sky-200 bg-sky-50 p-2 text-slate-700">
+                      <div>掛單方向：{sideLabel(simulationExecutionStatus.pendingOrder.side)}</div>
+                      <div>觸發價格：{formatNumber(simulationExecutionStatus.pendingOrder.triggerPrice, paperDigits)}</div>
+                      <div>失效價格：{formatNumber(simulationExecutionStatus.pendingOrder.invalidationPrice, paperDigits)}</div>
+                    </div>
+                  ) : null}
+                  {simulationExecutionStatus?.unmetConditions?.length ? (
+                    <div>
+                      <div className="mb-1 text-slate-500">未成立條件</div>
+                      <ul className="list-disc space-y-0.5 pl-4 text-slate-700">
+                        {simulationExecutionStatus.unmetConditions.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {simulationExecutionStatus?.distances?.length ? (
+                    <div>
+                      <div className="mb-1 text-slate-500">距離觸發</div>
+                      <ul className="list-disc space-y-0.5 pl-4 text-slate-700">
+                        {simulationExecutionStatus.distances.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {simulationExecutionStatus?.cooldownDebug ? (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-slate-700 space-y-1">
+                      <div className="font-semibold text-amber-800">Cooldown Debug</div>
+                      <DebugField label="hasKlineConfirmation" value={simulationExecutionStatus.hasKlineConfirmation ? "true" : "false"} />
+                      <DebugField label="isTrendRelaxed" value={simulationExecutionStatus.isTrendRelaxed ? "true" : "false"} />
+                      <DebugField label="forcedTradeRelaxation" value={simulationExecutionStatus.forcedTradeRelaxation ? "true" : "false"} />
+                      <DebugField
+                        label="relaxationLevel"
+                        value={simulationExecutionStatus.relaxationLevel
+                          ? [
+                            simulationExecutionStatus.relaxationLevel.rr ? "RR" : null,
+                            simulationExecutionStatus.relaxationLevel.kline ? "Kline" : null,
+                            simulationExecutionStatus.relaxationLevel.location ? "Location" : null,
+                          ].filter(Boolean).join(" / ") || "-"
+                          : "-"}
+                      />
+                      <DebugField label="lastTradeDirection" value={simulationExecutionStatus.cooldownDebug.lastTradeDirection || "-"} />
+                      <DebugField label="longLossStreak" value={simulationExecutionStatus.cooldownDebug.longLossStreak ?? "-"} />
+                      <DebugField label="shortLossStreak" value={simulationExecutionStatus.cooldownDebug.shortLossStreak ?? "-"} />
+                      <DebugField label="consecutiveLossCount" value={simulationExecutionStatus.cooldownDebug.consecutiveLossCount ?? "-"} />
+                      <DebugField label="cooldownActive" value={simulationExecutionStatus.cooldownDebug.cooldownActive ? "true" : "false"} />
+                      <DebugField label="cooldownBarsLeft" value={simulationExecutionStatus.cooldownDebug.cooldownBarsLeft ?? "-"} />
+                    </div>
+                  ) : null}
+                  <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2 text-slate-700 space-y-1">
+                    <div className="font-semibold text-indigo-800">Performance Filter Debug</div>
+                    <DebugField label="totalOpenPositionsAllSymbols" value={accountSnapshot.totalOpenPositionsAllSymbols ?? 0} />
+                    <DebugField label="totalPendingOrdersAllSymbols" value={accountSnapshot.totalPendingOrdersAllSymbols ?? 0} />
+                    <DebugField label="currentSymbolOpenPositions" value={accountSnapshot.currentSymbolOpenPositionsCount ?? 0} />
+                    <DebugField label="currentSymbolPendingOrders" value={accountSnapshot.currentSymbolPendingOrdersCount ?? 0} />
+                    <DebugField label="currentFullSetupKey" value={performanceDebug.currentFullSetupKey || performanceDebug.currentSetupKey || "-"} />
+                    <DebugField label="currentCoarseSetupKey" value={performanceDebug.currentCoarseSetupKey || "-"} />
+                    <DebugField label="performanceSource" value={performanceDebug.performanceSource || "-"} />
+                    <DebugField label="performanceSampleSize" value={performanceDebug.performanceSampleSize ?? performanceDebug.currentSetupSampleSize ?? 0} />
+                    <DebugField label="performanceWinRate" value={performanceDebug.performanceWinRate == null ? "-" : `${formatNumber(performanceDebug.performanceWinRate, 1)}%`} />
+                    <DebugField label="performanceAvgPnl" value={performanceDebug.performanceAvgPnl == null ? "-" : formatNumber(performanceDebug.performanceAvgPnl, 2)} />
+                    <DebugField label="blockedByPerformanceFilter" value={performanceDebug.blockedByPerformanceFilter ? "true" : "false"} />
                   </div>
-                ) : null}
-                {simulationExecutionStatus?.unmetConditions?.length ? (
-                  <div>
-                    <div className="mb-1 text-slate-500">未成立條件</div>
-                    <ul className="list-disc space-y-0.5 pl-4 text-slate-700">
-                      {simulationExecutionStatus.unmetConditions.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                {simulationExecutionStatus?.distances?.length ? (
-                  <div>
-                    <div className="mb-1 text-slate-500">距離觸發</div>
-                    <ul className="list-disc space-y-0.5 pl-4 text-slate-700">
-                      {simulationExecutionStatus.distances.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                {simulationExecutionStatus?.cooldownDebug ? (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-slate-700 space-y-1">
-                    <div className="font-semibold text-amber-800">Cooldown Debug</div>
-                    <DebugField label="hasKlineConfirmation" value={simulationExecutionStatus.hasKlineConfirmation ? "true" : "false"} />
-                    <DebugField label="isTrendRelaxed" value={simulationExecutionStatus.isTrendRelaxed ? "true" : "false"} />
-                    <DebugField label="forcedTradeRelaxation" value={simulationExecutionStatus.forcedTradeRelaxation ? "true" : "false"} />
-                    <DebugField
-                      label="relaxationLevel"
-                      value={simulationExecutionStatus.relaxationLevel
-                        ? [
-                          simulationExecutionStatus.relaxationLevel.rr ? "RR" : null,
-                          simulationExecutionStatus.relaxationLevel.kline ? "Kline" : null,
-                          simulationExecutionStatus.relaxationLevel.location ? "Location" : null,
-                        ].filter(Boolean).join(" / ") || "-"
-                        : "-"}
-                    />
-                    <DebugField label="lastTradeDirection" value={simulationExecutionStatus.cooldownDebug.lastTradeDirection || "-"} />
-                    <DebugField label="longLossStreak" value={simulationExecutionStatus.cooldownDebug.longLossStreak ?? "-"} />
-                    <DebugField label="shortLossStreak" value={simulationExecutionStatus.cooldownDebug.shortLossStreak ?? "-"} />
-                    <DebugField label="consecutiveLossCount" value={simulationExecutionStatus.cooldownDebug.consecutiveLossCount ?? "-"} />
-                    <DebugField label="cooldownActive" value={simulationExecutionStatus.cooldownDebug.cooldownActive ? "true" : "false"} />
-                    <DebugField label="cooldownBarsLeft" value={simulationExecutionStatus.cooldownDebug.cooldownBarsLeft ?? "-"} />
-                  </div>
-                ) : null}
-                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2 text-slate-700 space-y-1">
-                  <div className="font-semibold text-indigo-800">Performance Filter Debug</div>
-                  <DebugField label="totalOpenPositionsAllSymbols" value={accountSnapshot.totalOpenPositionsAllSymbols ?? 0} />
-                  <DebugField label="totalPendingOrdersAllSymbols" value={accountSnapshot.totalPendingOrdersAllSymbols ?? 0} />
-                  <DebugField label="currentSymbolOpenPositions" value={accountSnapshot.currentSymbolOpenPositionsCount ?? 0} />
-                  <DebugField label="currentSymbolPendingOrders" value={accountSnapshot.currentSymbolPendingOrdersCount ?? 0} />
-                  <DebugField label="currentFullSetupKey" value={performanceDebug.currentFullSetupKey || performanceDebug.currentSetupKey || "-"} />
-                  <DebugField label="currentCoarseSetupKey" value={performanceDebug.currentCoarseSetupKey || "-"} />
-                  <DebugField label="performanceSource" value={performanceDebug.performanceSource || "-"} />
-                  <DebugField label="performanceSampleSize" value={performanceDebug.performanceSampleSize ?? performanceDebug.currentSetupSampleSize ?? 0} />
-                  <DebugField label="performanceWinRate" value={performanceDebug.performanceWinRate == null ? "-" : `${formatNumber(performanceDebug.performanceWinRate, 1)}%`} />
-                  <DebugField label="performanceAvgPnl" value={performanceDebug.performanceAvgPnl == null ? "-" : formatNumber(performanceDebug.performanceAvgPnl, 2)} />
-                  <DebugField label="blockedByPerformanceFilter" value={performanceDebug.blockedByPerformanceFilter ? "true" : "false"} />
-                </div>
-                <div>時間：{formatDate(simulationExecutionStatus?.timestamp)}</div>
-              </CardContent>
-            </Card>
+                  <div>時間：{formatDate(simulationExecutionStatus?.timestamp)}</div>
+                </CardContent>
+              </Card>
+            ) : null}
             <Button variant="ghost" className="rounded-2xl text-rose-600 hover:bg-rose-50 hover:text-rose-700" onClick={onResetPaperAccount}>重置模擬</Button>
           </div>
         </div>
