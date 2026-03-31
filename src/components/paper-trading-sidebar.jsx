@@ -436,6 +436,34 @@ export default function PaperTradingSidebar({
                   </span>
                 </div>
                 <div className="text-slate-700">原因：{simulationExecutionStatus?.reason || "-"}</div>
+                {simulationExecutionStatus?.scoring ? (
+                  <div className="rounded-lg border border-violet-200 bg-violet-50 p-2 text-slate-700 space-y-1">
+                    <div className="font-semibold text-violet-800">Scoring 引擎</div>
+                    <div>總分：{simulationExecutionStatus.scoring.totalScore ?? "-"}</div>
+                    <div>等級：{simulationExecutionStatus.scoring.scoreGrade || "-"}</div>
+                    <div>信心：{simulationExecutionStatus.scoring.confidenceLevel || "-"}</div>
+                    {simulationExecutionStatus.scoring.keyPositiveFactors?.length ? (
+                      <div>
+                        <div className="text-[11px] text-violet-700">關鍵加分</div>
+                        <ul className="list-disc pl-4">
+                          {simulationExecutionStatus.scoring.keyPositiveFactors.map((item) => (
+                            <li key={`plus-${item.label}`}>{item.label}（+{item.impact}）</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {simulationExecutionStatus.scoring.keyNegativeFactors?.length ? (
+                      <div>
+                        <div className="text-[11px] text-rose-700">關鍵扣分</div>
+                        <ul className="list-disc pl-4">
+                          {simulationExecutionStatus.scoring.keyNegativeFactors.map((item) => (
+                            <li key={`minus-${item.label}`}>{item.label}（{item.impact}）</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 {simulationExecutionStatus?.pendingOrder ? (
                   <div className="rounded-lg border border-sky-200 bg-sky-50 p-2 text-slate-700">
                     <div>掛單方向：{sideLabel(simulationExecutionStatus.pendingOrder.side)}</div>
