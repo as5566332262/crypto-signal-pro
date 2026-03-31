@@ -463,16 +463,21 @@ function getSimulationButtonState(decision, currentPrice, signalContext = {}) {
   };
 }
 
+function isTradeValidForStats(trade) {
+  return !Boolean(trade?.invalidTrade);
+}
+
 function calculateSimulationStats(accountSnapshot, symbol) {
   const closedTrades = accountSnapshot.closedTrades || [];
   const openPositions = accountSnapshot.openPositions || [];
   const scopedClosedTrades = symbol ? closedTrades.filter((trade) => trade.symbol === symbol) : closedTrades;
+  const validScopedClosedTrades = scopedClosedTrades.filter((trade) => isTradeValidForStats(trade));
   const scopedOpenPositions = symbol ? openPositions.filter((position) => position.symbol === symbol) : openPositions;
-  const wins = scopedClosedTrades.filter((trade) => Number(trade.realizedPnl) > 0);
-  const losses = scopedClosedTrades.filter((trade) => Number(trade.realizedPnl) <= 0);
-  const totalTrades = scopedClosedTrades.length;
+  const wins = validScopedClosedTrades.filter((trade) => Number(trade.realizedPnl) > 0);
+  const losses = validScopedClosedTrades.filter((trade) => Number(trade.realizedPnl) <= 0);
+  const totalTrades = validScopedClosedTrades.length;
   const winRate = totalTrades ? (wins.length / totalTrades) * 100 : 0;
-  const realizedPnl = scopedClosedTrades.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0);
+  const realizedPnl = validScopedClosedTrades.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0);
   const unrealizedPnl = scopedOpenPositions.reduce((sum, pos) => sum + Number(pos.unrealizedPnl || 0), 0);
   const avgWin = wins.length ? wins.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0) / wins.length : 0;
   const avgLoss = losses.length ? Math.abs(losses.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0) / losses.length) : 0;
@@ -485,7 +490,7 @@ function calculateSimulationStats(accountSnapshot, symbol) {
   let peak = 0;
   let running = 0;
   let maxDrawdown = 0;
-  for (const trade of [...scopedClosedTrades].reverse()) {
+  for (const trade of [...validScopedClosedTrades].reverse()) {
     const pnl = Number(trade.realizedPnl || 0);
     running += pnl;
     peak = Math.max(peak, running);
@@ -503,7 +508,7 @@ function calculateSimulationStats(accountSnapshot, symbol) {
 
   const byKeyWinRate = (key) => {
     const bucket = {};
-    for (const trade of scopedClosedTrades) {
+    for (const trade of validScopedClosedTrades) {
       const label = trade?.[key] || "UNKNOWN";
       if (!bucket[label]) bucket[label] = { total: 0, wins: 0 };
       bucket[label].total += 1;
@@ -512,16 +517,16 @@ function calculateSimulationStats(accountSnapshot, symbol) {
     return Object.fromEntries(Object.entries(bucket).map(([label, stat]) => [label, stat.total ? (stat.wins / stat.total) * 100 : 0]));
   };
   const bySide = (side) => {
-    const rows = scopedClosedTrades.filter((trade) => trade.side === side);
+    const rows = validScopedClosedTrades.filter((trade) => trade.side === side);
     const winsCount = rows.filter((trade) => Number(trade.realizedPnl) > 0).length;
     return rows.length ? (winsCount / rows.length) * 100 : 0;
   };
   const fullPerformance = paperTradingAnalytics.buildPerformanceSnapshot(
-    scopedClosedTrades,
+    validScopedClosedTrades,
     (setupContext, trade) => trade?.setupKey || paperTradingAnalytics.buildSetupKey(setupContext)
   );
   const coarsePerformance = paperTradingAnalytics.buildPerformanceSnapshot(
-    scopedClosedTrades,
+    validScopedClosedTrades,
     (setupContext, trade) => trade?.coarseSetupKey || paperTradingAnalytics.buildCoarseSetupKey(setupContext)
   );
   const performanceRows = Object.entries(fullPerformance.allTimeMap)
@@ -555,8 +560,8 @@ function calculateSimulationStats(accountSnapshot, symbol) {
       return [symbolKey, avg];
     })
   );
-  const reentryTrades = scopedClosedTrades.filter((trade) => Boolean(trade?.isReentryAttempt));
-  const initialTrades = scopedClosedTrades.filter((trade) => !trade?.isReentryAttempt);
+  const reentryTrades = validScopedClosedTrades.filter((trade) => Boolean(trade?.isReentryAttempt));
+  const initialTrades = validScopedClosedTrades.filter((trade) => !trade?.isReentryAttempt);
   const reentryWins = reentryTrades.filter((trade) => Number(trade.realizedPnl) > 0).length;
   const initialWins = initialTrades.filter((trade) => Number(trade.realizedPnl) > 0).length;
   const sumPnl = (rows) => rows.reduce((sum, trade) => sum + Number(trade?.realizedPnl || 0), 0);
@@ -607,8 +612,9 @@ function calculateSimulationStats(accountSnapshot, symbol) {
 
 function calculateAccountSummary(accountSnapshot) {
   const closedTrades = Array.isArray(accountSnapshot?.closedTrades) ? accountSnapshot.closedTrades : [];
+  const validClosedTrades = closedTrades.filter((trade) => isTradeValidForStats(trade));
   const openPositions = Array.isArray(accountSnapshot?.openPositions) ? accountSnapshot.openPositions : [];
-  const realizedPnl = closedTrades.reduce((sum, trade) => sum + Number(trade?.realizedPnl || 0), 0);
+  const realizedPnl = validClosedTrades.reduce((sum, trade) => sum + Number(trade?.realizedPnl || 0), 0);
   const cash = Number(paperTradingConstants?.DEFAULT_BALANCE || 5000) + realizedPnl;
   const unrealizedPnl = openPositions.reduce((sum, position) => sum + Number(position?.unrealizedPnl || 0), 0);
   const marginUsed = openPositions.reduce((sum, position) => {
@@ -637,7 +643,7 @@ function calculateAccountSummary(accountSnapshot) {
 }
 
 function buildDiagnostics(accountSnapshot) {
-  const trades = accountSnapshot.closedTrades || [];
+  const trades = (accountSnapshot.closedTrades || []).filter((trade) => isTradeValidForStats(trade));
   if (!trades.length) return { reviewLines: [], suggestions: [] };
   const fullPerformance = paperTradingAnalytics.buildPerformanceSnapshot(
     trades,
@@ -2964,10 +2970,12 @@ export default function CryptoSignalWebApp() {
     const currentSymbolOpenPositions = (paperAccount.openPositions || []).filter((position) => position.symbol === paperMarketSymbol);
     const currentSymbolPendingOrders = (paperAccount.pendingOrders || []).filter((order) => order.symbol === paperMarketSymbol);
     const currentSymbolClosedTrades = (paperAccount.closedTrades || []).filter((trade) => trade.symbol === paperMarketSymbol);
+    const currentSymbolInvalidTrades = currentSymbolClosedTrades.filter((trade) => trade?.invalidTrade);
+    const currentSymbolValidClosedTrades = currentSymbolClosedTrades.filter((trade) => !trade?.invalidTrade);
     const currentSymbolCancelledOrders = (paperAccount.cancelledOrders || []).filter((order) => order.symbol === paperMarketSymbol);
-    const wins = currentSymbolClosedTrades.filter((trade) => trade.realizedPnl >= 0).length;
-    const losses = currentSymbolClosedTrades.length - wins;
-    const totalTrades = currentSymbolClosedTrades.length;
+    const wins = currentSymbolValidClosedTrades.filter((trade) => trade.realizedPnl >= 0).length;
+    const losses = currentSymbolValidClosedTrades.length - wins;
+    const totalTrades = currentSymbolValidClosedTrades.length;
     const winRate = totalTrades ? (wins / totalTrades) * 100 : 0;
     const simulationStats = calculateSimulationStats(paperAccount, paperMarketSymbol);
     const diagnostics = buildDiagnostics({
@@ -2981,6 +2989,7 @@ export default function CryptoSignalWebApp() {
       currentSymbolOpenPositions,
       currentSymbolPendingOrders,
       currentSymbolClosedTrades,
+      currentSymbolInvalidTrades,
       currentSymbolCancelledOrders,
       totalOpenPositionsAllSymbols: (paperAccount.openPositions || []).length,
       totalPendingOrdersAllSymbols: (paperAccount.pendingOrders || []).length,
