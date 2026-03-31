@@ -90,6 +90,11 @@ function createDefaultSymbolSimulationState() {
     },
     simulationAgentRuntimeState: {},
     lastDecisionAt: null,
+    currentPhase: "idle",
+    waitingReason: "尚未啟動模擬",
+    lastBlockReason: null,
+    recentSimulationEvents: [],
+    lastDecisionSummary: "尚未有決策",
   };
 }
 
@@ -127,6 +132,11 @@ function normalizeSimulationStateBySymbol(raw) {
       simulationAgentRuntimeState: item?.simulationAgentRuntimeState && typeof item.simulationAgentRuntimeState === "object"
         ? item.simulationAgentRuntimeState
         : {},
+      currentPhase: item?.currentPhase || "idle",
+      waitingReason: item?.waitingReason || "尚未啟動模擬",
+      lastBlockReason: item?.lastBlockReason || null,
+      recentSimulationEvents: Array.isArray(item?.recentSimulationEvents) ? item.recentSimulationEvents.slice(0, 5) : [],
+      lastDecisionSummary: item?.lastDecisionSummary || "尚未有決策",
     };
     return acc;
   }, {});
@@ -2863,6 +2873,43 @@ export default function CryptoSignalWebApp() {
       };
     });
   };
+  const appendSimulationEvent = (symbolKey, message, timestamp = new Date().toISOString()) => {
+    if (!symbolKey || !message) return;
+    updateSimulationStateForSymbol(symbolKey, (previous) => ({
+      recentSimulationEvents: [
+        { timestamp, message },
+        ...(Array.isArray(previous?.recentSimulationEvents) ? previous.recentSimulationEvents : []),
+      ].slice(0, 5),
+    }));
+  };
+  const simulationStatusBySymbol = useMemo(() => {
+    const result = {};
+    for (const symbolKey of PAPER_SUPPORTED_SYMBOLS) {
+      const state = simulationStateBySymbol?.[symbolKey] || createDefaultSymbolSimulationState();
+      result[symbolKey] = {
+        symbol: `${symbolKey}USDT`,
+        isSimulating: state.isSimulating,
+        lifecycle: state.lifecycle,
+        startedAt: state.startedAt,
+        elapsedTime: state.elapsedTime,
+        lastDecisionAt: state.lastDecisionAt,
+        currentPhase: state.currentPhase || "idle",
+        waitingReason: state.waitingReason || "-",
+        lastBlockReason: state.lastBlockReason || "-",
+        hasPendingOrder: Array.isArray(state.pendingOrders) && state.pendingOrders.length > 0,
+        hasOpenPosition: Array.isArray(state.openPositions) && state.openPositions.length > 0,
+        cooldownActive: Boolean(state?.cooldown?.longCooldownBarsLeft > 0 || state?.cooldown?.shortCooldownBarsLeft > 0),
+        blockedByRangeFilter: Boolean(state?.executionStatus?.reason?.includes("震盪") || state?.executionStatus?.reason?.includes("range")),
+        blockedByPerformanceFilter: Boolean(state?.executionStatus?.blockedByPerformanceFilter),
+        executionAllowed: !state.executionLock && state.lifecycle === "running",
+        lastDecisionSummary: state.lastDecisionSummary || "-",
+        latestDecisionResult: state?.executionStatus?.statusLabel || "-",
+        recentSimulationEvents: Array.isArray(state.recentSimulationEvents) ? state.recentSimulationEvents : [],
+      };
+    }
+    return result;
+  }, [simulationStateBySymbol]);
+  const currentSimulationStatus = simulationStatusBySymbol[paperSymbol] || simulationStatusBySymbol.SOL || createDefaultSymbolSimulationState();
 
   const buildPaperMarketSnapshot = (candlesInput = []) => {
     const validCandles = Array.isArray(candlesInput) ? candlesInput : [];
@@ -3206,6 +3253,10 @@ export default function CryptoSignalWebApp() {
     if (executionLocksRef.current?.[paperSymbol]) return;
     executionLocksRef.current[paperSymbol] = true;
     updateSimulationStateForSymbol(paperSymbol, { executionLock: true });
+    updateSimulationStateForSymbol(paperSymbol, {
+      currentPhase: "analyzing_strategy",
+      waitingReason: "策略分析中",
+    });
     const manualExecutionMeta = {
       mode,
       executionSource,
@@ -3222,7 +3273,12 @@ export default function CryptoSignalWebApp() {
         distances: [],
         timestamp: new Date().toISOString(),
       }),
+        currentPhase: "waiting_market_data",
+        waitingReason: "尚未收到新市場資料",
+        lastBlockReason: "目前不在該交易幣種畫面",
+        lastDecisionSummary: "等待資料",
       });
+      appendSimulationEvent(paperSymbol, "等待市場資料（目前非交易幣種畫面）");
       executionLocksRef.current[paperSymbol] = false;
       updateSimulationStateForSymbol(paperSymbol, { executionLock: false });
       return;
@@ -3237,7 +3293,12 @@ export default function CryptoSignalWebApp() {
         distances: [],
         timestamp: new Date().toISOString(),
       }),
+        currentPhase: "waiting_market_data",
+        waitingReason: "尚未收到新市場資料",
+        lastBlockReason: "尚未取得即時價格或決策",
+        lastDecisionSummary: "等待資料",
       });
+      appendSimulationEvent(paperSymbol, "等待新市場資料或 AI 決策");
       executionLocksRef.current[paperSymbol] = false;
       updateSimulationStateForSymbol(paperSymbol, { executionLock: false });
       return;
@@ -3346,6 +3407,13 @@ export default function CryptoSignalWebApp() {
           },
         };
         updateSimulationStateForSymbol(paperSymbol, { executionStatus: normalizeSimulationExecutionStatus(nextFeedback) });
+        updateSimulationStateForSymbol(paperSymbol, {
+          currentPhase: "cooldown",
+          waitingReason: "cooldown 尚未結束",
+          lastBlockReason: "cooldown 尚未結束",
+          lastDecisionSummary: "不交易（cooldown 中）",
+        });
+        appendSimulationEvent(paperSymbol, "cooldown active");
         return {
           ...reconciledState,
           simulationAgentState: {
@@ -3590,6 +3658,33 @@ const simulationAgentState = {
         };
       }
 
+      const mappedPhase =
+        result.result === "EXECUTED_IMMEDIATELY" || nextOpenCount > prevOpenCount
+          ? "position_managing"
+          : result.result === "PENDING_CREATED" && createdPendingOrder
+            ? "pending_order_created"
+            : result.result === "WATCH_AND_ARM"
+              ? "waiting_fill_conditions"
+              : result.result === "WATCH_ONLY"
+                ? "condition_checking"
+                : "waiting_new_candle";
+      const waitingReason =
+        result.result === "PENDING_CREATED" && createdPendingOrder
+          ? "已有 pending order，等待觸價"
+          : result.result === "EXECUTED_IMMEDIATELY" || nextOpenCount > prevOpenCount
+            ? "已有持倉，不重複進場"
+            : nextFeedback?.reason || "等待下一根 K 線確認";
+      const blockReason =
+        result.result === "WATCH_ONLY" || result.result === "WATCH_AND_ARM"
+          ? nextFeedback?.reason
+          : result.blockReason || nextFeedback?.reason || null;
+      const decisionSummary =
+        result.result === "EXECUTED_IMMEDIATELY" || nextOpenCount > prevOpenCount
+          ? "可交易（已進場）"
+          : result.result === "PENDING_CREATED" && createdPendingOrder
+            ? "等待確認（已建立掛單）"
+            : "不交易";
+
       console.debug("[simulation:ui-feedback-source]", {
         ...manualExecutionMeta,
         finalDecision: analysis?.finalDecision || null,
@@ -3642,7 +3737,18 @@ const simulationAgentState = {
 
       updateSimulationStateForSymbol(paperSymbol, {
         executionStatus: normalizeSimulationExecutionStatus(nextFeedback),
+        currentPhase: mappedPhase,
+        waitingReason,
+        lastBlockReason: blockReason,
+        lastDecisionSummary: decisionSummary,
       });
+      if (result.result === "PENDING_CREATED" && createdPendingOrder) {
+        appendSimulationEvent(paperSymbol, "pending order created");
+      } else if (result.result === "EXECUTED_IMMEDIATELY" || nextOpenCount > prevOpenCount) {
+        appendSimulationEvent(paperSymbol, "decision = trade");
+      } else {
+        appendSimulationEvent(paperSymbol, "decision = no trade");
+      }
       console.debug("[simulation:position-write]", {
         ...manualExecutionMeta,
         finalStatus: nextFeedback.status,
@@ -3720,11 +3826,15 @@ const simulationAgentState = {
       lifecycle: "running",
       isSimulating: true,
       startedAt,
+      currentPhase: "initializing",
+      waitingReason: "初始化中",
+      lastDecisionSummary: "等待確認",
       rehydrate: {
         attempted: true,
         completed: true,
       },
     });
+    appendSimulationEvent(paperSymbol, "simulation started");
     console.debug("[SIM_START]", { symbol: paperSymbol, startedAt });
   };
 
@@ -3732,7 +3842,10 @@ const simulationAgentState = {
     updateSimulationStateForSymbol(paperSymbol, {
       lifecycle: "paused",
       isSimulating: false,
+      currentPhase: "stopped",
+      waitingReason: "模擬已暫停",
     });
+    appendSimulationEvent(paperSymbol, "simulation paused");
   };
 
   const handleStopSimulation = () => {
@@ -3744,7 +3857,10 @@ const simulationAgentState = {
       lifecycle: "stopped",
       isSimulating: false,
       elapsedTime: elapsed,
+      currentPhase: "stopped",
+      waitingReason: "模擬已停止",
     });
+    appendSimulationEvent(paperSymbol, "simulation stopped");
     console.debug("[SIM_STOP]", { symbol: paperSymbol, stoppedAt, elapsed });
   };
 
@@ -3793,6 +3909,7 @@ const simulationAgentState = {
           simulationStartedAt={simulationStartedAt}
           lastDecisionAt={lastDecisionAt}
           simulationRestoreInfo={simulationRestoreInfo}
+          currentSimulationStatus={currentSimulationStatus}
           onClosePosition={handleClosePosition}
           onCancelPendingOrder={handleCancelPendingOrder}
           onResetPaperAccount={handleResetPaperAccount}
