@@ -16,6 +16,26 @@ const DIRECTIONAL_COOLDOWN_BARS = 6;
 const PERFORMANCE_MIN_SAMPLE_SIZE = 10;
 const RECENT_PERFORMANCE_WINDOW = 20;
 
+export const DEFAULT_PERFORMANCE_DEBUG_STATE = {
+  currentSetupKey: "-",
+  currentFullSetupKey: "-",
+  currentCoarseSetupKey: "-",
+  performanceSource: "-",
+  performanceSampleSize: 0,
+  performanceWinRate: null,
+  performanceAvgPnl: null,
+  currentSetupWinRate: null,
+  currentSetupSampleSize: 0,
+  blockedByPerformanceFilter: false,
+};
+
+function buildPerformanceDebugState(overrides = {}) {
+  return {
+    ...DEFAULT_PERFORMANCE_DEBUG_STATE,
+    ...overrides,
+  };
+}
+
 function normalizeNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -922,8 +942,9 @@ export function simulateDecisionExecution({
   executionSource = "",
   orderMode = "",
 }) {
+  const basePerformanceDebug = buildPerformanceDebugState();
   if (!state) {
-    return { state, result: "NO_DECISION" };
+    return { state, result: "NO_DECISION", ...basePerformanceDebug };
   }
 
   const executionOptions = { executionSource, orderMode };
@@ -933,6 +954,7 @@ export function simulateDecisionExecution({
       ? {
         state,
         result: "WATCH_ONLY",
+        ...basePerformanceDebug,
         executionIntent: "WATCH_ONLY",
         eligibilityInfo: {
           eligibility: "WATCH_ONLY",
@@ -940,7 +962,7 @@ export function simulateDecisionExecution({
           reason: "尚未產生可執行決策，已進入觀察模式",
         },
       }
-      : { state, result: "NO_DECISION" };
+      : { state, result: "NO_DECISION", ...basePerformanceDebug };
   }
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
   const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
@@ -977,12 +999,12 @@ export function simulateDecisionExecution({
   }
 
   if (effectiveEligibility.eligibility === "BLOCKED" && !bypassSetupGate) {
-    return { state, result: effectiveEligibility.reasonCode, eligibilityInfo: effectiveEligibility };
+    return { state, result: effectiveEligibility.reasonCode, eligibilityInfo: effectiveEligibility, ...basePerformanceDebug };
   }
 
   const side = resolveSideFromDecision(decision) || (bypassSetupGate ? resolveManualSimulationSide(decision) : null);
   if (!side) {
-    return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility };
+    return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility, ...basePerformanceDebug };
   }
   const tradeMetadata = resolveTradeMetadata({ decision, confirmationResult, signalContext, side });
   const closedTrades = state?.closedTrades || [];
@@ -1008,6 +1030,18 @@ export function simulateDecisionExecution({
   const performanceWinRate = selectedCandidate.stats.winRate;
   const performanceAvgPnl = selectedCandidate.stats.avgPnl;
   const performanceSource = selectedCandidate.source;
+  const performanceDebugPayload = buildPerformanceDebugState({
+    currentSetupKey,
+    currentFullSetupKey: currentSetupKey,
+    currentCoarseSetupKey,
+    currentSetupWinRate: performanceWinRate,
+    currentSetupSampleSize: performanceSampleSize,
+    performanceSource,
+    performanceSampleSize,
+    performanceWinRate,
+    performanceAvgPnl,
+    blockedByPerformanceFilter,
+  });
 
   if (blockedByPerformanceFilter && !bypassSetupGate) {
     return {
@@ -1019,16 +1053,7 @@ export function simulateDecisionExecution({
         canExecute: false,
         decisionType: "NO_TRADE",
       },
-      currentSetupKey,
-      currentFullSetupKey: currentSetupKey,
-      currentCoarseSetupKey,
-      currentSetupWinRate: performanceWinRate,
-      currentSetupSampleSize: performanceSampleSize,
-      performanceSource,
-      performanceSampleSize,
-      performanceWinRate,
-      performanceAvgPnl,
-      blockedByPerformanceFilter: true,
+      ...performanceDebugPayload,
       eligibilityInfo: {
         ...effectiveEligibility,
         eligibility: "WATCH_ONLY",
@@ -1056,16 +1081,7 @@ export function simulateDecisionExecution({
         reason: `${side} directional cooldown active (${cooldownState.cooldownBarsLeft} bars left)`,
       },
       cooldownDebug: cooldownState,
-      currentSetupKey,
-      currentFullSetupKey: currentSetupKey,
-      currentCoarseSetupKey,
-      currentSetupWinRate: performanceWinRate,
-      currentSetupSampleSize: performanceSampleSize,
-      performanceSource,
-      performanceSampleSize,
-      performanceWinRate,
-      performanceAvgPnl,
-      blockedByPerformanceFilter: false,
+      ...performanceDebugPayload,
     };
   }
   const plannedEntry = resolvePlannedEntryPrice(decision, side);
@@ -1082,6 +1098,7 @@ export function simulateDecisionExecution({
       return {
         state,
         result: "WATCH_AND_ARM",
+        ...performanceDebugPayload,
         executionIntent: "WATCH_AND_ARM",
         confirmationResult,
         eligibilityInfo: {
@@ -1094,6 +1111,7 @@ export function simulateDecisionExecution({
     return {
       state,
       result: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
+      ...performanceDebugPayload,
       eligibilityInfo: effectiveEligibility,
     };
   }
@@ -1121,6 +1139,7 @@ export function simulateDecisionExecution({
       return {
         state,
         result: "WATCH_AND_ARM",
+        ...performanceDebugPayload,
         executionIntent: "WATCH_AND_ARM",
         confirmationResult,
         eligibilityInfo: {
@@ -1130,7 +1149,7 @@ export function simulateDecisionExecution({
         },
       };
     }
-    return { state, result: "DUPLICATE_SETUP" };
+    return { state, result: "DUPLICATE_SETUP", ...performanceDebugPayload };
   }
 
   const pendingOrder = {
@@ -1200,16 +1219,7 @@ export function simulateDecisionExecution({
       result: "WATCH_ONLY",
       executionIntent,
       confirmationResult,
-      currentSetupKey,
-      currentFullSetupKey: currentSetupKey,
-      currentCoarseSetupKey,
-      currentSetupWinRate: performanceWinRate,
-      currentSetupSampleSize: performanceSampleSize,
-      performanceSource,
-      performanceSampleSize,
-      performanceWinRate,
-      performanceAvgPnl,
-      blockedByPerformanceFilter: false,
+      ...performanceDebugPayload,
       eligibilityInfo: {
         ...effectiveEligibility,
         executionIntent,
@@ -1224,16 +1234,7 @@ export function simulateDecisionExecution({
       result: "WATCH_AND_ARM",
       executionIntent,
       confirmationResult,
-      currentSetupKey,
-      currentFullSetupKey: currentSetupKey,
-      currentCoarseSetupKey,
-      currentSetupWinRate: performanceWinRate,
-      currentSetupSampleSize: performanceSampleSize,
-      performanceSource,
-      performanceSampleSize,
-      performanceWinRate,
-      performanceAvgPnl,
-      blockedByPerformanceFilter: false,
+      ...performanceDebugPayload,
       eligibilityInfo: {
         ...effectiveEligibility,
         executionIntent,
@@ -1288,16 +1289,7 @@ export function simulateDecisionExecution({
       result: "EXECUTED_IMMEDIATELY",
       executionIntent: "EXECUTE_NOW",
       confirmationResult,
-      currentSetupKey,
-      currentFullSetupKey: currentSetupKey,
-      currentCoarseSetupKey,
-      currentSetupWinRate: performanceWinRate,
-      currentSetupSampleSize: performanceSampleSize,
-      performanceSource,
-      performanceSampleSize,
-      performanceWinRate,
-      performanceAvgPnl,
-      blockedByPerformanceFilter: false,
+      ...performanceDebugPayload,
       position,
       eligibilityInfo: effectiveEligibility,
     };
@@ -1310,16 +1302,7 @@ export function simulateDecisionExecution({
     result: "PENDING_CREATED",
     executionIntent: "PLACE_PENDING",
     confirmationResult,
-    currentSetupKey,
-    currentFullSetupKey: currentSetupKey,
-    currentCoarseSetupKey,
-    currentSetupWinRate: performanceWinRate,
-    currentSetupSampleSize: performanceSampleSize,
-    performanceSource,
-    performanceSampleSize,
-    performanceWinRate,
-    performanceAvgPnl,
-    blockedByPerformanceFilter: false,
+    ...performanceDebugPayload,
     pendingOrder,
     pendingCreation,
     eligibilityInfo: effectiveEligibility,

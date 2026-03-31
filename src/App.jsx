@@ -4,6 +4,7 @@ import {
   cancelPendingOrderManually,
   closePositionManually,
   createInitialPaperAccountState,
+  DEFAULT_PERFORMANCE_DEBUG_STATE,
   getSimulationEligibility,
   paperTradingAnalytics,
   reconcilePendingOrdersWithDecision,
@@ -32,6 +33,27 @@ const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 const PAPER_ACCOUNT_STORAGE_KEY = "crypto-signal-pro-paper-account-v7";
 const SIMULATION_SNAPSHOT_STORAGE_KEY = "crypto-signal-pro-simulation-snapshot-v1";
 const PAPER_SUPPORTED_SYMBOLS = ["BTC", "ETH", "SOL"];
+
+function normalizeSimulationExecutionStatus(status) {
+  if (!status || typeof status !== "object") {
+    return {
+      ...DEFAULT_PERFORMANCE_DEBUG_STATE,
+    };
+  }
+  return {
+    ...DEFAULT_PERFORMANCE_DEBUG_STATE,
+    ...status,
+    blockedByPerformanceFilter: Boolean(status?.blockedByPerformanceFilter),
+    performanceSampleSize: Number(status?.performanceSampleSize ?? status?.currentSetupSampleSize ?? 0),
+    currentSetupSampleSize: Number(status?.currentSetupSampleSize ?? status?.performanceSampleSize ?? 0),
+    performanceWinRate: status?.performanceWinRate ?? status?.currentSetupWinRate ?? null,
+    currentSetupWinRate: status?.currentSetupWinRate ?? status?.performanceWinRate ?? null,
+    currentFullSetupKey: status?.currentFullSetupKey || status?.currentSetupKey || "-",
+    currentSetupKey: status?.currentSetupKey || status?.currentFullSetupKey || "-",
+    currentCoarseSetupKey: status?.currentCoarseSetupKey || "-",
+    performanceSource: status?.performanceSource || "-",
+  };
+}
 
 function loadPaperAccount() {
   if (typeof window === "undefined") return createInitialPaperAccountState();
@@ -2614,7 +2636,7 @@ export default function CryptoSignalWebApp() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [paperSymbol, setPaperSymbol] = useState(() => restoredSnapshot?.currentSymbol || "SOL");
   const [paperAccount, setPaperAccount] = useState(() => restoredSnapshot?.paperAccount || loadPaperAccount());
-  const [simulationExecutionStatus, setSimulationExecutionStatus] = useState(null);
+  const [simulationExecutionStatus, setSimulationExecutionStatus] = useState(() => normalizeSimulationExecutionStatus(null));
   const [simulationLifecycle, setSimulationLifecycle] = useState(() => restoredSnapshot?.simulationLifecycle || "idle");
   const [simulationStartedAt, setSimulationStartedAt] = useState(() => restoredSnapshot?.simulationStartTime || null);
   const [lastDecisionAt, setLastDecisionAt] = useState(() => restoredSnapshot?.lastDecisionTime || null);
@@ -2841,14 +2863,14 @@ export default function CryptoSignalWebApp() {
     };
     console.debug("[simulation:click]", manualExecutionMeta);
     if (!analysis?.aiDecisionOutput || !paperCurrentPrice) {
-      setSimulationExecutionStatus({
+      setSimulationExecutionStatus(normalizeSimulationExecutionStatus({
         status: "WATCHING",
         statusLabel: "已進入等待確認模式",
         reason: "尚未取得即時價格或 AI 決策，先觀察並等待下一筆有效條件",
         unmetConditions: [],
         distances: [],
         timestamp: new Date().toISOString(),
-      });
+      }));
       return;
     }
 
@@ -2943,7 +2965,7 @@ export default function CryptoSignalWebApp() {
             cooldownBarsLeft: sideCooldownBarsLeft,
           },
         };
-        setSimulationExecutionStatus(nextFeedback);
+        setSimulationExecutionStatus(normalizeSimulationExecutionStatus(nextFeedback));
         return {
           ...reconciledState,
           simulationAgentState: {
@@ -3206,10 +3228,16 @@ const simulationAgentState = {
       nextFeedback = {
         ...nextFeedback,
         hasKlineConfirmation,
-        currentSetupKey: result.currentSetupKey || null,
-        currentSetupWinRate: Number(result.currentSetupWinRate || 0),
-        currentSetupSampleSize: Number(result.currentSetupSampleSize || 0),
-        blockedByPerformanceFilter: Boolean(result.blockedByPerformanceFilter),
+        currentSetupKey: result.currentSetupKey,
+        currentFullSetupKey: result.currentFullSetupKey,
+        currentCoarseSetupKey: result.currentCoarseSetupKey,
+        currentSetupWinRate: result.currentSetupWinRate,
+        currentSetupSampleSize: result.currentSetupSampleSize,
+        performanceSource: result.performanceSource,
+        performanceSampleSize: result.performanceSampleSize,
+        performanceWinRate: result.performanceWinRate,
+        performanceAvgPnl: result.performanceAvgPnl,
+        blockedByPerformanceFilter: result.blockedByPerformanceFilter,
         cooldownDebug: {
           lastTradeDirection: cooldownState.lastTradeDirection,
           longLossStreak: cooldownState.longLossStreak,
@@ -3220,7 +3248,7 @@ const simulationAgentState = {
         },
       };
 
-      setSimulationExecutionStatus(nextFeedback);
+      setSimulationExecutionStatus(normalizeSimulationExecutionStatus(nextFeedback));
       console.debug("[simulation:position-write]", {
         ...manualExecutionMeta,
         finalStatus: nextFeedback.status,
@@ -3271,7 +3299,7 @@ const simulationAgentState = {
 
   const handleResetPaperAccount = () => {
     setPaperAccount(resetPaperTradingState());
-    setSimulationExecutionStatus(null);
+    setSimulationExecutionStatus(normalizeSimulationExecutionStatus(null));
     setSimulationLifecycle("idle");
     setSimulationStartedAt(null);
     setLastDecisionAt(null);
