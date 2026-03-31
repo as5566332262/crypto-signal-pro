@@ -84,6 +84,33 @@ function waitingReasonLabel(reason) {
   return reasonMap[normalizedReason] || normalizedReason || "-";
 }
 
+function simulationPhaseLabel(phase) {
+  const phaseMap = {
+    initializing: "初始化中",
+    waiting_market_data: "等待市場資料",
+    waiting_new_candle: "等待新 K 線",
+    analyzing_strategy: "策略分析中",
+    condition_checking: "條件檢查中",
+    waiting_fill_conditions: "等待成交條件",
+    pending_order_created: "已建立委託單",
+    position_managing: "持倉管理中",
+    cooldown: "cooldown 中",
+    stopped: "已停止",
+    idle: "已停止",
+  };
+  return phaseMap[phase] || "條件檢查中";
+}
+
+function yesNoLabel(value) {
+  return value ? "是" : "否";
+}
+
+function formatEventTime(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "--:--:--";
+  return date.toLocaleTimeString();
+}
+
 function normalizeClosedTrade(trade, index, formatNumber, paperDigits) {
   if (!trade || typeof trade !== "object") return null;
   const realizedPnlRaw = trade.realizedPnl ?? trade.pnl;
@@ -601,12 +628,14 @@ export default function PaperTradingSidebar({
   simulationStartedAt,
   lastDecisionAt,
   simulationRestoreInfo,
+  currentSimulationStatus,
 }) {
   const [showAnalysisPanel, setShowAnalysisPanel] = React.useState(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("paperTrading.showAnalysisPanel") === "true";
   });
   const [runtimeNow, setRuntimeNow] = React.useState(Date.now());
+  const [showSimulationStatusPanel, setShowSimulationStatusPanel] = React.useState(false);
 
   React.useEffect(() => {
     if (typeof window === "undefined") return;
@@ -677,6 +706,56 @@ export default function PaperTradingSidebar({
                 <Button variant="outline" className="rounded-xl text-xs" onClick={onStopSimulation}>停止</Button>
               </div>
             </CardContent>
+          </Card>
+          <Card className="rounded-2xl border-slate-200">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-sm">模擬狀態</CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-lg px-2 text-xs"
+                  onClick={() => setShowSimulationStatusPanel((prev) => !prev)}
+                >
+                  {showSimulationStatusPanel ? "隱藏模擬狀態" : "顯示模擬狀態"}
+                </Button>
+              </div>
+            </CardHeader>
+            {showSimulationStatusPanel ? (
+              <CardContent className="space-y-3 text-xs text-slate-700">
+                <div className="grid grid-cols-2 gap-2">
+                  <InfoItem label="當前 Symbol" value={currentSimulationStatus?.symbol || `${paperSymbol}USDT`} />
+                  <InfoItem label="模擬執行中" value={yesNoLabel(currentSimulationStatus?.isSimulating)} />
+                  <InfoItem label="啟動時間" value={formatDate(currentSimulationStatus?.startedAt || simulationStartedAt)} />
+                  <InfoItem label="已運行多久" value={simulationStartedAt ? runtimeLabel : "-"} />
+                  <InfoItem label="最新 decision time" value={formatDate(currentSimulationStatus?.lastDecisionAt || lastDecisionAt)} />
+                  <InfoItem label="當前 simulation phase" value={simulationPhaseLabel(currentSimulationStatus?.currentPhase)} />
+                  <InfoItem label="當前等待原因" value={currentSimulationStatus?.waitingReason || "等待下一根 K 線確認"} className="col-span-2" />
+                  <InfoItem label="最近一次未下單原因" value={currentSimulationStatus?.lastBlockReason || "-"} className="col-span-2" />
+                  <InfoItem label="已有 pending order" value={yesNoLabel(currentSimulationStatus?.hasPendingOrder)} />
+                  <InfoItem label="已有 open position" value={yesNoLabel(currentSimulationStatus?.hasOpenPosition)} />
+                  <InfoItem label="cooldown 啟用中" value={yesNoLabel(currentSimulationStatus?.cooldownActive)} />
+                  <InfoItem label="range filter 阻擋" value={yesNoLabel(currentSimulationStatus?.blockedByRangeFilter)} />
+                  <InfoItem label="performance filter 阻擋" value={yesNoLabel(currentSimulationStatus?.blockedByPerformanceFilter)} />
+                  <InfoItem label="execution 允許下單" value={yesNoLabel(currentSimulationStatus?.executionAllowed)} />
+                  <InfoItem label="最後 agent decision" value={currentSimulationStatus?.lastDecisionSummary || currentSimulationStatus?.latestDecisionResult || "-"} className="col-span-2" />
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                  <div className="mb-1 text-[11px] font-semibold text-slate-500">最近 5 筆模擬事件</div>
+                  <ul className="space-y-1 text-[11px]">
+                    {(currentSimulationStatus?.recentSimulationEvents || []).slice(0, 5).map((event, index) => (
+                      <li key={`${event.timestamp || "na"}-${index}`} className="text-slate-700">
+                        [{formatEventTime(event.timestamp)}] {event.message}
+                      </li>
+                    ))}
+                    {!(currentSimulationStatus?.recentSimulationEvents || []).length ? (
+                      <li className="text-slate-500">目前尚無事件</li>
+                    ) : null}
+                  </ul>
+                </div>
+              </CardContent>
+            ) : null}
           </Card>
           <TradingStateTerminal
             openPositions={accountSnapshot.currentSymbolOpenPositions || []}
