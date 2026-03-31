@@ -2740,6 +2740,7 @@ export default function CryptoSignalWebApp() {
   const paperCurrentPrice = symbol === paperMarketSymbol ? analysis?.price : null;
 
   useEffect(() => {
+    if (symbol !== paperMarketSymbol) return;
     if (!paperCurrentPrice) return;
     setPaperAccount((prev) =>
       applyMarketTickToPaperState(prev, {
@@ -2750,11 +2751,13 @@ export default function CryptoSignalWebApp() {
         macd: analysis?.macd,
         ma20: analysis?.ma20,
         candleTime: currentCandle?.openTime,
+        triggeredBy: "MARKET_TICK",
       })
     );
-  }, [paperCurrentPrice, currentCandle?.close, currentCandle?.openTime, analysis?.rsi, analysis?.macd, analysis?.ma20]);
+  }, [symbol, paperMarketSymbol, paperCurrentPrice, currentCandle?.close, currentCandle?.openTime, analysis?.rsi, analysis?.macd, analysis?.ma20]);
 
   useEffect(() => {
+    if (symbol !== paperMarketSymbol) return;
     if (!analysis?.aiDecisionOutput) return;
     setPaperAccount((prev) =>
       reconcilePendingOrdersWithDecision({
@@ -2763,17 +2766,20 @@ export default function CryptoSignalWebApp() {
         symbol: paperMarketSymbol,
         timeframe,
         currentPrice: paperCurrentPrice,
+        candleTime: currentCandle?.openTime,
+        triggeredBy: "DECISION_ENGINE",
       })
     );
-  }, [analysis?.aiDecisionOutput, paperCurrentPrice, paperMarketSymbol, timeframe]);
+  }, [analysis?.aiDecisionOutput, symbol, paperCurrentPrice, paperMarketSymbol, timeframe, currentCandle?.openTime]);
 
   useEffect(() => {
+    if (symbol !== paperMarketSymbol) return;
     if (simulationLifecycle !== "running") return;
     const candleKey = `${paperMarketSymbol}-${timeframe}-${currentCandle?.openTime || "na"}-${analysis?.price || "na"}`;
     if (!currentCandle?.openTime || lastProcessedCandleRef.current === candleKey) return;
     lastProcessedCandleRef.current = candleKey;
     runSimulationStep({ mode: "agent_loop", executionSource: "simulation_agent" });
-  }, [simulationLifecycle, currentCandle?.openTime, analysis?.price, paperMarketSymbol, timeframe]);
+  }, [simulationLifecycle, symbol, currentCandle?.openTime, analysis?.price, paperMarketSymbol, timeframe]);
 
   const accountSnapshot = useMemo(() => {
     const currentSymbolOpenPositions = (paperAccount.openPositions || []).filter((position) => position.symbol === paperMarketSymbol);
@@ -2878,6 +2884,17 @@ export default function CryptoSignalWebApp() {
       orderMode: "simulation",
     };
     console.debug("[simulation:click]", manualExecutionMeta);
+    if (symbol !== paperMarketSymbol) {
+      setSimulationExecutionStatus(normalizeSimulationExecutionStatus({
+        status: "WATCHING",
+        statusLabel: "觀察中（非交易幣種畫面）",
+        reason: "目前檢視的 symbol 非交易引擎 symbol，已阻擋因 UI 切換觸發的模擬下單流程",
+        unmetConditions: [],
+        distances: [],
+        timestamp: new Date().toISOString(),
+      }));
+      return;
+    }
     if (!analysis?.aiDecisionOutput || !paperCurrentPrice) {
       setSimulationExecutionStatus(normalizeSimulationExecutionStatus({
         status: "WATCHING",
@@ -2908,6 +2925,8 @@ export default function CryptoSignalWebApp() {
         symbol: paperMarketSymbol,
         timeframe,
         currentPrice: paperCurrentPrice,
+        candleTime: currentCandle?.openTime,
+        triggeredBy: "DECISION_ENGINE",
       });
       const previousCancelledCount = (prev.cancelledOrders || []).length;
       const cancelledCount = (reconciledState.cancelledOrders || []).length - previousCancelledCount;
@@ -3006,6 +3025,7 @@ export default function CryptoSignalWebApp() {
         forceSimulation: String(analysis?.finalDecision || "").toUpperCase() === "NO_TRADE",
         executionSource,
         orderMode: "simulation",
+        triggeredBy: "DECISION_ENGINE",
         signalContext: {
           rsi: analysis?.rsi,
           macd: analysis?.macd,
@@ -3033,6 +3053,7 @@ export default function CryptoSignalWebApp() {
           breakoutState: analysis?.breakoutState,
           hasKlineConfirmation,
           klineConfirmed: hasKlineConfirmation,
+          candleTime: currentCandle?.openTime,
           noTradeBars,
           forceProbeEntry,
           cooldownActiveForSide,
@@ -3097,6 +3118,7 @@ const simulationAgentState = {
           macd: analysis?.macd,
           ma20: analysis?.ma20,
           candleTime: currentCandle?.openTime,
+          triggeredBy: "MARKET_TICK",
         })
         : result.state;
 
