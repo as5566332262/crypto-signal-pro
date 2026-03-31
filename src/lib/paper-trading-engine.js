@@ -1331,6 +1331,18 @@ function evaluatePendingOrderFill(order, {
   return { shouldFill: false, reason: "TRIGGER_NOT_REACHED", triggerSource: null };
 }
 
+function isAllowedPendingFillTrigger(triggeredBy) {
+  const trigger = String(triggeredBy || "").toUpperCase();
+  return trigger === "MARKET_TICK" || trigger === "MARKET_CANDLE";
+}
+
+function isInvalidFillPriceForSide(side, entryPrice, filledPrice) {
+  if (!Number.isFinite(entryPrice) || !Number.isFinite(filledPrice)) return true;
+  if (side === "LONG") return filledPrice > entryPrice;
+  if (side === "SHORT") return filledPrice < entryPrice;
+  return true;
+}
+
 function hasActiveTrapSignal(decisionSnapshot) {
   const trapSignal = String(decisionSnapshot?.trapDetection?.trapSignal || "").toUpperCase();
   return trapSignal && trapSignal !== "NONE";
@@ -1420,6 +1432,7 @@ function isOrderPriceDrifted(order, tickPrice) {
 
 function maybeFillPendingOrders(state, {
   tickPrice,
+  candleOpen,
   candleHigh,
   candleLow,
   candleClose,
@@ -1465,8 +1478,10 @@ function maybeFillPendingOrders(state, {
       : null;
     const marketSymbolUsed = scopedMarket ? order.symbol : symbol;
     const orderTickPrice = normalizeNumber(scopedMarket?.tickPrice ?? scopedMarket?.price ?? (order.symbol === symbol ? tickPrice : undefined));
+    const orderCandleOpen = normalizeNumber(scopedMarket?.candleOpen ?? scopedMarket?.open ?? (order.symbol === symbol ? candleOpen : undefined));
     const orderCandleHigh = normalizeNumber(scopedMarket?.candleHigh ?? scopedMarket?.high ?? (order.symbol === symbol ? candleHigh : undefined));
     const orderCandleLow = normalizeNumber(scopedMarket?.candleLow ?? scopedMarket?.low ?? (order.symbol === symbol ? candleLow : undefined));
+    const orderCandleClose = normalizeNumber(scopedMarket?.candleClose ?? scopedMarket?.close ?? (order.symbol === symbol ? candleClose : undefined));
     const orderEntryPrice = resolveOrderEntryPrice(order);
     const nextWaitBars = Number.isFinite(normalizedCandleTime)
       ? calculateBarsDelta(order.createdCandleTime ?? order.placementSnapshot?.createdCandleTime, normalizedCandleTime)
@@ -1479,7 +1494,6 @@ function maybeFillPendingOrders(state, {
       waitedBars: nextWaitBars,
       distanceFromPricePct: distancePct,
       canceledByPriceDrift: false,
-      restoredAtSimulationStart: false,
     };
     const hasMarketEventForOrder = Boolean(scopedMarket) || order.symbol === symbol;
     if (!hasMarketEventForOrder) {
@@ -1605,6 +1619,8 @@ function maybeFillPendingOrders(state, {
       nextPendingOrders.push({ ...order, status: "CANCELLED" });
       continue;
     }
+    const blockByUnexpectedTrigger = !isAllowedPendingFillTrigger(triggeredBy);
+    const blockByRestorePreload = Boolean(order?.restoredAtSimulationStart);
     const fillEvaluation = evaluatePendingOrderFill(order, {
       tickPrice: orderTickPrice,
       candleHigh: orderCandleHigh,
@@ -1616,11 +1632,19 @@ function maybeFillPendingOrders(state, {
     const alreadyFilledByOrderId = Boolean(nextState.orderToPositionMap?.[order.id]);
     const blockedByEventLock = alreadyProcessedInEvent || perEventFilledOrderIds.has(order.id);
     const blockedByOrderFillGuard = alreadyFilledByOrderId;
-    const shouldFill = fillEvaluation.shouldFill && !blockedByEventLock && !blockedByOrderFillGuard;
+    const shouldFill = fillEvaluation.shouldFill &&
+      !blockedByEventLock &&
+      !blockedByOrderFillGuard &&
+      !blockByUnexpectedTrigger &&
+      !blockByRestorePreload;
     const resolvedFillReason = blockedByEventLock
       ? "BLOCKED_BY_EVENT_LOCK"
       : blockedByOrderFillGuard
         ? "BLOCKED_BY_ORDER_FILLED"
+        : blockByUnexpectedTrigger
+          ? "BLOCKED_UNSUPPORTED_TRIGGER_SOURCE"
+          : blockByRestorePreload
+            ? "BLOCKED_RESTORE_PRELOAD_EVENT"
         : fillEvaluation.reason;
     const resolvedTriggerSource = fillEvaluation.triggerSource || "NONE";
     nextState = appendPendingFillCheck(nextState, {
@@ -1631,6 +1655,7 @@ function maybeFillPendingOrders(state, {
       tickPrice: orderTickPrice,
       candleHigh: orderCandleHigh,
       candleLow: orderCandleLow,
+      candleClose: orderCandleClose,
       shouldFill,
       fillReason: resolvedFillReason,
       triggerSource: resolvedTriggerSource,
@@ -1645,14 +1670,18 @@ function maybeFillPendingOrders(state, {
     console.debug("[FILL_CHECK]", {
       orderId: order.id,
       symbol: order.symbol,
+      timeframe: order.timeframe,
       side: order.side,
       orderType: order.orderType || "LIMIT",
       entry: orderEntryPrice,
       tickPrice: orderTickPrice,
       currentPrice: orderTickPrice,
+      candleOpen: orderCandleOpen,
       candleHigh: orderCandleHigh,
       candleLow: orderCandleLow,
+      candleClose: orderCandleClose,
       triggerSource: resolvedTriggerSource,
+      candleTime: normalizedCandleTime,
     });
     console.debug("[paper-trading] pending order fill evaluation", {
       orderId: order.id,
@@ -1682,7 +1711,10 @@ function maybeFillPendingOrders(state, {
           reason: resolvedFillReason,
         });
       }
-      nextPendingOrders.push(observedOrder);
+      const nextObservedOrder = blockByRestorePreload
+        ? { ...observedOrder, restoredAtSimulationStart: false }
+        : observedOrder;
+      nextPendingOrders.push(nextObservedOrder);
       continue;
     }
 
@@ -1714,16 +1746,33 @@ function maybeFillPendingOrders(state, {
       nextPendingOrders.push(observedOrder);
       continue;
     }
+    const filledPrice = entryPrice;
+    if (isInvalidFillPriceForSide(order.side, entryPrice, filledPrice)) {
+      delete nextState.orderProcessingLocks[order.id];
+      console.error("[INVALID_FILL_BLOCKED]", {
+        reason: "FILLED_PRICE_OUT_OF_DIRECTIONAL_BOUNDARY",
+        side: order.side,
+        entry: entryPrice,
+        filledPrice,
+        currentPrice: orderTickPrice,
+      });
+      console.debug("[FILL_REJECTED]", {
+        orderId: order.id,
+        reason: "INVALID_FILL_PRICE_BLOCKED",
+      });
+      nextPendingOrders.push(observedOrder);
+      continue;
+    }
     const normalizedLevels = normalizeDirectionalLevels({
       side: order.side,
-      referencePrice: entryPrice,
+      referencePrice: filledPrice,
       stopLoss: order.stopLoss,
       takeProfit1: order.takeProfit1,
       takeProfit2: order.takeProfit2,
       takeProfit3: order.takeProfit3,
     });
     const quantity = asSafeNumber(order.quantity, DEFAULT_POSITION_SIZE);
-    const notional = quantity * entryPrice;
+    const notional = quantity * filledPrice;
     const position = {
       id: createId("pos"),
       symbol: order.symbol,
@@ -1731,9 +1780,9 @@ function maybeFillPendingOrders(state, {
       side: order.side,
       orderType: order.orderType || "LIMIT",
       status: "OPEN",
-      entryPrice,
+      entryPrice: filledPrice,
       triggerPrice: order.triggerPrice,
-      currentPrice: entryPrice,
+      currentPrice: filledPrice,
       quantity,
       notional,
       leverage: DEFAULT_LEVERAGE,
@@ -1805,7 +1854,7 @@ function maybeFillPendingOrders(state, {
     nextState = appendPendingFillExecutionTrace(nextState, {
       orderId: order.id,
       createdPositionId: position.id,
-      fillPrice: entryPrice,
+      fillPrice: filledPrice,
       timestamp,
       eventId,
       functionName: checkedFunctionName,
@@ -1827,15 +1876,16 @@ function maybeFillPendingOrders(state, {
       side: order.side,
       entry: orderEntryPrice,
       symbol: order.symbol,
-      filledPrice: entryPrice,
+      filledPrice,
       orderType: order.orderType || "LIMIT",
       triggerSource: resolvedTriggerSource,
+      candleTime: normalizedCandleTime,
     });
     console.info("[POSITION_CREATED]", {
       orderId: order.id,
       source: "FILL_ENGINE",
       sourceFunction: checkedFunctionName,
-      filledPrice: entryPrice,
+      filledPrice,
       orderType: order.orderType || "LIMIT",
     });
     continue;
