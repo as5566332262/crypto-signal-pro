@@ -68,6 +68,9 @@ function loadPaperAccount() {
       pendingOrders: Array.isArray(parsed?.pendingOrders) ? parsed.pendingOrders : [],
       cancelledOrders: Array.isArray(parsed?.cancelledOrders) ? parsed.cancelledOrders : [],
       closedTrades: Array.isArray(parsed?.closedTrades) ? parsed.closedTrades : [],
+      symbolIsolationState: parsed?.symbolIsolationState && typeof parsed.symbolIsolationState === "object"
+        ? parsed.symbolIsolationState
+        : {},
       simulationOrderConfig: {
         mode: "fixed_quantity",
         quantity: Number(parsed?.simulationOrderConfig?.quantity) > 0 ? Number(parsed.simulationOrderConfig.quantity) : 50,
@@ -108,6 +111,12 @@ function loadSimulationSnapshot() {
         : Array.isArray(parsed?.paperAccount?.closedTrades)
           ? parsed.paperAccount.closedTrades
           : [],
+      symbolIsolationState:
+        (parsed?.paperAccount?.symbolIsolationState && typeof parsed.paperAccount.symbolIsolationState === "object")
+          ? parsed.paperAccount.symbolIsolationState
+          : (fallbackAccount?.symbolIsolationState && typeof fallbackAccount.symbolIsolationState === "object")
+            ? fallbackAccount.symbolIsolationState
+            : {},
       simulationOrderConfig: {
         mode: "fixed_quantity",
         quantity: Number(parsed?.simulationOrderConfig?.quantity || parsed?.paperAccount?.simulationOrderConfig?.quantity) > 0
@@ -259,12 +268,15 @@ function resolveDecisionSide(decision) {
   return null;
 }
 
-function getDirectionalCooldownStateFromAccount(account = {}) {
-  const longCooldownBarsLeft = Math.max(0, Number(account?.longCooldownBars) || 0);
-  const shortCooldownBarsLeft = Math.max(0, Number(account?.shortCooldownBars) || 0);
-  const longLossStreak = Math.max(0, Number(account?.longLossStreak) || 0);
-  const shortLossStreak = Math.max(0, Number(account?.shortLossStreak) || 0);
-  const lastTradeDirection = account?.lastTradeDirection || null;
+function getDirectionalCooldownStateFromAccount(account = {}, symbol) {
+  const scopedState = symbol && account?.symbolIsolationState?.[symbol]
+    ? account.symbolIsolationState[symbol]
+    : account;
+  const longCooldownBarsLeft = Math.max(0, Number(scopedState?.longCooldownBars) || 0);
+  const shortCooldownBarsLeft = Math.max(0, Number(scopedState?.shortCooldownBars) || 0);
+  const longLossStreak = Math.max(0, Number(scopedState?.longLossStreak) || 0);
+  const shortLossStreak = Math.max(0, Number(scopedState?.shortLossStreak) || 0);
+  const lastTradeDirection = scopedState?.lastTradeDirection || null;
   const consecutiveLossCount = lastTradeDirection === "SHORT" ? shortLossStreak : longLossStreak;
   const cooldownBarsLeft = lastTradeDirection === "SHORT" ? shortCooldownBarsLeft : longCooldownBarsLeft;
   return {
@@ -441,15 +453,17 @@ function getSimulationButtonState(decision, currentPrice, signalContext = {}) {
   };
 }
 
-function calculateSimulationStats(accountSnapshot) {
+function calculateSimulationStats(accountSnapshot, symbol) {
   const closedTrades = accountSnapshot.closedTrades || [];
   const openPositions = accountSnapshot.openPositions || [];
-  const wins = closedTrades.filter((trade) => Number(trade.realizedPnl) > 0);
-  const losses = closedTrades.filter((trade) => Number(trade.realizedPnl) <= 0);
-  const totalTrades = closedTrades.length;
+  const scopedClosedTrades = symbol ? closedTrades.filter((trade) => trade.symbol === symbol) : closedTrades;
+  const scopedOpenPositions = symbol ? openPositions.filter((position) => position.symbol === symbol) : openPositions;
+  const wins = scopedClosedTrades.filter((trade) => Number(trade.realizedPnl) > 0);
+  const losses = scopedClosedTrades.filter((trade) => Number(trade.realizedPnl) <= 0);
+  const totalTrades = scopedClosedTrades.length;
   const winRate = totalTrades ? (wins.length / totalTrades) * 100 : 0;
-  const realizedPnl = closedTrades.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0);
-  const unrealizedPnl = openPositions.reduce((sum, pos) => sum + Number(pos.unrealizedPnl || 0), 0);
+  const realizedPnl = scopedClosedTrades.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0);
+  const unrealizedPnl = scopedOpenPositions.reduce((sum, pos) => sum + Number(pos.unrealizedPnl || 0), 0);
   const avgWin = wins.length ? wins.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0) / wins.length : 0;
   const avgLoss = losses.length ? Math.abs(losses.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0) / losses.length) : 0;
   const avgRR = avgLoss > 0 ? avgWin / avgLoss : 0;
@@ -461,7 +475,7 @@ function calculateSimulationStats(accountSnapshot) {
   let peak = 0;
   let running = 0;
   let maxDrawdown = 0;
-  for (const trade of [...closedTrades].reverse()) {
+  for (const trade of [...scopedClosedTrades].reverse()) {
     const pnl = Number(trade.realizedPnl || 0);
     running += pnl;
     peak = Math.max(peak, running);
@@ -479,7 +493,7 @@ function calculateSimulationStats(accountSnapshot) {
 
   const byKeyWinRate = (key) => {
     const bucket = {};
-    for (const trade of closedTrades) {
+    for (const trade of scopedClosedTrades) {
       const label = trade?.[key] || "UNKNOWN";
       if (!bucket[label]) bucket[label] = { total: 0, wins: 0 };
       bucket[label].total += 1;
@@ -488,16 +502,16 @@ function calculateSimulationStats(accountSnapshot) {
     return Object.fromEntries(Object.entries(bucket).map(([label, stat]) => [label, stat.total ? (stat.wins / stat.total) * 100 : 0]));
   };
   const bySide = (side) => {
-    const rows = closedTrades.filter((trade) => trade.side === side);
+    const rows = scopedClosedTrades.filter((trade) => trade.side === side);
     const winsCount = rows.filter((trade) => Number(trade.realizedPnl) > 0).length;
     return rows.length ? (winsCount / rows.length) * 100 : 0;
   };
   const fullPerformance = paperTradingAnalytics.buildPerformanceSnapshot(
-    closedTrades,
+    scopedClosedTrades,
     (setupContext, trade) => trade?.setupKey || paperTradingAnalytics.buildSetupKey(setupContext)
   );
   const coarsePerformance = paperTradingAnalytics.buildPerformanceSnapshot(
-    closedTrades,
+    scopedClosedTrades,
     (setupContext, trade) => trade?.coarseSetupKey || paperTradingAnalytics.buildCoarseSetupKey(setupContext)
   );
   const performanceRows = Object.entries(fullPerformance.allTimeMap)
@@ -2780,11 +2794,11 @@ export default function CryptoSignalWebApp() {
     const currentSymbolPendingOrders = (paperAccount.pendingOrders || []).filter((order) => order.symbol === paperMarketSymbol);
     const currentSymbolClosedTrades = (paperAccount.closedTrades || []).filter((trade) => trade.symbol === paperMarketSymbol);
     const currentSymbolCancelledOrders = (paperAccount.cancelledOrders || []).filter((order) => order.symbol === paperMarketSymbol);
-    const wins = paperAccount.closedTrades.filter((trade) => trade.realizedPnl >= 0).length;
-    const losses = paperAccount.closedTrades.length - wins;
-    const totalTrades = paperAccount.closedTrades.length;
+    const wins = currentSymbolClosedTrades.filter((trade) => trade.realizedPnl >= 0).length;
+    const losses = currentSymbolClosedTrades.length - wins;
+    const totalTrades = currentSymbolClosedTrades.length;
     const winRate = totalTrades ? (wins / totalTrades) * 100 : 0;
-    const simulationStats = calculateSimulationStats(paperAccount);
+    const simulationStats = calculateSimulationStats(paperAccount, paperMarketSymbol);
     const diagnostics = buildDiagnostics({
       ...paperAccount,
       closedTrades: currentSymbolClosedTrades,
@@ -2944,7 +2958,7 @@ export default function CryptoSignalWebApp() {
         currentCandle,
         previousCandle,
       });
-      const cooldownState = getDirectionalCooldownStateFromAccount(prev);
+      const cooldownState = getDirectionalCooldownStateFromAccount(prev, paperMarketSymbol);
       const cooldownActiveForSide =
         (decisionSide === "LONG" && cooldownState.longCooldownBarsLeft > 0) ||
         (decisionSide === "SHORT" && cooldownState.shortCooldownBarsLeft > 0);

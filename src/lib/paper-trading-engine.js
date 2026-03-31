@@ -50,6 +50,41 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function createDefaultSymbolIsolationState() {
+  return {
+    longLossStreak: 0,
+    shortLossStreak: 0,
+    longCooldownBars: 0,
+    shortCooldownBars: 0,
+    lastTradeDirection: null,
+    cooldownLastCandleTime: null,
+    performanceMap: {},
+    coarsePerformanceMap: {},
+  };
+}
+
+function getSymbolIsolationState(state, symbol) {
+  if (!symbol) return createDefaultSymbolIsolationState();
+  const scoped = state?.symbolIsolationState?.[symbol];
+  if (scoped && typeof scoped === "object") {
+    return {
+      ...createDefaultSymbolIsolationState(),
+      ...scoped,
+    };
+  }
+  return {
+    ...createDefaultSymbolIsolationState(),
+    longLossStreak: asSafeNumber(state?.longLossStreak),
+    shortLossStreak: asSafeNumber(state?.shortLossStreak),
+    longCooldownBars: asSafeNumber(state?.longCooldownBars),
+    shortCooldownBars: asSafeNumber(state?.shortCooldownBars),
+    lastTradeDirection: state?.lastTradeDirection || null,
+    cooldownLastCandleTime: state?.cooldownLastCandleTime ?? null,
+    performanceMap: state?.performanceMap || {},
+    coarsePerformanceMap: state?.coarsePerformanceMap || {},
+  };
+}
+
 function createId(prefix = "sim") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -571,6 +606,7 @@ export function createInitialPaperAccountState() {
       mode: "fixed_quantity",
       quantity: DEFAULT_POSITION_SIZE,
     },
+    symbolIsolationState: {},
     performanceMap: {},
     coarsePerformanceMap: {},
   };
@@ -650,24 +686,40 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
   };
 
   const nextOpen = state.openPositions.filter((item) => item.id !== positionId);
+  const symbol = position.symbol;
+  const symbolState = getSymbolIsolationState(state, symbol);
+  const symbolClosedTrades = [closedTrade, ...state.closedTrades].filter((trade) => trade?.symbol === symbol);
   const isLosingTrade = realizedPnl < 0;
   const isWinningTrade = realizedPnl > 0;
   const nextLongLossStreak = position.side === "LONG"
     ? isLosingTrade
-      ? asSafeNumber(state.longLossStreak) + 1
+      ? asSafeNumber(symbolState.longLossStreak) + 1
       : isWinningTrade
         ? 0
-        : asSafeNumber(state.longLossStreak)
-    : asSafeNumber(state.longLossStreak);
+        : asSafeNumber(symbolState.longLossStreak)
+    : asSafeNumber(symbolState.longLossStreak);
   const nextShortLossStreak = position.side === "SHORT"
     ? isLosingTrade
-      ? asSafeNumber(state.shortLossStreak) + 1
+      ? asSafeNumber(symbolState.shortLossStreak) + 1
       : isWinningTrade
         ? 0
-        : asSafeNumber(state.shortLossStreak)
-    : asSafeNumber(state.shortLossStreak);
+        : asSafeNumber(symbolState.shortLossStreak)
+    : asSafeNumber(symbolState.shortLossStreak);
   const triggerLongCooldown = position.side === "LONG" && nextLongLossStreak >= DIRECTIONAL_LOSS_STREAK_THRESHOLD;
   const triggerShortCooldown = position.side === "SHORT" && nextShortLossStreak >= DIRECTIONAL_LOSS_STREAK_THRESHOLD;
+  const nextSymbolIsolationState = {
+    ...(state.symbolIsolationState || {}),
+    [symbol]: {
+      ...symbolState,
+      longLossStreak: nextLongLossStreak,
+      shortLossStreak: nextShortLossStreak,
+      longCooldownBars: triggerLongCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(symbolState.longCooldownBars),
+      shortCooldownBars: triggerShortCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(symbolState.shortCooldownBars),
+      lastTradeDirection: position.side || null,
+      performanceMap: buildPerformanceMap(symbolClosedTrades, (setupContext, trade) => trade?.setupKey || buildSetupKey(setupContext)),
+      coarsePerformanceMap: buildPerformanceMap(symbolClosedTrades, (setupContext, trade) => trade?.coarseSetupKey || buildCoarseSetupKey(setupContext)),
+    },
+  };
   return recalculateAccountState({
     ...state,
     balance: asSafeNumber(state.balance) + realizedPnl,
@@ -676,11 +728,12 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
     closedTrades: [closedTrade, ...state.closedTrades],
     longLossStreak: nextLongLossStreak,
     shortLossStreak: nextShortLossStreak,
-    longCooldownBars: triggerLongCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(state.longCooldownBars),
-    shortCooldownBars: triggerShortCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(state.shortCooldownBars),
+    longCooldownBars: triggerLongCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(symbolState.longCooldownBars),
+    shortCooldownBars: triggerShortCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(symbolState.shortCooldownBars),
     lastTradeDirection: position.side || null,
-    performanceMap: buildPerformanceMap([closedTrade, ...state.closedTrades], (setupContext, trade) => trade?.setupKey || buildSetupKey(setupContext)),
-    coarsePerformanceMap: buildPerformanceMap([closedTrade, ...state.closedTrades], (setupContext, trade) => trade?.coarseSetupKey || buildCoarseSetupKey(setupContext)),
+    symbolIsolationState: nextSymbolIsolationState,
+    performanceMap: nextSymbolIsolationState[symbol].performanceMap,
+    coarsePerformanceMap: nextSymbolIsolationState[symbol].coarsePerformanceMap,
   });
 }
 
@@ -735,14 +788,15 @@ function resolveMacdValue(value) {
   return undefined;
 }
 
-function getCooldownStateForSide(state, side) {
-  const longCooldownBars = Math.max(0, asSafeNumber(state?.longCooldownBars));
-  const shortCooldownBars = Math.max(0, asSafeNumber(state?.shortCooldownBars));
-  const longLossStreak = Math.max(0, asSafeNumber(state?.longLossStreak));
-  const shortLossStreak = Math.max(0, asSafeNumber(state?.shortLossStreak));
+function getCooldownStateForSide(state, side, symbol) {
+  const symbolState = getSymbolIsolationState(state, symbol);
+  const longCooldownBars = Math.max(0, asSafeNumber(symbolState?.longCooldownBars));
+  const shortCooldownBars = Math.max(0, asSafeNumber(symbolState?.shortCooldownBars));
+  const longLossStreak = Math.max(0, asSafeNumber(symbolState?.longLossStreak));
+  const shortLossStreak = Math.max(0, asSafeNumber(symbolState?.shortLossStreak));
   const sideCooldownBarsLeft = side === "SHORT" ? shortCooldownBars : longCooldownBars;
   return {
-    lastTradeDirection: state?.lastTradeDirection || null,
+    lastTradeDirection: symbolState?.lastTradeDirection || null,
     longLossStreak,
     shortLossStreak,
     longCooldownBars,
@@ -1034,7 +1088,7 @@ export function simulateDecisionExecution({
     return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility, ...basePerformanceDebug };
   }
   const tradeMetadata = resolveTradeMetadata({ decision, confirmationResult, signalContext, side });
-  const closedTrades = state?.closedTrades || [];
+  const closedTrades = (state?.closedTrades || []).filter((trade) => trade?.symbol === symbol);
   const fullPerformance = buildPerformanceSnapshot(closedTrades, (setupContext, trade) => trade?.setupKey || buildSetupKey(setupContext));
   const coarsePerformance = buildPerformanceSnapshot(closedTrades, (setupContext, trade) => trade?.coarseSetupKey || buildCoarseSetupKey(setupContext));
   const currentSetupKey = tradeMetadata.setupKey;
@@ -1090,7 +1144,7 @@ export function simulateDecisionExecution({
       },
     };
   }
-  const cooldownState = getCooldownStateForSide(state, side);
+  const cooldownState = getCooldownStateForSide(state, side, symbol);
   if (cooldownState.cooldownActive) {
     return {
       state,
@@ -1404,13 +1458,26 @@ export function applyMarketTickToPaperState(
   const normalizedMa20 = normalizeNumber(ma20);
   const normalizedMacd = resolveMacdValue(macd);
 
+  const symbolState = getSymbolIsolationState(state, symbol);
   const normalizedCandleTime = Number(candleTime);
-  const hasNewCandle = Number.isFinite(normalizedCandleTime) && normalizedCandleTime !== Number(state?.cooldownLastCandleTime);
+  const hasNewCandle = Number.isFinite(normalizedCandleTime) && normalizedCandleTime !== Number(symbolState?.cooldownLastCandleTime);
+  const nextSymbolIsolationState = symbol
+    ? {
+      ...(state.symbolIsolationState || {}),
+      [symbol]: {
+        ...symbolState,
+        longCooldownBars: hasNewCandle ? Math.max(0, asSafeNumber(symbolState?.longCooldownBars) - 1) : asSafeNumber(symbolState?.longCooldownBars),
+        shortCooldownBars: hasNewCandle ? Math.max(0, asSafeNumber(symbolState?.shortCooldownBars) - 1) : asSafeNumber(symbolState?.shortCooldownBars),
+        cooldownLastCandleTime: hasNewCandle ? normalizedCandleTime : symbolState?.cooldownLastCandleTime ?? null,
+      },
+    }
+    : (state.symbolIsolationState || {});
   let nextState = {
     ...state,
-    longCooldownBars: hasNewCandle ? Math.max(0, asSafeNumber(state?.longCooldownBars) - 1) : asSafeNumber(state?.longCooldownBars),
-    shortCooldownBars: hasNewCandle ? Math.max(0, asSafeNumber(state?.shortCooldownBars) - 1) : asSafeNumber(state?.shortCooldownBars),
-    cooldownLastCandleTime: hasNewCandle ? normalizedCandleTime : state?.cooldownLastCandleTime ?? null,
+    longCooldownBars: hasNewCandle ? Math.max(0, asSafeNumber(symbolState?.longCooldownBars) - 1) : asSafeNumber(symbolState?.longCooldownBars),
+    shortCooldownBars: hasNewCandle ? Math.max(0, asSafeNumber(symbolState?.shortCooldownBars) - 1) : asSafeNumber(symbolState?.shortCooldownBars),
+    cooldownLastCandleTime: hasNewCandle ? normalizedCandleTime : symbolState?.cooldownLastCandleTime ?? null,
+    symbolIsolationState: nextSymbolIsolationState,
   };
 
   nextState = maybeFillPendingOrders(nextState, {
