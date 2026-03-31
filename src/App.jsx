@@ -470,8 +470,21 @@ function calculateSimulationStats(accountSnapshot) {
     const winsCount = rows.filter((trade) => Number(trade.realizedPnl) > 0).length;
     return rows.length ? (winsCount / rows.length) * 100 : 0;
   };
-  const performanceMap = paperTradingAnalytics.buildPerformanceMap(closedTrades);
-  const performanceRows = Object.entries(performanceMap)
+  const fullPerformance = paperTradingAnalytics.buildPerformanceSnapshot(
+    closedTrades,
+    (setupContext, trade) => trade?.setupKey || paperTradingAnalytics.buildSetupKey(setupContext)
+  );
+  const coarsePerformance = paperTradingAnalytics.buildPerformanceSnapshot(
+    closedTrades,
+    (setupContext, trade) => trade?.coarseSetupKey || paperTradingAnalytics.buildCoarseSetupKey(setupContext)
+  );
+  const performanceRows = Object.entries(fullPerformance.allTimeMap)
+    .map(([setupKey, stat]) => ({
+      setupKey,
+      ...stat,
+    }))
+    .sort((a, b) => b.totalTrades - a.totalTrades);
+  const coarsePerformanceRows = Object.entries(coarsePerformance.allTimeMap)
     .map(([setupKey, stat]) => ({
       setupKey,
       ...stat,
@@ -492,15 +505,27 @@ function calculateSimulationStats(accountSnapshot) {
     shortWinRate: bySide("SHORT"),
     decisionTypeWinRate: byKeyWinRate("decisionType"),
     pendingTypeWinRate: byKeyWinRate("pendingType"),
-    performanceMap,
+    performanceMap: fullPerformance.allTimeMap,
+    performanceRecentMap: fullPerformance.recentMap,
     performanceRows,
+    coarsePerformanceMap: coarsePerformance.allTimeMap,
+    coarsePerformanceRecentMap: coarsePerformance.recentMap,
+    coarsePerformanceRows,
   };
 }
 
 function buildDiagnostics(accountSnapshot) {
   const trades = accountSnapshot.closedTrades || [];
   if (!trades.length) return { reviewLines: [], suggestions: [] };
-  const performanceMap = paperTradingAnalytics.buildPerformanceMap(trades);
+  const fullPerformance = paperTradingAnalytics.buildPerformanceSnapshot(
+    trades,
+    (setupContext, trade) => trade?.setupKey || paperTradingAnalytics.buildSetupKey(setupContext)
+  );
+  const coarsePerformance = paperTradingAnalytics.buildPerformanceSnapshot(
+    trades,
+    (setupContext, trade) => trade?.coarseSetupKey || paperTradingAnalytics.buildCoarseSetupKey(setupContext)
+  );
+  const performanceMap = fullPerformance.allTimeMap;
   const statsByDecision = {};
   const statsByPending = {};
   const lowVolumeBreakoutLosses = trades.filter((t) => t.pendingType === "BREAKOUT_ENTRY" && Number(t.realizedPnl) <= 0 && String(t.regime || "").includes("低量"));
@@ -529,6 +554,18 @@ function buildDiagnostics(accountSnapshot) {
     .sort((a, b) => a[1].winRate - b[1].winRate)
     .slice(0, 3)
     .map(([k, v]) => `Setup ${k}：樣本 ${v.totalTrades}，勝率 ${v.winRate.toFixed(1)}%，平均PnL ${v.avgPnl.toFixed(2)}`);
+  const coarseSetupReviewLines = Object.entries(coarsePerformance.allTimeMap)
+    .filter(([, v]) => v.totalTrades >= 3)
+    .sort((a, b) => a[1].winRate - b[1].winRate)
+    .slice(0, 3)
+    .map(([k, v]) => `Coarse Setup ${k}：樣本 ${v.totalTrades}，勝率 ${v.winRate.toFixed(1)}%，平均PnL ${v.avgPnl.toFixed(2)}`);
+  const recentVsAllTimeLines = Object.entries(fullPerformance.recentMap)
+    .filter(([, v]) => v.totalTrades >= 3)
+    .slice(0, 3)
+    .map(([k, recent]) => {
+      const allTime = fullPerformance.allTimeMap[k];
+      return `Recent vs All-time ${k}：recent ${recent.totalTrades} 筆/${recent.winRate.toFixed(1)}%/${recent.avgPnl.toFixed(2)}，all ${allTime?.totalTrades || 0} 筆/${(allTime?.winRate || 0).toFixed(1)}%/${(allTime?.avgPnl || 0).toFixed(2)}`;
+    });
   const suggestions = [
     lowVolumeBreakoutLosses.length >= 2 ? "BREAKOUT_ENTRY 在低量環境勝率低，建議提高量能門檻" : null,
     (statsByPending.OPPORTUNITY_ENTRY?.losses || 0) >= 2 ? "OPPORTUNITY_ENTRY 虧損偏高，建議進一步降低倉位或降級為觀察" : null,
@@ -538,7 +575,7 @@ function buildDiagnostics(accountSnapshot) {
       ? "已啟用 setup 歷史績效過濾：低勝率且負報酬 setup 將自動轉為觀察"
       : null,
   ].filter(Boolean);
-  return { reviewLines: [...reviewLines, ...setupReviewLines], suggestions };
+  return { reviewLines: [...reviewLines, ...setupReviewLines, ...coarseSetupReviewLines, ...recentVsAllTimeLines], suggestions };
 }
 
 function calculateATR(candles, period = 14) {

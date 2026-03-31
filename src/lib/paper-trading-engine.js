@@ -13,6 +13,8 @@ const DEFAULT_PENDING_DRIFT_ATR_RATIO = 2;
 const REDUCED_CONFIDENCE_TYPES = new Set(["OPPORTUNITY_ENTRY", "FALLBACK_ENTRY", "MISSED_MOVE_ENTRY", "PROBE_ENTRY_D"]);
 const DIRECTIONAL_LOSS_STREAK_THRESHOLD = 2;
 const DIRECTIONAL_COOLDOWN_BARS = 6;
+const PERFORMANCE_MIN_SAMPLE_SIZE = 10;
+const RECENT_PERFORMANCE_WINDOW = 20;
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -126,21 +128,35 @@ function buildSetupKey(setupContext = {}) {
   ].join("|");
 }
 
-function buildPerformanceMap(closedTrades = []) {
+function buildCoarseSetupKey(setupContext = {}) {
+  const safe = (value) => String(value == null ? "UNKNOWN" : value).toUpperCase();
+  return [
+    safe(setupContext.marketRegime),
+    safe(setupContext.direction),
+    safe(setupContext.hasKlineConfirmation ? "KLINE_TRUE" : "KLINE_FALSE"),
+    safe(setupContext.rsiZone),
+  ].join("|");
+}
+
+function createEmptyPerformanceStat(setupContext = {}) {
+  return {
+    setupContext,
+    totalTrades: 0,
+    wins: 0,
+    losses: 0,
+    winRate: 0,
+    avgPnl: 0,
+    totalPnl: 0,
+  };
+}
+
+function buildPerformanceMap(closedTrades = [], keyResolver = (setupContext) => buildSetupKey(setupContext)) {
   const map = {};
   for (const trade of closedTrades) {
     const setupContext = trade?.setupContext || {};
-    const setupKey = trade?.setupKey || buildSetupKey(setupContext);
+    const setupKey = keyResolver(setupContext, trade);
     if (!map[setupKey]) {
-      map[setupKey] = {
-        setupContext,
-        totalTrades: 0,
-        wins: 0,
-        losses: 0,
-        winRate: 0,
-        avgPnl: 0,
-        totalPnl: 0,
-      };
+      map[setupKey] = createEmptyPerformanceStat(setupContext);
     }
     const pnl = asSafeNumber(trade?.realizedPnl);
     map[setupKey].totalTrades += 1;
@@ -155,6 +171,27 @@ function buildPerformanceMap(closedTrades = []) {
   return map;
 }
 
+function buildPerformanceSnapshot(closedTrades = [], keyResolver, recentWindow = RECENT_PERFORMANCE_WINDOW) {
+  const recentTrades = closedTrades.slice(0, recentWindow);
+  return {
+    recentMap: buildPerformanceMap(recentTrades, keyResolver),
+    allTimeMap: buildPerformanceMap(closedTrades, keyResolver),
+  };
+}
+
+function resolvePerformanceCandidate(map, key, source) {
+  const stats = map?.[key] || createEmptyPerformanceStat();
+  return { source, stats };
+}
+
+function isUnderperforming(stats) {
+  return (
+    stats.totalTrades >= PERFORMANCE_MIN_SAMPLE_SIZE &&
+    stats.winRate < 40 &&
+    stats.avgPnl < 0
+  );
+}
+
 function resolveTradeMetadata({ decision, confirmationResult, signalContext = {}, side }) {
   const setupContext = buildSetupContext({ decision, confirmationResult, signalContext, side });
   const setupKey = buildSetupKey(setupContext);
@@ -164,6 +201,7 @@ function resolveTradeMetadata({ decision, confirmationResult, signalContext = {}
     pendingType: setupContext.pendingType,
     setupContext,
     setupKey,
+    coarseSetupKey: buildCoarseSetupKey(setupContext),
     scoreGrade: scoring?.scoreGrade || null,
     totalScore: normalizeNumber(scoring?.totalScore),
     regime: decision?.marketRegimeLabel || decision?.regime || null,
@@ -514,6 +552,7 @@ export function createInitialPaperAccountState() {
       quantity: DEFAULT_POSITION_SIZE,
     },
     performanceMap: {},
+    coarsePerformanceMap: {},
   };
 }
 
@@ -620,7 +659,8 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
     longCooldownBars: triggerLongCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(state.longCooldownBars),
     shortCooldownBars: triggerShortCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(state.shortCooldownBars),
     lastTradeDirection: position.side || null,
-    performanceMap: buildPerformanceMap([closedTrade, ...state.closedTrades]),
+    performanceMap: buildPerformanceMap([closedTrade, ...state.closedTrades], (setupContext, trade) => trade?.setupKey || buildSetupKey(setupContext)),
+    coarsePerformanceMap: buildPerformanceMap([closedTrade, ...state.closedTrades], (setupContext, trade) => trade?.coarseSetupKey || buildCoarseSetupKey(setupContext)),
   });
 }
 
@@ -945,20 +985,30 @@ export function simulateDecisionExecution({
     return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility };
   }
   const tradeMetadata = resolveTradeMetadata({ decision, confirmationResult, signalContext, side });
-  const performanceMap = buildPerformanceMap(state?.closedTrades || []);
+  const closedTrades = state?.closedTrades || [];
+  const fullPerformance = buildPerformanceSnapshot(closedTrades, (setupContext, trade) => trade?.setupKey || buildSetupKey(setupContext));
+  const coarsePerformance = buildPerformanceSnapshot(closedTrades, (setupContext, trade) => trade?.coarseSetupKey || buildCoarseSetupKey(setupContext));
   const currentSetupKey = tradeMetadata.setupKey;
-  const currentSetupStats = performanceMap[currentSetupKey] || {
-    totalTrades: 0,
-    wins: 0,
-    losses: 0,
-    winRate: 0,
-    avgPnl: 0,
-    totalPnl: 0,
-  };
-  const blockedByPerformanceFilter =
-    currentSetupStats.totalTrades >= 10 &&
-    currentSetupStats.winRate < 40 &&
-    currentSetupStats.avgPnl < 0;
+  const currentCoarseSetupKey = tradeMetadata.coarseSetupKey;
+
+  const fullRecentCandidate = resolvePerformanceCandidate(fullPerformance.recentMap, currentSetupKey, "recent");
+  const fullAllTimeCandidate = resolvePerformanceCandidate(fullPerformance.allTimeMap, currentSetupKey, "allTime");
+  const coarseRecentCandidate = resolvePerformanceCandidate(coarsePerformance.recentMap, currentCoarseSetupKey, "coarseRecent");
+  const coarseAllTimeCandidate = resolvePerformanceCandidate(coarsePerformance.allTimeMap, currentCoarseSetupKey, "coarseAllTime");
+
+  const selectedFullCandidate = fullRecentCandidate.stats.totalTrades >= PERFORMANCE_MIN_SAMPLE_SIZE
+    ? fullRecentCandidate
+    : fullAllTimeCandidate;
+  const selectedCandidate = selectedFullCandidate.stats.totalTrades >= PERFORMANCE_MIN_SAMPLE_SIZE
+    ? selectedFullCandidate
+    : (coarseRecentCandidate.stats.totalTrades >= PERFORMANCE_MIN_SAMPLE_SIZE ? coarseRecentCandidate : coarseAllTimeCandidate);
+
+  const blockedByPerformanceFilter = isUnderperforming(selectedCandidate.stats);
+  const performanceSampleSize = selectedCandidate.stats.totalTrades;
+  const performanceWinRate = selectedCandidate.stats.winRate;
+  const performanceAvgPnl = selectedCandidate.stats.avgPnl;
+  const performanceSource = selectedCandidate.source;
+
   if (blockedByPerformanceFilter && !bypassSetupGate) {
     return {
       state,
@@ -970,14 +1020,20 @@ export function simulateDecisionExecution({
         decisionType: "NO_TRADE",
       },
       currentSetupKey,
-      currentSetupWinRate: currentSetupStats.winRate,
-      currentSetupSampleSize: currentSetupStats.totalTrades,
+      currentFullSetupKey: currentSetupKey,
+      currentCoarseSetupKey,
+      currentSetupWinRate: performanceWinRate,
+      currentSetupSampleSize: performanceSampleSize,
+      performanceSource,
+      performanceSampleSize,
+      performanceWinRate,
+      performanceAvgPnl,
       blockedByPerformanceFilter: true,
       eligibilityInfo: {
         ...effectiveEligibility,
         eligibility: "WATCH_ONLY",
         reasonCode: "BLOCKED_BY_PERFORMANCE_FILTER",
-        reason: `setup 歷史表現不足（樣本 ${currentSetupStats.totalTrades}，勝率 ${currentSetupStats.winRate.toFixed(1)}%，avgPnl ${currentSetupStats.avgPnl.toFixed(2)}）`,
+        reason: `setup 歷史表現不足（來源 ${performanceSource}，樣本 ${performanceSampleSize}，勝率 ${performanceWinRate.toFixed(1)}%，avgPnl ${performanceAvgPnl.toFixed(2)}）`,
         executionIntent: "WATCH_ONLY",
       },
     };
@@ -1001,8 +1057,14 @@ export function simulateDecisionExecution({
       },
       cooldownDebug: cooldownState,
       currentSetupKey,
-      currentSetupWinRate: currentSetupStats.winRate,
-      currentSetupSampleSize: currentSetupStats.totalTrades,
+      currentFullSetupKey: currentSetupKey,
+      currentCoarseSetupKey,
+      currentSetupWinRate: performanceWinRate,
+      currentSetupSampleSize: performanceSampleSize,
+      performanceSource,
+      performanceSampleSize,
+      performanceWinRate,
+      performanceAvgPnl,
       blockedByPerformanceFilter: false,
     };
   }
@@ -1139,8 +1201,14 @@ export function simulateDecisionExecution({
       executionIntent,
       confirmationResult,
       currentSetupKey,
-      currentSetupWinRate: currentSetupStats.winRate,
-      currentSetupSampleSize: currentSetupStats.totalTrades,
+      currentFullSetupKey: currentSetupKey,
+      currentCoarseSetupKey,
+      currentSetupWinRate: performanceWinRate,
+      currentSetupSampleSize: performanceSampleSize,
+      performanceSource,
+      performanceSampleSize,
+      performanceWinRate,
+      performanceAvgPnl,
       blockedByPerformanceFilter: false,
       eligibilityInfo: {
         ...effectiveEligibility,
@@ -1157,8 +1225,14 @@ export function simulateDecisionExecution({
       executionIntent,
       confirmationResult,
       currentSetupKey,
-      currentSetupWinRate: currentSetupStats.winRate,
-      currentSetupSampleSize: currentSetupStats.totalTrades,
+      currentFullSetupKey: currentSetupKey,
+      currentCoarseSetupKey,
+      currentSetupWinRate: performanceWinRate,
+      currentSetupSampleSize: performanceSampleSize,
+      performanceSource,
+      performanceSampleSize,
+      performanceWinRate,
+      performanceAvgPnl,
       blockedByPerformanceFilter: false,
       eligibilityInfo: {
         ...effectiveEligibility,
@@ -1215,8 +1289,14 @@ export function simulateDecisionExecution({
       executionIntent: "EXECUTE_NOW",
       confirmationResult,
       currentSetupKey,
-      currentSetupWinRate: currentSetupStats.winRate,
-      currentSetupSampleSize: currentSetupStats.totalTrades,
+      currentFullSetupKey: currentSetupKey,
+      currentCoarseSetupKey,
+      currentSetupWinRate: performanceWinRate,
+      currentSetupSampleSize: performanceSampleSize,
+      performanceSource,
+      performanceSampleSize,
+      performanceWinRate,
+      performanceAvgPnl,
       blockedByPerformanceFilter: false,
       position,
       eligibilityInfo: effectiveEligibility,
@@ -1231,8 +1311,14 @@ export function simulateDecisionExecution({
     executionIntent: "PLACE_PENDING",
     confirmationResult,
     currentSetupKey,
-    currentSetupWinRate: currentSetupStats.winRate,
-    currentSetupSampleSize: currentSetupStats.totalTrades,
+    currentFullSetupKey: currentSetupKey,
+    currentCoarseSetupKey,
+    currentSetupWinRate: performanceWinRate,
+    currentSetupSampleSize: performanceSampleSize,
+    performanceSource,
+    performanceSampleSize,
+    performanceWinRate,
+    performanceAvgPnl,
     blockedByPerformanceFilter: false,
     pendingOrder,
     pendingCreation,
@@ -1404,5 +1490,7 @@ export const paperTradingConstants = {
 export const paperTradingAnalytics = {
   buildSetupContext,
   buildSetupKey,
+  buildCoarseSetupKey,
   buildPerformanceMap,
+  buildPerformanceSnapshot,
 };

@@ -530,13 +530,37 @@ export default function PaperTradingSidebar({
                 </ul>
               </div>
               <div>
-                <div className="mb-1 text-slate-500">各 Setup 表現（次數 / 勝率 / 平均PnL）</div>
+                <div className="mb-1 text-slate-500">Full Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
                 <ul className="list-disc pl-4">
-                  {(accountSnapshot.simulationStats?.performanceRows || []).slice(0, 12).map((row) => (
+                  {(accountSnapshot.simulationStats?.performanceRows || []).slice(0, 8).map((row) => (
                     <li key={row.setupKey}>
                       {row.setupKey}: {row.totalTrades} 筆 / {formatNumber(row.winRate, 1)}% / {formatNumber(row.avgPnl, 2)}
                     </li>
                   ))}
+                </ul>
+              </div>
+              <div>
+                <div className="mb-1 text-slate-500">Coarse Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
+                <ul className="list-disc pl-4">
+                  {(accountSnapshot.simulationStats?.coarsePerformanceRows || []).slice(0, 8).map((row) => (
+                    <li key={`coarse-${row.setupKey}`}>
+                      {row.setupKey}: {row.totalTrades} 筆 / {formatNumber(row.winRate, 1)}% / {formatNumber(row.avgPnl, 2)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <div className="mb-1 text-slate-500">Recent vs All-time（Full Setup）</div>
+                <ul className="list-disc pl-4">
+                  {Object.entries(accountSnapshot.simulationStats?.performanceRecentMap || {}).slice(0, 8).map(([setupKey, row]) => {
+                    const allTime = accountSnapshot.simulationStats?.performanceMap?.[setupKey];
+                    return (
+                      <li key={`recent-${setupKey}`}>
+                        {setupKey}: recent {row.totalTrades}/{formatNumber(row.winRate, 1)}%/{formatNumber(row.avgPnl, 2)}
+                        {" "}vs all {allTime?.totalTrades || 0}/{formatNumber(allTime?.winRate, 1)}%/{formatNumber(allTime?.avgPnl, 2)}
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             </CardContent>
@@ -647,12 +671,18 @@ export default function PaperTradingSidebar({
                     <div>consecutiveLossCount：{simulationExecutionStatus.cooldownDebug.consecutiveLossCount ?? "-"}</div>
                     <div>cooldownActive：{simulationExecutionStatus.cooldownDebug.cooldownActive ? "true" : "false"}</div>
                     <div>cooldownBarsLeft：{simulationExecutionStatus.cooldownDebug.cooldownBarsLeft ?? "-"}</div>
-                    <div>currentSetupKey：{simulationExecutionStatus.currentSetupKey || "-"}</div>
-                    <div>currentSetupWinRate：{formatNumber(simulationExecutionStatus.currentSetupWinRate, 1)}%</div>
-                    <div>currentSetupSampleSize：{simulationExecutionStatus.currentSetupSampleSize ?? 0}</div>
-                    <div>blockedByPerformanceFilter：{simulationExecutionStatus.blockedByPerformanceFilter ? "true" : "false"}</div>
                   </div>
                 ) : null}
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2 text-slate-700 space-y-1">
+                  <div className="font-semibold text-indigo-800">Performance Filter Debug</div>
+                  <div>currentFullSetupKey：{simulationExecutionStatus.currentFullSetupKey || simulationExecutionStatus.currentSetupKey || "-"}</div>
+                  <div>currentCoarseSetupKey：{simulationExecutionStatus.currentCoarseSetupKey || "-"}</div>
+                  <div>performanceSource：{simulationExecutionStatus.performanceSource || "-"}</div>
+                  <div>performanceSampleSize：{simulationExecutionStatus.performanceSampleSize ?? simulationExecutionStatus.currentSetupSampleSize ?? 0}</div>
+                  <div>performanceWinRate：{formatNumber(simulationExecutionStatus.performanceWinRate ?? simulationExecutionStatus.currentSetupWinRate, 1)}%</div>
+                  <div>performanceAvgPnl：{formatNumber(simulationExecutionStatus.performanceAvgPnl, 2)}</div>
+                  <div>blockedByPerformanceFilter：{simulationExecutionStatus.blockedByPerformanceFilter ? "true" : "false"}</div>
+                </div>
                 <div>時間：{formatDate(simulationExecutionStatus?.timestamp)}</div>
               </CardContent>
             </Card>
