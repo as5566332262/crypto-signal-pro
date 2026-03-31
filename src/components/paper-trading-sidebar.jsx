@@ -503,10 +503,10 @@ export default function PaperTradingSidebar({
             </CardContent>
           </Card>
           <TradingStateTerminal
-            openPositions={accountSnapshot.openPositions || []}
-            pendingOrders={accountSnapshot.pendingOrders || []}
-            closedTrades={accountSnapshot.closedTrades || []}
-            cancelledOrders={accountSnapshot.cancelledOrders || []}
+            openPositions={accountSnapshot.currentSymbolOpenPositions || []}
+            pendingOrders={accountSnapshot.currentSymbolPendingOrders || []}
+            closedTrades={accountSnapshot.currentSymbolClosedTrades || []}
+            cancelledOrders={accountSnapshot.currentSymbolCancelledOrders || []}
             paperDigits={paperDigits}
             formatNumber={formatNumber}
             onClosePosition={onClosePosition}
@@ -691,6 +691,10 @@ export default function PaperTradingSidebar({
                 ) : null}
                 <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2 text-slate-700 space-y-1">
                   <div className="font-semibold text-indigo-800">Performance Filter Debug</div>
+                  <DebugField label="totalOpenPositionsAllSymbols" value={accountSnapshot.totalOpenPositionsAllSymbols ?? 0} />
+                  <DebugField label="totalPendingOrdersAllSymbols" value={accountSnapshot.totalPendingOrdersAllSymbols ?? 0} />
+                  <DebugField label="currentSymbolOpenPositions" value={accountSnapshot.currentSymbolOpenPositionsCount ?? 0} />
+                  <DebugField label="currentSymbolPendingOrders" value={accountSnapshot.currentSymbolPendingOrdersCount ?? 0} />
                   <DebugField label="currentFullSetupKey" value={performanceDebug.currentFullSetupKey || performanceDebug.currentSetupKey || "-"} />
                   <DebugField label="currentCoarseSetupKey" value={performanceDebug.currentCoarseSetupKey || "-"} />
                   <DebugField label="performanceSource" value={performanceDebug.performanceSource || "-"} />
