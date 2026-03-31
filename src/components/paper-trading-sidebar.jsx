@@ -731,12 +731,36 @@ export default function PaperTradingSidebar({
                   <InfoItem label="已運行多久" value={simulationStartedAt ? runtimeLabel : "-"} />
                   <InfoItem label="最新 decision time" value={formatDate(currentSimulationStatus?.lastDecisionAt || lastDecisionAt)} />
                   <InfoItem label="當前 simulation phase" value={simulationPhaseLabel(currentSimulationStatus?.currentPhase)} />
-                  <InfoItem
-                    label="當前等待原因"
-                    value={currentSimulationStatus?.waitingReason || "等待下一根 K 線確認"}
-                    className="col-span-2"
-                    valueClassName="whitespace-normal leading-relaxed"
-                  />
+                  <div className="col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <div className="mb-1 text-[11px] font-semibold text-slate-500">等待原因（可行動）</div>
+                    <ul className="space-y-1 text-[11px] text-slate-700">
+                      <li>當前價格：{Number.isFinite(Number(currentSimulationStatus?.currentPrice))
+                        ? formatNumber(Number(currentSimulationStatus.currentPrice), paperDigits)
+                        : currentSimulationStatus?.waitingReasonDetails?.currentPrice || "-"}</li>
+                      <li>目標進場區：{currentSimulationStatus?.waitingReasonDetails?.targetEntryZone || currentSimulationStatus?.targetEntryZone || "-"}</li>
+                    </ul>
+                    <div className="mt-2 text-[11px] font-semibold text-slate-500">尚未滿足</div>
+                    <ul className="mt-1 space-y-1 text-[11px] text-slate-700">
+                      {(currentSimulationStatus?.waitingReasonDetails?.unmetConditions || currentSimulationStatus?.unmetConditions || []).slice(0, 3).map((condition, index) => (
+                        <li key={`${condition}-${index}`}>• {condition}</li>
+                      ))}
+                      {!((currentSimulationStatus?.waitingReasonDetails?.unmetConditions || currentSimulationStatus?.unmetConditions || []).length) ? (
+                        <li className="text-slate-500">• 目前無待補條件</li>
+                      ) : null}
+                    </ul>
+                    <div className="mt-2 text-[11px] font-semibold text-slate-500">狀態</div>
+                    <ul className="mt-1 space-y-1 text-[11px] text-slate-700">
+                      {(currentSimulationStatus?.waitingReasonDetails?.status || [currentSimulationStatus?.waitingReason || "等待下一根 K 線確認"]).map((statusItem, index) => (
+                        <li key={`${statusItem}-${index}`}>• {statusItem}</li>
+                      ))}
+                    </ul>
+                    {currentSimulationStatus?.entryDistanceLabel ? (
+                      <div className="mt-2 text-[11px] font-medium text-slate-700">{currentSimulationStatus.entryDistanceLabel}</div>
+                    ) : null}
+                    {currentSimulationStatus?.nearEntryHint ? (
+                      <div className="mt-1 text-[11px] font-medium text-amber-700">{currentSimulationStatus.nearEntryHint}</div>
+                    ) : null}
+                  </div>
                   <InfoItem label="Target Entry Zone" value={currentSimulationStatus?.targetEntryZone || "-"} />
                   <InfoItem
                     label="Current Price"
