@@ -66,6 +66,24 @@ function toSafeNumberText(value, formatter, digits = 2) {
   return Number.isFinite(parsed) ? formatter(parsed, digits) : "-";
 }
 
+function formatCompactNumber(value, maximumFractionDigits = 1) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "-";
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits,
+  }).format(parsed);
+}
+
+function waitingReasonLabel(reason) {
+  const reasonMap = {
+    blockedByKlineConfirmation: "K線未確認",
+    waitingForBreakout: "等待突破",
+  };
+  const normalizedReason = toPrimitiveText(reason, { fallback: "-" });
+  return reasonMap[normalizedReason] || normalizedReason || "-";
+}
+
 function normalizeClosedTrade(trade, index, formatNumber, paperDigits) {
   if (!trade || typeof trade !== "object") return null;
   const realizedPnlRaw = trade.realizedPnl ?? trade.pnl;
@@ -279,11 +297,11 @@ function TradingStateTerminal({
       <CardContent className="p-3 pt-0 text-xs text-slate-600">
         {activeTab === "positions" ? (
           openPositions.length ? (
-            <div className="max-h-[420px] space-y-2.5 overflow-y-auto pr-1">
+            <div className="h-[360px] space-y-2.5 overflow-x-hidden overflow-y-auto pr-1">
               {openPositions.map((position) => {
                 const pnlPositive = Number(position.unrealizedPnl || 0) >= 0;
                 return (
-                  <div key={position.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div key={position.id} className="flex min-h-[220px] flex-col rounded-xl border border-slate-200 bg-white p-3">
                     <div className="mb-3 space-y-1.5">
                       <div className="flex items-center gap-2">
                         <div className="truncate text-sm font-semibold text-slate-800">{position.symbol}</div>
@@ -296,26 +314,35 @@ function TradingStateTerminal({
                         {formatNumber(position.unrealizedPnl, 2)} USDT
                       </div>
                     </div>
-                    <div className="space-y-2.5">
-                      <div className="whitespace-nowrap text-sm font-semibold text-slate-800">
-                        {formatNumber(position.entryPrice, paperDigits)} <span className="px-1 text-slate-400">→</span> {formatNumber(position.currentPrice, paperDigits)}
-                      </div>
-                      <InfoSingleRow
-                        label="數量"
-                        value={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`}
-                      />
-                      <div className="flex flex-col gap-1.5">
-                        <InlineLabelValue label="止損" value={formatNumber(position.stopLoss, paperDigits)} />
-                        <InlineLabelValue
-                          label="止盈1"
-                          value={position.takeProfit1 ? formatNumber(position.takeProfit1, paperDigits) : "-"}
+                    <div className="space-y-3">
+                      <div className="space-y-2 rounded-lg bg-slate-50 p-2.5">
+                        <div className="text-[11px] font-semibold text-slate-500">基本資訊</div>
+                        <div className="whitespace-nowrap text-sm font-semibold text-slate-800">
+                          {formatNumber(position.entryPrice, paperDigits)} <span className="px-1 text-slate-400">→</span> {formatNumber(position.currentPrice, paperDigits)}
+                        </div>
+                        <InfoSingleRow
+                          label="數量"
+                          value={`${formatNumber(position.quantity, 2)} ${position.symbol.replace("USDT", "")}`}
                         />
                       </div>
-                      <div className="whitespace-nowrap text-[13px] font-medium text-slate-700">
-                        開倉：<span className="font-semibold text-slate-800">{formatDate(position.openedAt)}</span>
+                      <div className="space-y-2 rounded-lg bg-slate-50 p-2.5">
+                        <div className="text-[11px] font-semibold text-slate-500">風控</div>
+                        <div className="flex flex-col gap-1.5">
+                          <InlineLabelValue label="止損" value={formatNumber(position.stopLoss, paperDigits)} />
+                          <InlineLabelValue
+                            label="止盈1"
+                            value={position.takeProfit1 ? formatNumber(position.takeProfit1, paperDigits) : "-"}
+                          />
+                        </div>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-2.5">
+                        <div className="text-[11px] font-semibold text-slate-500">狀態</div>
+                        <div className="mt-1 whitespace-nowrap text-[13px] font-medium text-slate-700">
+                          開倉：<span className="font-semibold text-slate-800">{formatDate(position.openedAt)}</span>
+                        </div>
                       </div>
                     </div>
-                    <div className="mt-3 pt-1">
+                    <div className="mt-auto pt-3">
                       <Button variant="outline" size="sm" className="h-7 w-full rounded-lg px-2" onClick={() => onClosePosition?.(position.id)}>
                         平倉
                       </Button>
@@ -329,48 +356,66 @@ function TradingStateTerminal({
 
         {activeTab === "pending" ? (
           pendingOrders.length ? (
-            <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+            <div className="h-[360px] space-y-2.5 overflow-x-hidden overflow-y-auto pr-1">
               {pendingOrders.map((order) => (
-                <div key={order.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                <div key={order.id} className="flex min-h-[260px] flex-col rounded-xl border border-slate-200 bg-white p-3">
                   <div className="mb-3 flex items-center justify-between gap-2">
                     <div className="truncate text-sm font-semibold text-slate-800">{order.symbol}</div>
                     <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${order.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
                       {sideLabel(order.side)}
                     </span>
                   </div>
-                  <div className="space-y-2.5">
-                    <InfoPairRow
-                      leftLabel="觸發價"
-                      leftValue={formatNumber(order.triggerPrice, paperDigits)}
-                      rightLabel="數量"
-                      rightValue={`${formatNumber(order.quantity, 2)} ${order.symbol.replace("USDT", "")}`}
-                    />
-                    <InfoPairRow
-                      leftLabel="止損"
-                      leftValue={formatNumber(order.stopLoss, paperDigits)}
-                      rightLabel="失效價"
-                      rightValue={formatNumber(order.invalidationPrice, paperDigits)}
-                    />
-                    <InfoSingleRow label="止盈1 / 止盈2 / 止盈3" value={takeProfitDetailLabel(order)} />
-                    <InfoSingleRow label="建立時間" value={formatDate(order.createdAt)} />
-                    <InfoSingleRow label="等待原因" value={(order.waitingReasons || []).join(" / ") || order.waitReason || "-"} />
-                    <InfoSingleRow label="isReentryAttempt" value={order.isReentryAttempt ? "true" : "false"} />
-                    <InfoPairRow
-                      leftLabel="已等待 K 數"
-                      leftValue={safeFormatNumber(order.waitedBars, 0)}
-                      rightLabel="距現價%"
-                      rightValue={order.distanceFromPricePct == null ? "-" : `${safeFormatNumber(order.distanceFromPricePct, 2)}%`}
-                    />
-                    <InfoPairRow
-                      leftLabel="reentryCount"
-                      leftValue={safeFormatNumber(order.reentryCount, 0)}
-                      rightLabel="reentryReason"
-                      rightValue={order.reentryReason || "-"}
-                    />
-                    <InfoSingleRow label="reentryAdjustedEntry" value={order.reentryAdjustedEntry ? "true" : "false"} />
-                    <InfoSingleRow label="價格漂移取消" value={order.canceledByPriceDrift ? "是" : "否"} />
+                  <div className="space-y-3">
+                    <div className="space-y-2 rounded-lg bg-slate-50 p-2.5">
+                      <div className="text-[11px] font-semibold text-slate-500">基本資訊</div>
+                      <InfoPairRow
+                        leftLabel="觸發價"
+                        leftValue={formatNumber(order.triggerPrice, paperDigits)}
+                        rightLabel="數量"
+                        rightValue={`${formatNumber(order.quantity, 2)} ${order.symbol.replace("USDT", "")}`}
+                      />
+                      <InfoSingleRow label="建立時間" value={formatDate(order.createdAt)} />
+                    </div>
+                    <div className="space-y-2 rounded-lg bg-slate-50 p-2.5">
+                      <div className="text-[11px] font-semibold text-slate-500">風控</div>
+                      <InfoPairRow
+                        leftLabel="止損"
+                        leftValue={formatNumber(order.stopLoss, paperDigits)}
+                        rightLabel="失效價"
+                        rightValue={formatNumber(order.invalidationPrice, paperDigits)}
+                      />
+                      <InfoSingleRow label="止盈1 / 止盈2 / 止盈3" value={takeProfitDetailLabel(order)} />
+                    </div>
+                    <div className="space-y-2 rounded-lg bg-slate-50 p-2.5">
+                      <div className="text-[11px] font-semibold text-slate-500">狀態</div>
+                      <InfoSingleRow
+                        label="等待原因"
+                        value={(() => {
+                          const reasons = Array.isArray(order.waitingReasons) && order.waitingReasons.length
+                            ? order.waitingReasons
+                            : [order.waitReason];
+                          return reasons
+                            .filter(Boolean)
+                            .map((reason) => waitingReasonLabel(reason))
+                            .join(" / ") || "-";
+                        })()}
+                      />
+                      <InfoSingleRow label="isReentryAttempt" value={order.isReentryAttempt ? "true" : "false"} />
+                      <InfoSingleRow label="已等待K數" value={formatCompactNumber(order.waitedBars, 1)} />
+                      {order.distanceFromPricePct != null ? (
+                        <InfoSingleRow label="距現價%" value={`${safeFormatNumber(order.distanceFromPricePct, 2)}%`} />
+                      ) : null}
+                      <InfoPairRow
+                        leftLabel="reentryCount"
+                        leftValue={safeFormatNumber(order.reentryCount, 0)}
+                        rightLabel="reentryReason"
+                        rightValue={order.reentryReason || "-"}
+                      />
+                      <InfoSingleRow label="reentryAdjustedEntry" value={order.reentryAdjustedEntry ? "true" : "false"} />
+                      <InfoSingleRow label="價格漂移取消" value={order.canceledByPriceDrift ? "是" : "否"} />
+                    </div>
                   </div>
-                  <div className="mt-3 pt-1">
+                  <div className="mt-auto pt-3">
                     <Button variant="outline" size="sm" className="h-7 w-full rounded-lg border-rose-200 px-2 text-rose-700 hover:bg-rose-50 hover:text-rose-800" onClick={() => onCancelPendingOrder?.(order.id)}>
                       取消掛單
                     </Button>
