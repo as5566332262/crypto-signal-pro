@@ -203,6 +203,14 @@ function resolveKlineConfirmed(aiDecisionOutput = {}, indicators = {}) {
   return false;
 }
 
+function resolveRsiThresholdReached(indicators = {}, side) {
+  const rsi = normalizeNumber(indicators?.rsi);
+  if (!Number.isFinite(rsi) || !side) return false;
+  if (side === "SHORT") return rsi > 60;
+  if (side === "LONG") return rsi < 40;
+  return false;
+}
+
 function resolveBreakoutConfirmed(aiDecisionOutput = {}, currentPrice, indicators = {}) {
   if (typeof indicators?.breakoutConfirmed === "boolean") return indicators.breakoutConfirmed;
   const side = normalizeSide(aiDecisionOutput);
@@ -308,6 +316,7 @@ export function runConfirmationEngine({
     mtfAligned: resolveMtfAligned(mtf),
     momentumConfirmed: resolveMomentumConfirmed(indicators, side),
   };
+  const rsiThresholdReached = resolveRsiThresholdReached(indicators, side);
 
   const breakoutConfirmed = resolveBreakoutConfirmed(aiDecisionOutput, currentPrice, indicators);
   const riskRewardAcceptable = resolveRiskRewardAcceptable(aiDecisionOutput);
@@ -386,7 +395,11 @@ export function runConfirmationEngine({
     indicators,
   });
   const rangeProbeSide = detectedRangeProbeSide || resolveRangeProbeSide({ currentPrice, side, structure, aiDecisionOutput, indicators });
-  const dGradeRsiProbeReady = scoring?.scoreGrade === "D" && Number.isFinite(rsi) && (rsi <= 40 || rsi >= 60);
+  const dGradeRsiProbeReady =
+    scoring?.scoreGrade === "D" &&
+    Number.isFinite(rsi) &&
+    (rsi <= 40 || rsi >= 60) &&
+    softConditions.klineConfirmed;
   const noTradeBars = Math.max(0, Math.floor(normalizeNumber(indicators?.noTradeBars) || 0));
   const forceProbeByNoTradeBars = noTradeBars >= FORCE_PROBE_NO_TRADE_BARS;
   const forceProbeByFlag = Boolean(indicators?.forceProbeEntry);
@@ -421,6 +434,9 @@ export function runConfirmationEngine({
   } else if (probeTriggered) {
     decisionType = "PROBE_ENTRY_D";
   }
+  if (rsiThresholdReached && !softConditions.klineConfirmed) {
+    decisionType = "CONFIRMATION_REQUIRED";
+  }
   if (cooldownActiveForSide) {
     decisionType = "NO_TRADE";
   }
@@ -450,9 +466,7 @@ export function runConfirmationEngine({
     canExecute = breakoutConfirmed && confirmationState.volumeConfirmed;
   } else if (decisionType === "CONFIRMATION_REQUIRED") {
     canExecute =
-      scoring.totalScore >= 80 &&
-      confirmationState.mtfAligned &&
-      confirmationState.momentumConfirmed;
+      false;
   } else if (decisionType === "STANDARD_ENTRY" || decisionType === "WAIT_PULLBACK") {
     canExecute =
       scoring.totalScore >= 68 &&
@@ -480,7 +494,9 @@ export function runConfirmationEngine({
     scoring,
     confirmationState: {
       ...confirmationState,
+      hasKlineConfirmation: confirmationState.klineConfirmed,
       breakoutConfirmed,
+      rsiThresholdReached,
       riskRewardAcceptable,
       zoneWaitBars,
       hardConditions,
@@ -495,6 +511,7 @@ export function runConfirmationEngine({
       cooldownActiveForSide,
     },
     canExecute,
+    hasKlineConfirmation: confirmationState.klineConfirmed,
     side: probeSide || side,
   };
 }

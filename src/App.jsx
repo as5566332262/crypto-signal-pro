@@ -2875,6 +2875,7 @@ export default function CryptoSignalWebApp() {
           reason: `${decisionSide === "LONG" ? "多單" : "空單"}連續虧損已達 ${SIMULATION_DIRECTIONAL_LOSS_STREAK_THRESHOLD} 次，暫停 ${sideCooldownBarsLeft} 根 K`,
           unmetConditions: ["DIRECTIONAL_COOLDOWN_ACTIVE"],
           distances: [],
+          hasKlineConfirmation,
           timestamp: new Date().toISOString(),
           cooldownDebug: {
             lastTradeDirection: cooldownState.lastTradeDirection,
@@ -3141,6 +3142,7 @@ const simulationAgentState = {
       }
       nextFeedback = {
         ...nextFeedback,
+        hasKlineConfirmation,
         cooldownDebug: {
           lastTradeDirection: cooldownState.lastTradeDirection,
           consecutiveLossCount: sideConsecutiveLossCount,
