@@ -253,6 +253,15 @@ function applyTimingPenalties({ weightedTotal, confirmationState = {}, factors =
     adjusted -= 8;
     pushFactor(factors, "錯過原始進場位，改採次優策略", -8);
   }
+  const locationFilterScoreImpact = normalizeNumber(confirmationState?.locationFilterScoreImpact);
+  if (Number.isFinite(locationFilterScoreImpact) && locationFilterScoreImpact !== 0) {
+    adjusted += locationFilterScoreImpact;
+    pushFactor(
+      factors,
+      locationFilterScoreImpact > 0 ? "趨勢盤進場位置加分" : "趨勢盤進場位置扣分",
+      locationFilterScoreImpact
+    );
+  }
   return adjusted;
 }
 
