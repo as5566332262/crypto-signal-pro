@@ -805,7 +805,10 @@ export function createInitialPaperAccountState() {
     orderLifecycleEvents: [],
     lifecycleTrace: [],
     pendingFillChecks: [],
+    pendingFillExecutions: [],
     pendingCancelTrace: [],
+    orderFillEventLocks: {},
+    orderToPositionMap: {},
     waitingDiagnostics: createDefaultWaitingDiagnostics(),
     accountTrace: [],
     accountErrorTrace: [],
@@ -894,6 +897,13 @@ function appendPendingFillCheck(state, payload) {
   return {
     ...state,
     pendingFillChecks: [payload, ...(state?.pendingFillChecks || [])].slice(0, 1000),
+  };
+}
+
+function appendPendingFillExecutionTrace(state, payload) {
+  return {
+    ...state,
+    pendingFillExecutions: [payload, ...(state?.pendingFillExecutions || [])].slice(0, 1000),
   };
 }
 
@@ -1234,6 +1244,14 @@ function maybeAdjustPositionRisk(position, tickPrice) {
   return position;
 }
 
+function resolvePendingFillEventId({ triggeredBy, symbol, candleTime, timestamp }) {
+  const normalizedCandleTime = normalizeBarTime(candleTime);
+  if (Number.isFinite(normalizedCandleTime)) {
+    return `${symbol || "UNKNOWN"}:candle:${normalizedCandleTime}`;
+  }
+  return `${triggeredBy || "UNKNOWN"}:${symbol || "UNKNOWN"}:ts:${timestamp || nowIso()}`;
+}
+
 function evaluatePendingOrderFill(order, {
   tickPrice,
   candleHigh,
@@ -1378,12 +1396,16 @@ function maybeFillPendingOrders(state, {
   marketDataBySymbol = null,
 }) {
   const normalizedCandleTime = normalizeBarTime(candleTime);
+  const eventId = resolvePendingFillEventId({ triggeredBy, symbol, candleTime, timestamp });
+  const perEventFilledOrderIds = new Set();
   let nextState = {
     ...state,
     pendingOrders: [...state.pendingOrders],
     cancelledOrders: [...(state.cancelledOrders || [])],
     openPositions: [...state.openPositions],
     waitingDiagnostics: state?.waitingDiagnostics || createDefaultWaitingDiagnostics(),
+    orderFillEventLocks: { ...(state?.orderFillEventLocks || {}) },
+    orderToPositionMap: { ...(state?.orderToPositionMap || {}) },
   };
   console.debug("[paper-trading] pending orders check", {
     pendingOrdersCount: (nextState.pendingOrders || []).filter((order) => order.status === "PENDING").length,
@@ -1513,6 +1535,17 @@ function maybeFillPendingOrders(state, {
       candleHigh: orderCandleHigh,
       candleLow: orderCandleLow,
     });
+    const alreadyProcessedInEvent = Array.isArray(nextState.orderFillEventLocks?.[order.id]) &&
+      nextState.orderFillEventLocks[order.id].includes(eventId);
+    const alreadyFilledByOrderId = Boolean(nextState.orderToPositionMap?.[order.id]);
+    const blockedByEventLock = alreadyProcessedInEvent || perEventFilledOrderIds.has(order.id);
+    const blockedByOrderFillGuard = alreadyFilledByOrderId;
+    const shouldFill = fillEvaluation.shouldFill && !blockedByEventLock && !blockedByOrderFillGuard;
+    const resolvedFillReason = blockedByEventLock
+      ? "BLOCKED_BY_EVENT_LOCK"
+      : blockedByOrderFillGuard
+        ? "BLOCKED_BY_ORDER_FILLED"
+        : fillEvaluation.reason;
     nextState = appendPendingFillCheck(nextState, {
       orderId: order.id,
       symbol: order.symbol,
@@ -1521,11 +1554,15 @@ function maybeFillPendingOrders(state, {
       tickPrice: orderTickPrice,
       candleHigh: orderCandleHigh,
       candleLow: orderCandleLow,
-      shouldFill: fillEvaluation.shouldFill,
-      fillReason: fillEvaluation.reason,
+      shouldFill,
+      fillReason: resolvedFillReason,
       blockedByDecision: false,
       checkedAt: timestamp,
       checkedBy: triggeredBy,
+      triggeredBy,
+      eventId,
+      candleTimestamp: normalizedCandleTime,
+      functionName: checkedFunctionName,
     });
     console.debug("[paper-trading] pending order fill evaluation", {
       orderId: order.id,
@@ -1536,10 +1573,20 @@ function maybeFillPendingOrders(state, {
       tickPrice: orderTickPrice,
       candleHigh: orderCandleHigh,
       candleLow: orderCandleLow,
-      shouldFill: fillEvaluation.shouldFill,
-      fillReason: fillEvaluation.reason,
+      shouldFill,
+      fillReason: resolvedFillReason,
+      blockedByEventLock,
+      blockedByOrderFillGuard,
+      eventId,
+      functionName: checkedFunctionName,
     });
-    if (!fillEvaluation.shouldFill) return observedOrder;
+    if (!shouldFill) return observedOrder;
+
+    perEventFilledOrderIds.add(order.id);
+    const existingOrderLocks = Array.isArray(nextState.orderFillEventLocks?.[order.id])
+      ? nextState.orderFillEventLocks[order.id]
+      : [];
+    nextState.orderFillEventLocks[order.id] = [eventId, ...existingOrderLocks].slice(0, 20);
 
     const entryPrice = asSafeNumber(order.triggerPrice, orderTickPrice);
     const normalizedLevels = normalizeDirectionalLevels({
@@ -1595,7 +1642,11 @@ function maybeFillPendingOrders(state, {
         side: order.side,
       }),
     };
+    if (nextState.orderToPositionMap?.[order.id]) {
+      return { ...observedOrder, status: "FILLED", filledAt: timestamp };
+    }
     nextState.openPositions.push(position);
+    nextState.orderToPositionMap[order.id] = position.id;
     const diagnostics = nextState?.waitingDiagnostics || createDefaultWaitingDiagnostics();
     nextState.waitingDiagnostics = {
       ...diagnostics,
@@ -1611,6 +1662,17 @@ function maybeFillPendingOrders(state, {
       },
     };
     nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "FILLED", reason: fillEvaluation.reason, triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed: order.symbol });
+    nextState = appendPendingFillExecutionTrace(nextState, {
+      orderId: order.id,
+      createdPositionId: position.id,
+      fillPrice: entryPrice,
+      timestamp,
+      eventId,
+      functionName: checkedFunctionName,
+      triggeredBy,
+      symbol: order.symbol,
+      side: order.side,
+    });
     console.info("[paper-trading] pending order executed", {
       orderId: order.id,
       symbol: order.symbol,
