@@ -36,6 +36,7 @@ const PAPER_ACCOUNT_STORAGE_KEY = "crypto-signal-pro-paper-account-v7";
 const SIMULATION_SNAPSHOT_STORAGE_KEY = "crypto-signal-pro-simulation-snapshot-v1";
 const PAPER_SUPPORTED_SYMBOLS = ["BTC", "ETH", "SOL"];
 const PAPER_MARKET_SYMBOLS = PAPER_SUPPORTED_SYMBOLS.map((item) => `${item}USDT`);
+const SIMULATION_LIFECYCLES = ["running", "paused", "stopped", "idle"];
 
 function normalizeSimulationExecutionStatus(status) {
   if (!status || typeof status !== "object") {
@@ -56,6 +57,79 @@ function normalizeSimulationExecutionStatus(status) {
     currentCoarseSetupKey: status?.currentCoarseSetupKey || "-",
     performanceSource: status?.performanceSource || "-",
   };
+}
+
+function createDefaultSymbolSimulationState() {
+  return {
+    isSimulating: false,
+    lifecycle: "idle",
+    startedAt: null,
+    elapsedTime: 0,
+    lastProcessedAt: null,
+    lastCandleTime: null,
+    lastTickTime: null,
+    pendingOrders: [],
+    openPositions: [],
+    closedTrades: [],
+    cooldown: null,
+    performanceStats: null,
+    executionStatus: normalizeSimulationExecutionStatus(null),
+    executionLock: false,
+    restore: {
+      restored: false,
+      restoredAt: null,
+      restoredLifecycle: "idle",
+      restoredPositionsCount: 0,
+      restoredPendingCount: 0,
+      lastDecisionTime: null,
+      restoredKeys: [],
+    },
+    rehydrate: {
+      attempted: false,
+      completed: false,
+    },
+    simulationAgentRuntimeState: {},
+    lastDecisionAt: null,
+  };
+}
+
+function normalizeSimulationStateBySymbol(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return PAPER_SUPPORTED_SYMBOLS.reduce((acc, symbolKey) => {
+    const item = source?.[symbolKey] && typeof source[symbolKey] === "object" ? source[symbolKey] : {};
+    const lifecycle = SIMULATION_LIFECYCLES.includes(item?.lifecycle) ? item.lifecycle : "idle";
+    const startedAtTs = item?.startedAt ? new Date(item.startedAt).getTime() : null;
+    const elapsedTime = Number(item?.elapsedTime);
+    const now = Date.now();
+    const runtimeSec = lifecycle === "running" && Number.isFinite(startedAtTs)
+      ? Math.max(0, Math.floor((now - startedAtTs) / 1000))
+      : 0;
+    acc[symbolKey] = {
+      ...createDefaultSymbolSimulationState(),
+      ...item,
+      isSimulating: lifecycle === "running",
+      lifecycle,
+      startedAt: item?.startedAt || null,
+      elapsedTime: Number.isFinite(elapsedTime) ? elapsedTime : runtimeSec,
+      executionStatus: normalizeSimulationExecutionStatus(item?.executionStatus),
+      pendingOrders: Array.isArray(item?.pendingOrders) ? item.pendingOrders : [],
+      openPositions: Array.isArray(item?.openPositions) ? item.openPositions : [],
+      closedTrades: Array.isArray(item?.closedTrades) ? item.closedTrades : [],
+      restore: {
+        ...createDefaultSymbolSimulationState().restore,
+        ...(item?.restore || {}),
+        restoredKeys: Array.isArray(item?.restore?.restoredKeys) ? item.restore.restoredKeys : [],
+      },
+      rehydrate: {
+        ...createDefaultSymbolSimulationState().rehydrate,
+        ...(item?.rehydrate || {}),
+      },
+      simulationAgentRuntimeState: item?.simulationAgentRuntimeState && typeof item.simulationAgentRuntimeState === "object"
+        ? item.simulationAgentRuntimeState
+        : {},
+    };
+    return acc;
+  }, {});
 }
 
 function loadPaperAccount() {
@@ -93,7 +167,7 @@ function loadSimulationSnapshot() {
     if (!parsed || typeof parsed !== "object") return null;
 
     const fallbackAccount = loadPaperAccount();
-    const normalizedLifecycle = ["running", "paused", "stopped", "idle"].includes(parsed?.simulationLifecycle)
+    const normalizedLifecycle = SIMULATION_LIFECYCLES.includes(parsed?.simulationLifecycle)
       ? parsed.simulationLifecycle
       : "idle";
     const normalizedPaperAccount = normalizePaperAccountState({
@@ -128,14 +202,39 @@ function loadSimulationSnapshot() {
       },
     }, { eventType: "RESTORE", sourceFunction: "loadSimulationSnapshot" });
 
+    const legacySymbol = parsed?.currentSymbol || "SOL";
+    const simulationStateBySymbol = normalizeSimulationStateBySymbol(parsed?.simulationStateBySymbol);
+    simulationStateBySymbol[legacySymbol] = {
+      ...simulationStateBySymbol[legacySymbol],
+      lifecycle: normalizedLifecycle,
+      isSimulating: normalizedLifecycle === "running",
+      startedAt: parsed?.simulationStartTime || simulationStateBySymbol[legacySymbol]?.startedAt || null,
+      lastDecisionAt: parsed?.lastDecisionTime || simulationStateBySymbol[legacySymbol]?.lastDecisionAt || null,
+      restore: {
+        ...simulationStateBySymbol[legacySymbol]?.restore,
+        restored: true,
+        restoredAt: new Date().toISOString(),
+        restoredLifecycle: normalizedLifecycle,
+        restoredPositionsCount: normalizedPaperAccount.openPositions.filter((position) => position.symbol === `${legacySymbol}USDT`).length,
+        restoredPendingCount: normalizedPaperAccount.pendingOrders.filter((order) => order.symbol === `${legacySymbol}USDT`).length,
+        lastDecisionTime: parsed?.lastDecisionTime || null,
+        restoredKeys: ["pendingOrders", "openPositions", "closedTrades", "performanceStats"],
+      },
+      rehydrate: {
+        attempted: true,
+        completed: true,
+      },
+    };
+
     return {
       simulationLifecycle: normalizedLifecycle,
       simulationStartTime: parsed?.simulationStartTime || null,
       lastDecisionTime: parsed?.lastDecisionTime || null,
-      currentSymbol: parsed?.currentSymbol || "SOL",
+      currentSymbol: legacySymbol,
       marketSymbol: parsed?.marketSymbol || "SOLUSDT",
       timeframe: parsed?.timeframe || "15m",
       simulationStats: parsed?.simulationStats || null,
+      simulationStateBySymbol,
       paperAccount: normalizedPaperAccount,
       restoredAt: new Date().toISOString(),
       restoredPositionsCount: normalizedPaperAccount.openPositions.length,
@@ -2736,26 +2835,34 @@ export default function CryptoSignalWebApp() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [paperSymbol, setPaperSymbol] = useState(() => restoredSnapshot?.currentSymbol || "SOL");
   const [paperAccount, setPaperAccount] = useState(() => restoredSnapshot?.paperAccount || loadPaperAccount());
-  const [simulationExecutionStatus, setSimulationExecutionStatus] = useState(() => normalizeSimulationExecutionStatus(null));
-  const [simulationLifecycle, setSimulationLifecycle] = useState(() => restoredSnapshot?.simulationLifecycle || "idle");
-  const [simulationStartedAt, setSimulationStartedAt] = useState(() => restoredSnapshot?.simulationStartTime || null);
-  const [lastDecisionAt, setLastDecisionAt] = useState(() => restoredSnapshot?.lastDecisionTime || null);
-  const [simulationRestoreInfo, setSimulationRestoreInfo] = useState(() =>
-    restoredSnapshot
-      ? {
-        restored: true,
-        restoredAt: restoredSnapshot.restoredAt,
-        restoredLifecycle: restoredSnapshot.simulationLifecycle,
-        restoredPositionsCount: restoredSnapshot.restoredPositionsCount,
-        restoredPendingCount: restoredSnapshot.restoredPendingCount,
-        lastDecisionTime: restoredSnapshot.lastDecisionTime,
-      }
-      : null
+  const [simulationStateBySymbol, setSimulationStateBySymbol] = useState(() =>
+    normalizeSimulationStateBySymbol(restoredSnapshot?.simulationStateBySymbol)
   );
-  const lastProcessedCandleRef = useRef(null);
+  const currentSimulationState = simulationStateBySymbol[paperSymbol] || createDefaultSymbolSimulationState();
+  const simulationExecutionStatus = currentSimulationState.executionStatus;
+  const simulationLifecycle = currentSimulationState.lifecycle;
+  const simulationStartedAt = currentSimulationState.startedAt;
+  const lastDecisionAt = currentSimulationState.lastDecisionAt;
+  const simulationRestoreInfo = currentSimulationState.restore;
+  const lastProcessedCandleRef = useRef({});
   const lastAppliedPaperTickKeyRef = useRef({});
-  const hasLoggedResumeAfterRestoreRef = useRef(false);
+  const hasLoggedResumeAfterRestoreRef = useRef({});
+  const executionLocksRef = useRef({});
   const [marketSnapshots, setMarketSnapshots] = useState({});
+  const updateSimulationStateForSymbol = (symbolKey, updater) => {
+    if (!symbolKey) return;
+    setSimulationStateBySymbol((prev) => {
+      const previous = prev?.[symbolKey] || createDefaultSymbolSimulationState();
+      const nextPartial = typeof updater === "function" ? updater(previous) : updater;
+      return {
+        ...prev,
+        [symbolKey]: {
+          ...previous,
+          ...nextPartial,
+        },
+      };
+    });
+  };
 
   const buildPaperMarketSnapshot = (candlesInput = []) => {
     const validCandles = Array.isArray(candlesInput) ? candlesInput : [];
@@ -2927,12 +3034,12 @@ export default function CryptoSignalWebApp() {
           candleTime: snapshot?.candleTime,
           triggeredBy: "MARKET_CANDLE",
           selectedSymbolAtThatMoment: paperMarketSymbol,
-          allowPendingFills: simulationLifecycle === "running",
+          allowPendingFills: (simulationStateBySymbol?.[marketSymbol.replace("USDT", "")]?.lifecycle || "idle") === "running",
         });
       }
       return next;
     });
-  }, [marketSnapshots, paperMarketSymbol, simulationLifecycle]);
+  }, [marketSnapshots, paperMarketSymbol, simulationStateBySymbol]);
 
   useEffect(() => {
     if (symbol !== paperMarketSymbol) return;
@@ -2955,10 +3062,11 @@ export default function CryptoSignalWebApp() {
     if (symbol !== paperMarketSymbol) return;
     if (simulationLifecycle !== "running") return;
     const candleKey = `${paperMarketSymbol}-${timeframe}-${currentCandle?.openTime || "na"}-${analysis?.price || "na"}`;
-    if (!currentCandle?.openTime || lastProcessedCandleRef.current === candleKey) return;
-    lastProcessedCandleRef.current = candleKey;
+    if (!currentCandle?.openTime || lastProcessedCandleRef.current?.[paperSymbol] === candleKey) return;
+    lastProcessedCandleRef.current[paperSymbol] = candleKey;
+    console.debug("[SIM_STATE_READ]", { symbol: paperSymbol, isSimulating: currentSimulationState.isSimulating, elapsedTime: currentSimulationState.elapsedTime });
     runSimulationStep({ mode: "agent_loop", executionSource: "simulation_agent" });
-  }, [simulationLifecycle, symbol, currentCandle?.openTime, analysis?.price, paperMarketSymbol, timeframe]);
+  }, [simulationLifecycle, symbol, currentCandle?.openTime, analysis?.price, paperMarketSymbol, timeframe, paperSymbol, currentSimulationState.isSimulating, currentSimulationState.elapsedTime]);
 
   const accountSnapshot = useMemo(() => {
     const accountSummary = calculateAccountSummary(paperAccount);
@@ -2997,7 +3105,39 @@ export default function CryptoSignalWebApp() {
   }, [paperAccount, paperMarketSymbol]);
 
   useEffect(() => {
+    const now = Date.now();
+    setSimulationStateBySymbol((prev) => {
+      const next = { ...prev };
+      for (const symbolKey of PAPER_SUPPORTED_SYMBOLS) {
+        const marketSymbol = `${symbolKey}USDT`;
+        const current = prev?.[symbolKey] || createDefaultSymbolSimulationState();
+        const startedAtTs = current.startedAt ? new Date(current.startedAt).getTime() : null;
+        const elapsedTime = current.lifecycle === "running" && Number.isFinite(startedAtTs)
+          ? Math.max(0, Math.floor((now - startedAtTs) / 1000))
+          : current.lifecycle === "idle"
+            ? 0
+            : current.elapsedTime;
+        next[symbolKey] = {
+          ...current,
+          elapsedTime,
+          pendingOrders: (paperAccount.pendingOrders || []).filter((order) => order.symbol === marketSymbol),
+          openPositions: (paperAccount.openPositions || []).filter((position) => position.symbol === marketSymbol),
+          closedTrades: (paperAccount.closedTrades || []).filter((trade) => trade.symbol === marketSymbol),
+          cooldown: getDirectionalCooldownStateFromAccount(paperAccount, marketSymbol),
+          performanceStats: calculateSimulationStats(paperAccount, marketSymbol),
+          simulationAgentRuntimeState: paperAccount?.simulationAgentState?.[marketSymbol] || {},
+        };
+      }
+      return next;
+    });
+  }, [paperAccount]);
+
+  useEffect(() => {
     if (!simulationRestoreInfo?.restored) return;
+    console.debug("[SIM_RESTORE]", {
+      symbol: paperSymbol,
+      restoredKeys: simulationRestoreInfo.restoredKeys || [],
+    });
     console.debug("[simulation:persistence] simulation state restored", {
       restoredLifecycle: simulationRestoreInfo.restoredLifecycle,
       restoredPositionsCount: simulationRestoreInfo.restoredPositionsCount,
@@ -3008,16 +3148,17 @@ export default function CryptoSignalWebApp() {
     console.debug("[simulation:persistence] restored lifecycle", simulationRestoreInfo.restoredLifecycle);
     console.debug("[simulation:persistence] restored positions count", simulationRestoreInfo.restoredPositionsCount);
     console.debug("[simulation:persistence] restored pending count", simulationRestoreInfo.restoredPendingCount);
-  }, [simulationRestoreInfo]);
+  }, [simulationRestoreInfo, paperSymbol]);
 
   useEffect(() => {
-    if (!simulationRestoreInfo?.restored || simulationLifecycle !== "running" || hasLoggedResumeAfterRestoreRef.current) return;
-    hasLoggedResumeAfterRestoreRef.current = true;
+    if (!simulationRestoreInfo?.restored || simulationLifecycle !== "running" || hasLoggedResumeAfterRestoreRef.current?.[paperSymbol]) return;
+    hasLoggedResumeAfterRestoreRef.current[paperSymbol] = true;
     console.debug("[simulation:persistence] agent resumed after restore", {
+      symbol: paperSymbol,
       lifecycle: simulationLifecycle,
       restoredAt: simulationRestoreInfo.restoredAt,
     });
-  }, [simulationLifecycle, simulationRestoreInfo]);
+  }, [simulationLifecycle, simulationRestoreInfo, paperSymbol]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3025,6 +3166,7 @@ export default function CryptoSignalWebApp() {
       version: 1,
       updatedAt: new Date().toISOString(),
       simulationLifecycle,
+      simulationStateBySymbol,
       paperAccount: {
         ...paperAccount,
         simulationStats: accountSnapshot.simulationStats,
@@ -3044,11 +3186,13 @@ export default function CryptoSignalWebApp() {
     window.localStorage.setItem(PAPER_ACCOUNT_STORAGE_KEY, JSON.stringify(paperAccount));
     console.debug("[simulation:persistence] simulation state saved", {
       lifecycle: simulationLifecycle,
+      symbol: paperSymbol,
       positions: snapshot.openPositions.length,
       pending: snapshot.pendingOrders.length,
     });
   }, [
     simulationLifecycle,
+    simulationStateBySymbol,
     paperAccount,
     accountSnapshot.simulationStats,
     simulationStartedAt,
@@ -3059,6 +3203,9 @@ export default function CryptoSignalWebApp() {
   ]);
 
   const runSimulationStep = ({ mode = "manual_click", executionSource = "simulation_manual" } = {}) => {
+    if (executionLocksRef.current?.[paperSymbol]) return;
+    executionLocksRef.current[paperSymbol] = true;
+    updateSimulationStateForSymbol(paperSymbol, { executionLock: true });
     const manualExecutionMeta = {
       mode,
       executionSource,
@@ -3066,25 +3213,33 @@ export default function CryptoSignalWebApp() {
     };
     console.debug("[simulation:click]", manualExecutionMeta);
     if (symbol !== paperMarketSymbol) {
-      setSimulationExecutionStatus(normalizeSimulationExecutionStatus({
+      updateSimulationStateForSymbol(paperSymbol, {
+        executionStatus: normalizeSimulationExecutionStatus({
         status: "WATCHING",
         statusLabel: "觀察中（非交易幣種畫面）",
         reason: "目前檢視的 symbol 非交易引擎 symbol，已阻擋因 UI 切換觸發的模擬下單流程",
         unmetConditions: [],
         distances: [],
         timestamp: new Date().toISOString(),
-      }));
+      }),
+      });
+      executionLocksRef.current[paperSymbol] = false;
+      updateSimulationStateForSymbol(paperSymbol, { executionLock: false });
       return;
     }
     if (!analysis?.aiDecisionOutput || !paperCurrentPrice) {
-      setSimulationExecutionStatus(normalizeSimulationExecutionStatus({
+      updateSimulationStateForSymbol(paperSymbol, {
+        executionStatus: normalizeSimulationExecutionStatus({
         status: "WATCHING",
         statusLabel: "已進入等待確認模式",
         reason: "尚未取得即時價格或 AI 決策，先觀察並等待下一筆有效條件",
         unmetConditions: [],
         distances: [],
         timestamp: new Date().toISOString(),
-      }));
+      }),
+      });
+      executionLocksRef.current[paperSymbol] = false;
+      updateSimulationStateForSymbol(paperSymbol, { executionLock: false });
       return;
     }
 
@@ -3190,7 +3345,7 @@ export default function CryptoSignalWebApp() {
             cooldownBarsLeft: sideCooldownBarsLeft,
           },
         };
-        setSimulationExecutionStatus(normalizeSimulationExecutionStatus(nextFeedback));
+        updateSimulationStateForSymbol(paperSymbol, { executionStatus: normalizeSimulationExecutionStatus(nextFeedback) });
         return {
           ...reconciledState,
           simulationAgentState: {
@@ -3485,7 +3640,9 @@ const simulationAgentState = {
         },
       };
 
-      setSimulationExecutionStatus(normalizeSimulationExecutionStatus(nextFeedback));
+      updateSimulationStateForSymbol(paperSymbol, {
+        executionStatus: normalizeSimulationExecutionStatus(nextFeedback),
+      });
       console.debug("[simulation:position-write]", {
         ...manualExecutionMeta,
         finalStatus: nextFeedback.status,
@@ -3498,7 +3655,15 @@ const simulationAgentState = {
         simulationAgentState,
       };
     });
-    setLastDecisionAt(new Date().toISOString());
+    const decidedAt = new Date().toISOString();
+    updateSimulationStateForSymbol(paperSymbol, {
+      lastDecisionAt: decidedAt,
+      lastProcessedAt: decidedAt,
+      lastTickTime: currentCandle?.openTime || null,
+      lastCandleTime: currentCandle?.openTime || null,
+    });
+    executionLocksRef.current[paperSymbol] = false;
+    updateSimulationStateForSymbol(paperSymbol, { executionLock: false });
   };
 
   const handleExecuteSimulation = () => runSimulationStep({ mode: "manual_click", executionSource: "simulation_manual" });
@@ -3536,24 +3701,51 @@ const simulationAgentState = {
 
   const handleResetPaperAccount = () => {
     setPaperAccount(resetPaperTradingState());
-    setSimulationExecutionStatus(normalizeSimulationExecutionStatus(null));
-    setSimulationLifecycle("idle");
-    setSimulationStartedAt(null);
-    setLastDecisionAt(null);
-    lastProcessedCandleRef.current = null;
+    updateSimulationStateForSymbol(paperSymbol, {
+      ...createDefaultSymbolSimulationState(),
+      rehydrate: {
+        attempted: true,
+        completed: true,
+      },
+    });
+    executionLocksRef.current[paperSymbol] = false;
+    lastProcessedCandleRef.current[paperSymbol] = null;
   };
 
   const handleStartSimulation = () => {
-    setSimulationLifecycle("running");
-    setSimulationStartedAt((prev) => (simulationLifecycle === "paused" && prev ? prev : new Date().toISOString()));
+    const nowIso = new Date().toISOString();
+    const current = simulationStateBySymbol[paperSymbol] || createDefaultSymbolSimulationState();
+    const startedAt = current.lifecycle === "paused" && current.startedAt ? current.startedAt : nowIso;
+    updateSimulationStateForSymbol(paperSymbol, {
+      lifecycle: "running",
+      isSimulating: true,
+      startedAt,
+      rehydrate: {
+        attempted: true,
+        completed: true,
+      },
+    });
+    console.debug("[SIM_START]", { symbol: paperSymbol, startedAt });
   };
 
   const handlePauseSimulation = () => {
-    setSimulationLifecycle("paused");
+    updateSimulationStateForSymbol(paperSymbol, {
+      lifecycle: "paused",
+      isSimulating: false,
+    });
   };
 
   const handleStopSimulation = () => {
-    setSimulationLifecycle("stopped");
+    const current = simulationStateBySymbol[paperSymbol] || createDefaultSymbolSimulationState();
+    const stoppedAt = new Date().toISOString();
+    const startedAtTs = current.startedAt ? new Date(current.startedAt).getTime() : null;
+    const elapsed = Number.isFinite(startedAtTs) ? Math.max(0, Math.floor((Date.now() - startedAtTs) / 1000)) : current.elapsedTime;
+    updateSimulationStateForSymbol(paperSymbol, {
+      lifecycle: "stopped",
+      isSimulating: false,
+      elapsedTime: elapsed,
+    });
+    console.debug("[SIM_STOP]", { symbol: paperSymbol, stoppedAt, elapsed });
   };
 
   const simulationButtonState = useMemo(
@@ -3569,6 +3761,14 @@ const simulationAgentState = {
       }),
     [analysis?.aiDecisionOutput, paperCurrentPrice, analysis?.rsi, analysis?.macd, currentCandle?.volume, candles]
   );
+
+  useEffect(() => {
+    console.debug("[SIM_STATE_READ]", {
+      symbol: paperSymbol,
+      isSimulating: currentSimulationState.isSimulating,
+      elapsedTime: currentSimulationState.elapsedTime,
+    });
+  }, [paperSymbol, currentSimulationState.isSimulating, currentSimulationState.elapsedTime]);
 
   return (
     <div className="min-h-screen w-full bg-slate-50">
