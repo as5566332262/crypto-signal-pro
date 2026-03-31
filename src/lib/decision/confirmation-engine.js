@@ -390,6 +390,7 @@ export function runConfirmationEngine({
   const noTradeBars = Math.max(0, Math.floor(normalizeNumber(indicators?.noTradeBars) || 0));
   const forceProbeByNoTradeBars = noTradeBars >= FORCE_PROBE_NO_TRADE_BARS;
   const forceProbeByFlag = Boolean(indicators?.forceProbeEntry);
+  const cooldownActiveForSide = Boolean(indicators?.cooldownActiveForSide);
   const rangeProbeReady = (nearSupport || nearResistance) && softConditions.klineConfirmed;
   const probeTriggered = dGradeRsiProbeReady || rangeProbeReady || forceProbeByNoTradeBars || forceProbeByFlag;
   const probeSide = rangeProbeSide || (Number.isFinite(rsi) ? (rsi <= 40 ? "LONG" : rsi >= 60 ? "SHORT" : side) : side);
@@ -408,6 +409,9 @@ export function runConfirmationEngine({
   });
 
   let decisionType = scoring?.decisionType || baselineDecisionType;
+  if (cooldownActiveForSide) {
+    decisionType = "NO_TRADE";
+  }
   if (primaryEntryReady) {
     decisionType = "IMMEDIATE_ENTRY";
   } else if (fallbackEntryReady) {
@@ -416,6 +420,9 @@ export function runConfirmationEngine({
     decisionType = "MISSED_MOVE_ENTRY";
   } else if (probeTriggered) {
     decisionType = "PROBE_ENTRY_D";
+  }
+  if (cooldownActiveForSide) {
+    decisionType = "NO_TRADE";
   }
 
   let canExecute = false;
@@ -463,6 +470,8 @@ export function runConfirmationEngine({
       confirmationState.mtfAligned;
   } else if (decisionType === "PROBE_ENTRY_D") {
     canExecute = rangeMarket ? rangeProbeReady : probeTriggered;
+  } else if (decisionType === "NO_TRADE") {
+    canExecute = false;
   }
 
   return {
@@ -483,6 +492,7 @@ export function runConfirmationEngine({
       dGradeRsiProbeReady,
       forceProbeByNoTradeBars,
       forceProbeByFlag,
+      cooldownActiveForSide,
     },
     canExecute,
     side: probeSide || side,

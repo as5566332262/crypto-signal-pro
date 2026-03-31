@@ -620,6 +620,15 @@ export default function PaperTradingSidebar({
                     </ul>
                   </div>
                 ) : null}
+                {simulationExecutionStatus?.cooldownDebug ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-slate-700 space-y-1">
+                    <div className="font-semibold text-amber-800">Cooldown Debug</div>
+                    <div>lastTradeDirection：{simulationExecutionStatus.cooldownDebug.lastTradeDirection || "-"}</div>
+                    <div>consecutiveLossCount：{simulationExecutionStatus.cooldownDebug.consecutiveLossCount ?? "-"}</div>
+                    <div>cooldownActive：{simulationExecutionStatus.cooldownDebug.cooldownActive ? "true" : "false"}</div>
+                    <div>cooldownBarsLeft：{simulationExecutionStatus.cooldownDebug.cooldownBarsLeft ?? "-"}</div>
+                  </div>
+                ) : null}
                 <div>時間：{simulationExecutionStatus?.timestamp ? new Date(simulationExecutionStatus.timestamp).toLocaleString() : "-"}</div>
               </CardContent>
             </Card>
