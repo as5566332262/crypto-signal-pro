@@ -20,7 +20,8 @@ function reasonLabel(reason) {
     TRAP_EXIT: "陷阱退出",
     MANUAL_CLOSE: "手動平倉",
   };
-  return reasonMap[reason] || reason || "-";
+  const normalizedReason = toPrimitiveText(reason, { fallback: "-" });
+  return reasonMap[normalizedReason] || normalizedReason || "-";
 }
 
 function formatDate(value) {
@@ -33,6 +34,100 @@ function toTimestamp(value) {
   if (!value) return null;
   const timestamp = new Date(value).getTime();
   return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function isRenderablePrimitive(value) {
+  return ["string", "number", "boolean"].includes(typeof value);
+}
+
+function toPrimitiveText(value, { fallback = "-", complexFallback = "[complex data hidden]" } = {}) {
+  if (value == null) return fallback;
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : fallback;
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "string") return value.trim() ? value : fallback;
+  if (Array.isArray(value)) {
+    const item = value.find((entry) => isRenderablePrimitive(entry));
+    return item == null ? complexFallback : toPrimitiveText(item, { fallback, complexFallback });
+  }
+  if (typeof value === "object") {
+    const candidateKeys = ["label", "type", "reason", "name", "message", "code", "value"];
+    for (const key of candidateKeys) {
+      if (isRenderablePrimitive(value[key])) {
+        return toPrimitiveText(value[key], { fallback, complexFallback });
+      }
+    }
+    return complexFallback;
+  }
+  return fallback;
+}
+
+function toSafeNumberText(value, formatter, digits = 2) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? formatter(parsed, digits) : "-";
+}
+
+function normalizeClosedTrade(trade, index, formatNumber, paperDigits) {
+  if (!trade || typeof trade !== "object") return null;
+  const realizedPnlRaw = trade.realizedPnl ?? trade.pnl;
+  const realizedPnlNumber = Number(realizedPnlRaw);
+  const hasRealizedPnl = Number.isFinite(realizedPnlNumber);
+  const pnlPositive = hasRealizedPnl ? realizedPnlNumber >= 0 : true;
+  const maxRunupRaw = trade.maxRunup ?? trade.maxFavorableExcursion;
+  const maxDrawdownRaw = trade.maxDrawdown ?? trade.maxAdverseExcursion;
+  const closeReasonRaw = trade.closeReason ?? trade.exitReason ?? trade.reason;
+  const createdAt = trade.createdAt ?? trade.entryTime;
+  const enteredAt = trade.enteredAt ?? trade.entryTime;
+  const closedAt = trade.closedAt ?? trade.exitTime;
+  return {
+    id: trade.id || `${toPrimitiveText(trade.symbol, { fallback: "unknown" })}-${index}`,
+    symbol: toPrimitiveText(trade.symbol),
+    side: trade.side === "SHORT" ? "SHORT" : "LONG",
+    entryPrice: toSafeNumberText(trade.entryPrice, formatNumber, paperDigits),
+    exitPrice: toSafeNumberText(trade.exitPrice, formatNumber, paperDigits),
+    quantity: toSafeNumberText(trade.quantity, formatNumber, 2),
+    realizedPnlText: hasRealizedPnl ? `${pnlPositive ? "+" : ""}${toSafeNumberText(realizedPnlNumber, formatNumber, 2)} USDT` : "-",
+    pnlPositive,
+    hasRealizedPnl,
+    closeReason: reasonLabel(closeReasonRaw),
+    decisionType: toPrimitiveText(trade.decisionType),
+    pendingType: toPrimitiveText(trade.pendingType),
+    scoreSummary: `${toPrimitiveText(trade.scoreGrade)} / ${toPrimitiveText(trade.totalScore)}`,
+    regimeSummary: `${toPrimitiveText(trade.regime)} / ${toPrimitiveText(trade.confirmationState)}`,
+    entryReason: toPrimitiveText(trade.entryReasonDetail ?? trade.entryReason),
+    reentrySummary:
+      trade.isReentryAttempt || trade.reentryCount || trade.reentryReason || trade.reentryAdjustedEntry
+        ? `${trade.isReentryAttempt ? "true" : "false"} / ${Number.isFinite(Number(trade.reentryCount)) ? Number(trade.reentryCount) : 0}`
+        : null,
+    reentryReasonSummary:
+      trade.reentryReason || trade.reentryAdjustedEntry
+        ? `${toPrimitiveText(trade.reentryReason)} / ${trade.reentryAdjustedEntry ? "true" : "false"}`
+        : null,
+    maxRunupDrawdown: `${toSafeNumberText(maxRunupRaw, formatNumber, 2)} / ${toSafeNumberText(maxDrawdownRaw, formatNumber, 2)}`,
+    timeSummary: `${formatDate(createdAt)} / ${formatDate(enteredAt)} / ${formatDate(closedAt)}`,
+  };
+}
+
+class CardRenderErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error) {
+    console.error("[TradingStateTerminal] Card render failed:", error);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+          此筆資料顯示失敗
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 export function PaperAccountCard({ accountSnapshot, formatNumber }) {
@@ -106,15 +201,16 @@ function TradingStateTerminal({
       console.error("[TradingStateTerminal] closedTrades is not an array:", closedTrades);
       return [];
     }
-    console.log("[TradingStateTerminal] closedTrades.length =", closedTrades.length);
-    return closedTrades.filter((trade, index) => {
-      const valid = trade && typeof trade === "object";
-      if (!valid) {
-        console.error("[TradingStateTerminal] Invalid closed trade item filtered out:", { index, trade });
-      }
-      return valid;
-    });
-  }, [closedTrades]);
+    return closedTrades
+      .map((trade, index) => {
+        const normalized = normalizeClosedTrade(trade, index, formatNumber, paperDigits);
+        if (!normalized) {
+          console.error("[TradingStateTerminal] Invalid closed trade item filtered out:", { index, trade });
+        }
+        return normalized;
+      })
+      .filter(Boolean);
+  }, [closedTrades, formatNumber, paperDigits]);
   const tabItems = [
     { key: "positions", label: "持有倉位", count: openPositions.length },
     { key: "pending", label: "當前委託", count: pendingOrders.length },
@@ -279,52 +375,38 @@ function TradingStateTerminal({
           normalizedClosedTrades.length ? (
             <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
               {normalizedClosedTrades.map((trade, index) => {
-                try {
-                  const realizedPnlRaw = trade.realizedPnl ?? trade.pnl;
-                  const realizedPnlNumber = Number(realizedPnlRaw);
-                  const hasRealizedPnl = Number.isFinite(realizedPnlNumber);
-                  const pnlPositive = hasRealizedPnl ? realizedPnlNumber >= 0 : true;
-                  const maxRunupRaw = trade.maxRunup ?? trade.maxFavorableExcursion;
-                  const maxDrawdownRaw = trade.maxDrawdown ?? trade.maxAdverseExcursion;
-                  const closeReasonRaw = trade.closeReason ?? trade.exitReason ?? trade.reason;
-                  const createdAt = trade.createdAt ?? trade.entryTime;
-                  const enteredAt = trade.enteredAt ?? trade.entryTime;
-                  const closedAt = trade.closedAt ?? trade.exitTime;
-
-                  return (
-                    <div key={trade.id || `${trade.symbol || "unknown"}-${index}`} className="rounded-xl border border-slate-200 bg-white p-3">
+                return (
+                  <CardRenderErrorBoundary key={trade.id || `${trade.symbol || "unknown"}-${index}`}>
+                    <div className="rounded-xl border border-slate-200 bg-white p-3">
                       <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="text-sm font-semibold text-slate-800">{trade.symbol || "-"}</div>
+                        <div className="text-sm font-semibold text-slate-800">{trade.symbol}</div>
                         <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${trade.side === "SHORT" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
                           {sideLabel(trade.side)}
                         </span>
                       </div>
                       <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                        <InfoItem label="進場價" value={safeFormatNumber(trade.entryPrice, paperDigits)} />
-                        <InfoItem label="出場價" value={safeFormatNumber(trade.exitPrice, paperDigits)} />
-                        <InfoItem label="數量" value={safeFormatNumber(trade.quantity, 2)} />
+                        <InfoItem label="進場價" value={trade.entryPrice} />
+                        <InfoItem label="出場價" value={trade.exitPrice} />
+                        <InfoItem label="數量" value={trade.quantity} />
                         <InfoItem
                           label="已實現損益"
-                          value={hasRealizedPnl ? `${pnlPositive ? "+" : ""}${safeFormatNumber(realizedPnlNumber, 2)} USDT` : "-"}
-                          valueClassName={hasRealizedPnl ? (pnlPositive ? "text-emerald-600" : "text-rose-600") : ""}
+                          value={trade.realizedPnlText}
+                          valueClassName={trade.hasRealizedPnl ? (trade.pnlPositive ? "text-emerald-600" : "text-rose-600") : ""}
                         />
-                        <InfoItem label="平倉原因" value={reasonLabel(closeReasonRaw)} className="col-span-2" />
-                        <InfoItem label="decisionType" value={trade.decisionType ?? "-"} className="col-span-2" />
-                        <InfoItem label="pendingType" value={trade.pendingType ?? "-"} className="col-span-2" />
-                        <InfoItem label="scoreGrade / totalScore" value={`${trade.scoreGrade ?? "-"} / ${trade.totalScore ?? "-"}`} className="col-span-2" />
-                        <InfoItem label="regime / confirmation" value={`${trade.regime ?? "-"} / ${trade.confirmationState ?? "-"}`} className="col-span-2" />
-                        <InfoItem label="進場理由" value={trade.entryReasonDetail ?? trade.entryReason ?? "-"} className="col-span-2" />
-                        <InfoItem label="isReentryAttempt / reentryCount" value={`${trade.isReentryAttempt ? "true" : "false"} / ${trade.reentryCount ?? 0}`} className="col-span-2" />
-                        <InfoItem label="reentryReason / reentryAdjustedEntry" value={`${trade.reentryReason ?? "-"} / ${trade.reentryAdjustedEntry ? "true" : "false"}`} className="col-span-2" />
-                        <InfoItem label="最大浮盈 / 最大浮虧" value={`${safeFormatNumber(maxRunupRaw, 2)} / ${safeFormatNumber(maxDrawdownRaw, 2)}`} className="col-span-2" />
-                        <InfoItem label="建立/進場/出場" value={`${formatDate(createdAt)} / ${formatDate(enteredAt)} / ${formatDate(closedAt)}`} className="col-span-2" />
+                        <InfoItem label="平倉原因" value={trade.closeReason} className="col-span-2" />
+                        <InfoItem label="decisionType" value={trade.decisionType} className="col-span-2" />
+                        <InfoItem label="pendingType" value={trade.pendingType} className="col-span-2" />
+                        <InfoItem label="scoreGrade / totalScore" value={trade.scoreSummary} className="col-span-2" />
+                        <InfoItem label="regime / confirmation" value={trade.regimeSummary} className="col-span-2" />
+                        <InfoItem label="進場理由" value={trade.entryReason} className="col-span-2" />
+                        {trade.reentrySummary ? <InfoItem label="isReentryAttempt / reentryCount" value={trade.reentrySummary} className="col-span-2" /> : null}
+                        {trade.reentryReasonSummary ? <InfoItem label="reentryReason / reentryAdjustedEntry" value={trade.reentryReasonSummary} className="col-span-2" /> : null}
+                        <InfoItem label="最大浮盈 / 最大浮虧" value={trade.maxRunupDrawdown} className="col-span-2" />
+                        <InfoItem label="建立/進場/出場" value={trade.timeSummary} className="col-span-2" />
                       </div>
                     </div>
-                  );
-                } catch (error) {
-                  console.error("[TradingStateTerminal] Failed to render closed trade card:", { index, trade, error });
-                  return null;
-                }
+                  </CardRenderErrorBoundary>
+                );
               })}
             </div>
           ) : <div className="rounded-lg bg-slate-50 px-3 py-2 text-slate-500">無交易紀錄</div>
@@ -344,12 +426,12 @@ function TradingStateTerminal({
                   <div className="grid grid-cols-2 gap-x-3 gap-y-2">
                     <InfoItem label="觸發價" value={formatNumber(order.triggerPrice, paperDigits)} />
                     <InfoItem label="數量" value={formatNumber(order.quantity, 2)} />
-                    <InfoItem label="取消原因" value={order.cancelReason || "-"} className="col-span-2" />
+                    <InfoItem label="取消原因" value={toPrimitiveText(order.cancelReason)} className="col-span-2" />
                     {order.isReentryAttempt ? (
                       <InfoItem label="Re-entry" value={`第 ${order.reentryCount ?? 0} 次`} className="col-span-2" />
                     ) : null}
                     {order.reentryReason ? (
-                      <InfoItem label="Re-entry 原因" value={order.reentryReason} className="col-span-2" />
+                      <InfoItem label="Re-entry 原因" value={toPrimitiveText(order.reentryReason)} className="col-span-2" />
                     ) : null}
                     {order.reentryAdjustedEntry ? (
                       <InfoItem label="進場調整" value="已調整進場價" className="col-span-2" />
@@ -368,10 +450,11 @@ function TradingStateTerminal({
 }
 
 function InfoItem({ label, value, className = "", valueClassName = "" }) {
+  const safeValue = toPrimitiveText(value);
   return (
     <div className={`min-w-0 ${className}`}>
       <div className="text-[11px] text-slate-500">{label}</div>
-      <div className={`mt-0.5 min-w-0 whitespace-nowrap font-semibold text-slate-800 ${valueClassName}`}>{value ?? "-"}</div>
+      <div className={`mt-0.5 min-w-0 whitespace-nowrap font-semibold text-slate-800 ${valueClassName}`}>{safeValue}</div>
     </div>
   );
 }
@@ -395,10 +478,11 @@ function InfoPairRow({ leftLabel, leftValue, rightLabel, rightValue }) {
 }
 
 function InfoSingleRow({ label, value, valueClassName = "" }) {
+  const safeValue = toPrimitiveText(value);
   return (
     <div className="flex items-center gap-1.5 text-[13px] font-medium text-slate-700">
       <span className="text-slate-500">{label}：</span>
-      <span className={`font-semibold text-slate-800 ${valueClassName}`}>{value || "-"}</span>
+      <span className={`font-semibold text-slate-800 ${valueClassName}`}>{safeValue}</span>
     </div>
   );
 }
