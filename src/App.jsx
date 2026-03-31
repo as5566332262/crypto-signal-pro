@@ -2744,6 +2744,7 @@ export default function CryptoSignalWebApp() {
     setPaperAccount((prev) =>
       applyMarketTickToPaperState(prev, {
         price: paperCurrentPrice,
+        symbol: paperMarketSymbol,
         candleClose: currentCandle?.close,
         rsi: analysis?.rsi,
         macd: analysis?.macd,
@@ -2775,15 +2776,30 @@ export default function CryptoSignalWebApp() {
   }, [simulationLifecycle, currentCandle?.openTime, analysis?.price, paperMarketSymbol, timeframe]);
 
   const accountSnapshot = useMemo(() => {
+    const currentSymbolOpenPositions = (paperAccount.openPositions || []).filter((position) => position.symbol === paperMarketSymbol);
+    const currentSymbolPendingOrders = (paperAccount.pendingOrders || []).filter((order) => order.symbol === paperMarketSymbol);
+    const currentSymbolClosedTrades = (paperAccount.closedTrades || []).filter((trade) => trade.symbol === paperMarketSymbol);
+    const currentSymbolCancelledOrders = (paperAccount.cancelledOrders || []).filter((order) => order.symbol === paperMarketSymbol);
     const wins = paperAccount.closedTrades.filter((trade) => trade.realizedPnl >= 0).length;
     const losses = paperAccount.closedTrades.length - wins;
     const totalTrades = paperAccount.closedTrades.length;
     const winRate = totalTrades ? (wins / totalTrades) * 100 : 0;
     const simulationStats = calculateSimulationStats(paperAccount);
-    const diagnostics = buildDiagnostics(paperAccount);
+    const diagnostics = buildDiagnostics({
+      ...paperAccount,
+      closedTrades: currentSymbolClosedTrades,
+    });
 
     return {
       ...paperAccount,
+      currentSymbolOpenPositions,
+      currentSymbolPendingOrders,
+      currentSymbolClosedTrades,
+      currentSymbolCancelledOrders,
+      totalOpenPositionsAllSymbols: (paperAccount.openPositions || []).length,
+      totalPendingOrdersAllSymbols: (paperAccount.pendingOrders || []).length,
+      currentSymbolOpenPositionsCount: currentSymbolOpenPositions.length,
+      currentSymbolPendingOrdersCount: currentSymbolPendingOrders.length,
       wins,
       losses,
       totalTrades,
@@ -2791,7 +2807,7 @@ export default function CryptoSignalWebApp() {
       simulationStats,
       diagnostics,
     };
-  }, [paperAccount]);
+  }, [paperAccount, paperMarketSymbol]);
 
   useEffect(() => {
     if (!simulationRestoreInfo?.restored) return;
@@ -3075,6 +3091,7 @@ const simulationAgentState = {
       const executedState = result.result === "PENDING_CREATED"
         ? applyMarketTickToPaperState(result.state, {
           price: paperCurrentPrice,
+          symbol: paperMarketSymbol,
           candleClose: currentCandle?.close,
           rsi: analysis?.rsi,
           macd: analysis?.macd,

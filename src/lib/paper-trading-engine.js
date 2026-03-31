@@ -788,7 +788,7 @@ function isOrderPriceDrifted(order, tickPrice) {
   return Math.abs(tickPrice - triggerPrice) > atr * DEFAULT_PENDING_DRIFT_ATR_RATIO;
 }
 
-function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20, candleTime, timestamp = nowIso() }) {
+function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20, candleTime, symbol, timestamp = nowIso() }) {
   let nextState = {
     ...state,
     pendingOrders: [...state.pendingOrders],
@@ -803,6 +803,7 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
 
   nextState.pendingOrders = nextState.pendingOrders.map((order) => {
     if (order.status !== "PENDING") return order;
+    if (symbol && order.symbol !== symbol) return order;
     if (isOrderExpired(order, timestamp)) {
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "EXPIRED", timestamp));
       return { ...order, status: "CANCELLED" };
@@ -1393,7 +1394,7 @@ export function reconcilePendingOrdersWithDecision({
 
 export function applyMarketTickToPaperState(
   state,
-  { price, candleClose, rsi, macd, ma20, candleTime, timestamp = nowIso() }
+  { price, candleClose, rsi, macd, ma20, candleTime, symbol, timestamp = nowIso() }
 ) {
   const tickPrice = asSafeNumber(price);
   if (!Number.isFinite(tickPrice)) return state;
@@ -1419,23 +1420,27 @@ export function applyMarketTickToPaperState(
     macd: normalizedMacd,
     ma20: normalizedMa20,
     candleTime,
+    symbol,
     timestamp,
   });
-  const updatedPositions = nextState.openPositions.map((position) => ({
-    ...maybeAdjustPositionRisk({
-      ...position,
-      currentPrice: tickPrice,
-      unrealizedPnl: getUnrealizedPnl(position, tickPrice),
-      maxFavorableExcursion: Math.max(
-        asSafeNumber(position.maxFavorableExcursion, Number.NEGATIVE_INFINITY),
-        getPnl(position.side, position.entryPrice, tickPrice, position.quantity)
-      ),
-      maxAdverseExcursion: Math.min(
-        asSafeNumber(position.maxAdverseExcursion, Number.POSITIVE_INFINITY),
-        getPnl(position.side, position.entryPrice, tickPrice, position.quantity)
-      ),
-    }, tickPrice),
-  }));
+  const updatedPositions = nextState.openPositions.map((position) => {
+    if (symbol && position.symbol !== symbol) return position;
+    return {
+      ...maybeAdjustPositionRisk({
+        ...position,
+        currentPrice: tickPrice,
+        unrealizedPnl: getUnrealizedPnl(position, tickPrice),
+        maxFavorableExcursion: Math.max(
+          asSafeNumber(position.maxFavorableExcursion, Number.NEGATIVE_INFINITY),
+          getPnl(position.side, position.entryPrice, tickPrice, position.quantity)
+        ),
+        maxAdverseExcursion: Math.min(
+          asSafeNumber(position.maxAdverseExcursion, Number.POSITIVE_INFINITY),
+          getPnl(position.side, position.entryPrice, tickPrice, position.quantity)
+        ),
+      }, tickPrice),
+    };
+  });
 
   nextState = recalculateAccountState({
     ...nextState,
@@ -1444,6 +1449,7 @@ export function applyMarketTickToPaperState(
 
   const toClose = [];
   for (const position of nextState.openPositions) {
+    if (symbol && position.symbol !== symbol) continue;
     const closeReason = detectPositionCloseReason(position, tickPrice);
     if (closeReason) {
       toClose.push({ positionId: position.id, closeReason });
