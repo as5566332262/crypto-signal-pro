@@ -1,3 +1,5 @@
+import { evaluateDecisionScore } from "@/lib/decision/scoring-engine";
+
 function normalizeNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -105,7 +107,7 @@ export function runConfirmationEngine({
   mtf = {},
 } = {}) {
   const side = normalizeSide(aiDecisionOutput);
-  const decisionType = resolveDecisionType(aiDecisionOutput, Boolean(side));
+  const baselineDecisionType = resolveDecisionType(aiDecisionOutput, Boolean(side));
   const confirmationState = {
     priceInZone: resolvePriceInZone(currentPrice, aiDecisionOutput, structure, side),
     klineConfirmed: resolveKlineConfirmed(aiDecisionOutput, indicators),
@@ -116,24 +118,49 @@ export function runConfirmationEngine({
 
   const breakoutConfirmed = resolveBreakoutConfirmed(aiDecisionOutput, currentPrice, indicators);
 
+  const scoring = evaluateDecisionScore({
+    aiDecisionOutput,
+    currentPrice,
+    confirmationState: {
+      ...confirmationState,
+      breakoutConfirmed,
+    },
+    indicators,
+    structure,
+    mtf,
+    side,
+    fallbackDecisionType: baselineDecisionType,
+  });
+
+  const decisionType = scoring?.decisionType || baselineDecisionType;
+
   let canExecute = false;
   if (decisionType === "IMMEDIATE_ENTRY") {
-    canExecute = confirmationState.mtfAligned && confirmationState.momentumConfirmed;
-  } else if (decisionType === "WAIT_PULLBACK") {
-    canExecute = confirmationState.priceInZone && confirmationState.klineConfirmed;
-  } else if (decisionType === "WAIT_BREAKOUT") {
-    canExecute = breakoutConfirmed && confirmationState.volumeConfirmed;
-  } else if (decisionType === "CONFIRMATION_REQUIRED") {
     canExecute =
-      confirmationState.priceInZone &&
-      confirmationState.klineConfirmed &&
-      confirmationState.volumeConfirmed &&
+      scoring.totalScore >= 80 &&
       confirmationState.mtfAligned &&
       confirmationState.momentumConfirmed;
+  } else if (decisionType === "STANDARD_ENTRY" || decisionType === "WAIT_PULLBACK") {
+    canExecute =
+      scoring.totalScore >= 68 &&
+      confirmationState.priceInZone &&
+      confirmationState.klineConfirmed;
+  } else if (decisionType === "WAIT_BREAKOUT") {
+    canExecute =
+      scoring.totalScore >= 68 &&
+      breakoutConfirmed &&
+      confirmationState.volumeConfirmed;
+  } else if (decisionType === "OPPORTUNITY_ENTRY" || decisionType === "CONFIRMATION_REQUIRED") {
+    canExecute =
+      scoring.totalScore >= 54 &&
+      confirmationState.priceInZone &&
+      confirmationState.mtfAligned;
   }
 
   return {
     decisionType,
+    baselineDecisionType,
+    scoring,
     confirmationState: {
       ...confirmationState,
       breakoutConfirmed,
@@ -145,7 +172,7 @@ export function runConfirmationEngine({
 
 export function mapDecisionTypeToExecutionIntent(decisionType) {
   if (decisionType === "IMMEDIATE_ENTRY") return "EXECUTE_NOW";
-  if (decisionType === "WAIT_PULLBACK" || decisionType === "WAIT_BREAKOUT") return "PLACE_PENDING";
-  if (decisionType === "CONFIRMATION_REQUIRED") return "WATCH_AND_ARM";
+  if (["STANDARD_ENTRY", "WAIT_PULLBACK", "WAIT_BREAKOUT"].includes(decisionType)) return "PLACE_PENDING";
+  if (["OPPORTUNITY_ENTRY", "CONFIRMATION_REQUIRED"].includes(decisionType)) return "WATCH_AND_ARM";
   return "WATCH_ONLY";
 }

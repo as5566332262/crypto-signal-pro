@@ -2519,6 +2519,7 @@ export default function CryptoSignalWebApp() {
       const didCallCreatePendingOrder = result.executionIntent === "PLACE_PENDING";
       const createdPendingOrder = Boolean(result.pendingOrder) && pendingAfter > pendingBefore;
       const pendingType = result.confirmationResult?.decisionType || analysis.aiDecisionOutput?.entryTiming || null;
+      const scoringResult = result.confirmationResult?.scoring || null;
       console.debug("[simulation:service-result]", {
         ...manualExecutionMeta,
         finalDecision: analysis?.finalDecision || null,
@@ -2634,6 +2635,19 @@ export default function CryptoSignalWebApp() {
         feedbackSource: result.result,
         createdPendingOrder,
       });
+
+      if (scoringResult) {
+        nextFeedback = {
+          ...nextFeedback,
+          scoring: {
+            totalScore: scoringResult.totalScore,
+            scoreGrade: scoringResult.scoreGrade,
+            confidenceLevel: scoringResult.confidenceLevel,
+            keyPositiveFactors: scoringResult.keyPositiveFactors || [],
+            keyNegativeFactors: scoringResult.keyNegativeFactors || [],
+          },
+        };
+      }
 
       setSimulationExecutionStatus(nextFeedback);
       console.debug("[simulation:position-write]", {
