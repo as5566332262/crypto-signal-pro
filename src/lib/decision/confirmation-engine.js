@@ -122,6 +122,40 @@ function resolveRangeProbeSide({ currentPrice, side, structure = {}, aiDecisionO
   return null;
 }
 
+function resolveRangeProbeContext({ currentPrice, side, structure = {}, aiDecisionOutput = {}, indicators = {} }) {
+  const price = normalizeNumber(currentPrice);
+  const atr = normalizeNumber(indicators?.atr ?? aiDecisionOutput?.executionPlan?.atr ?? aiDecisionOutput?.atr);
+  const tolerance = Number.isFinite(atr) && atr > 0
+    ? atr * 0.4
+    : Number.isFinite(price)
+      ? Math.max(Math.abs(price) * 0.002, 1e-8)
+      : null;
+  const supportLow = normalizeNumber(
+    structure?.supportLow ?? aiDecisionOutput?.levels?.structureSupportZone?.low ?? aiDecisionOutput?.executionPlan?.rangeLow
+  );
+  const supportHigh = normalizeNumber(
+    structure?.supportHigh ?? aiDecisionOutput?.levels?.structureSupportZone?.high ?? supportLow
+  );
+  const resistanceLow = normalizeNumber(
+    structure?.resistanceLow ?? aiDecisionOutput?.levels?.structureResistanceZone?.low ?? aiDecisionOutput?.executionPlan?.rangeHigh
+  );
+  const resistanceHigh = normalizeNumber(
+    structure?.resistanceHigh ?? aiDecisionOutput?.levels?.structureResistanceZone?.high ?? resistanceLow
+  );
+
+  const supportRef = Number.isFinite(supportHigh) ? supportHigh : supportLow;
+  const resistanceRef = Number.isFinite(resistanceLow) ? resistanceLow : resistanceHigh;
+  const nearSupport = Number.isFinite(price) && Number.isFinite(supportRef) && Number.isFinite(tolerance)
+    ? Math.abs(price - supportRef) <= tolerance
+    : false;
+  const nearResistance = Number.isFinite(price) && Number.isFinite(resistanceRef) && Number.isFinite(tolerance)
+    ? Math.abs(price - resistanceRef) <= tolerance
+    : false;
+  const probeSide = side || (nearSupport ? "LONG" : nearResistance ? "SHORT" : null);
+
+  return { nearSupport, nearResistance, probeSide };
+}
+
 function resolveKlineConfirmed(aiDecisionOutput = {}, indicators = {}) {
   if (typeof indicators?.klineConfirmed === "boolean") return indicators.klineConfirmed;
   const close = normalizeNumber(indicators?.candleClose ?? indicators?.close);
@@ -306,12 +340,34 @@ export function runConfirmationEngine({
     softConditions.missedMoveSignalCount >= 2;
   const rsi = normalizeNumber(indicators?.rsi);
   const rangeMarket = resolveRangeMarket({ confirmationState, indicators, mtf });
-  const rangeProbeSide = resolveRangeProbeSide({ currentPrice, side, structure, aiDecisionOutput, indicators });
-  const dGradeRsiProbeReady = scoring?.scoreGrade === "D" && Number.isFinite(rsi) && (rsi <= 30 || rsi >= 70);
-  const forceProbeByNoTradeBars = Math.max(0, Math.floor(normalizeNumber(indicators?.noTradeBars) || 0)) >= FORCE_PROBE_NO_TRADE_BARS;
+  const { nearSupport, nearResistance, probeSide: detectedRangeProbeSide } = resolveRangeProbeContext({
+    currentPrice,
+    side,
+    structure,
+    aiDecisionOutput,
+    indicators,
+  });
+  const rangeProbeSide = detectedRangeProbeSide || resolveRangeProbeSide({ currentPrice, side, structure, aiDecisionOutput, indicators });
+  const dGradeRsiProbeReady = scoring?.scoreGrade === "D" && Number.isFinite(rsi) && (rsi <= 40 || rsi >= 60);
+  const noTradeBars = Math.max(0, Math.floor(normalizeNumber(indicators?.noTradeBars) || 0));
+  const forceProbeByNoTradeBars = noTradeBars >= FORCE_PROBE_NO_TRADE_BARS;
   const forceProbeByFlag = Boolean(indicators?.forceProbeEntry);
-  const probeTriggered = dGradeRsiProbeReady || (rangeMarket && Boolean(rangeProbeSide)) || forceProbeByNoTradeBars || forceProbeByFlag;
-  const probeSide = rangeProbeSide || (Number.isFinite(rsi) ? (rsi <= 30 ? "LONG" : rsi >= 70 ? "SHORT" : side) : side);
+  const rangeProbeReady = nearSupport || nearResistance || (rangeMarket && Boolean(rangeProbeSide));
+  const probeTriggered = dGradeRsiProbeReady || rangeProbeReady || forceProbeByNoTradeBars || forceProbeByFlag;
+  const probeSide = rangeProbeSide || (Number.isFinite(rsi) ? (rsi <= 40 ? "LONG" : rsi >= 60 ? "SHORT" : side) : side);
+
+  console.debug("[confirmation-engine] PROBE_ENTRY_D check", {
+    rsi,
+    isRange: rangeMarket,
+    nearSupport,
+    nearResistance,
+    noTradeBars,
+    rsiReady: dGradeRsiProbeReady,
+    rangeReady: rangeProbeReady,
+    forcedByNoTradeBars: forceProbeByNoTradeBars,
+    forcedByFlag: forceProbeByFlag,
+    probeTriggered,
+  });
 
   let decisionType = scoring?.decisionType || baselineDecisionType;
   if (primaryEntryReady) {
@@ -368,9 +424,7 @@ export function runConfirmationEngine({
       confirmationState.priceInZone &&
       confirmationState.mtfAligned;
   } else if (decisionType === "PROBE_ENTRY_D") {
-    canExecute =
-      (dGradeRsiProbeReady || forceProbeByNoTradeBars || forceProbeByFlag || (rangeMarket && Boolean(rangeProbeSide))) &&
-      (confirmationState.priceInZone || confirmationState.klineConfirmed || breakoutConfirmed || rangeMarket);
+    canExecute = probeTriggered;
   }
 
   return {
@@ -385,6 +439,8 @@ export function runConfirmationEngine({
       hardConditions,
       softConditions,
       rangeMarket,
+      nearSupport,
+      nearResistance,
       rangeProbeSide: probeSide,
       dGradeRsiProbeReady,
       forceProbeByNoTradeBars,
