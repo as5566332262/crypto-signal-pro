@@ -798,15 +798,57 @@ export function createInitialPaperAccountState() {
     reentryGuards: [],
     reentryTracking: {},
     orderLifecycleEvents: [],
+    lifecycleTrace: [],
+    pendingFillChecks: [],
     waitingDiagnostics: createDefaultWaitingDiagnostics(),
   };
 }
 
 function appendOrderLifecycleEvent(state, event) {
-  const nextEvents = [event, ...(state?.orderLifecycleEvents || [])].slice(0, 300);
+  const normalizedEvent = {
+    timestamp: event?.timestamp || nowIso(),
+    symbol: event?.symbol || null,
+    entityType: "ORDER",
+    entityId: event?.orderId || event?.entityId || null,
+    eventType: event?.eventType || "UPDATED",
+    reason: event?.reason || null,
+    triggeredBy: event?.triggeredBy || "RECONCILE",
+    selectedSymbolAtThatMoment: event?.selectedSymbolAtThatMoment ?? null,
+    marketSymbolUsed: event?.marketSymbolUsed || event?.symbol || null,
+    orderId: event?.orderId || event?.entityId || null,
+  };
+  const nextEvents = [normalizedEvent, ...(state?.orderLifecycleEvents || [])].slice(0, 300);
+  const nextTrace = [normalizedEvent, ...(state?.lifecycleTrace || [])].slice(0, 1000);
   return {
     ...state,
     orderLifecycleEvents: nextEvents,
+    lifecycleTrace: nextTrace,
+  };
+}
+
+function appendPositionLifecycleEvent(state, event) {
+  const normalizedEvent = {
+    timestamp: event?.timestamp || nowIso(),
+    symbol: event?.symbol || null,
+    entityType: "POSITION",
+    entityId: event?.positionId || event?.entityId || null,
+    eventType: event?.eventType || "UPDATED",
+    reason: event?.reason || null,
+    triggeredBy: event?.triggeredBy || "RECONCILE",
+    selectedSymbolAtThatMoment: event?.selectedSymbolAtThatMoment ?? null,
+    marketSymbolUsed: event?.marketSymbolUsed || event?.symbol || null,
+    positionId: event?.positionId || event?.entityId || null,
+  };
+  return {
+    ...state,
+    lifecycleTrace: [normalizedEvent, ...(state?.lifecycleTrace || [])].slice(0, 1000),
+  };
+}
+
+function appendPendingFillCheck(state, payload) {
+  return {
+    ...state,
+    pendingFillChecks: [payload, ...(state?.pendingFillChecks || [])].slice(0, 1000),
   };
 }
 
@@ -928,7 +970,15 @@ function recalculateAccountState(state) {
   };
 }
 
-function closePosition(state, { positionId, exitPrice, closeReason, closedAt = nowIso() }) {
+function closePosition(state, {
+  positionId,
+  exitPrice,
+  closeReason,
+  closedAt = nowIso(),
+  triggeredBy = "RECONCILE",
+  selectedSymbolAtThatMoment = null,
+  marketSymbolUsed = null,
+}) {
   const index = state.openPositions.findIndex((item) => item.id === positionId);
   if (index < 0) return state;
 
@@ -1008,7 +1058,7 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
       coarsePerformanceMap: buildPerformanceMap(symbolClosedTrades, (setupContext, trade) => trade?.coarseSetupKey || buildCoarseSetupKey(setupContext)),
     },
   };
-  return recalculateAccountState({
+  const recalculated = recalculateAccountState({
     ...state,
     balance: asSafeNumber(state.balance) + realizedPnl,
     realizedPnl: asSafeNumber(state.realizedPnl) + realizedPnl,
@@ -1022,6 +1072,16 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
     symbolIsolationState: nextSymbolIsolationState,
     performanceMap: nextSymbolIsolationState[symbol].performanceMap,
     coarsePerformanceMap: nextSymbolIsolationState[symbol].coarsePerformanceMap,
+  });
+  return appendPositionLifecycleEvent(recalculated, {
+    timestamp: closedAt,
+    symbol,
+    positionId: position.id,
+    eventType: "CLOSED",
+    reason: closeReason,
+    triggeredBy,
+    selectedSymbolAtThatMoment,
+    marketSymbolUsed: marketSymbolUsed || symbol,
   });
 }
 
@@ -1043,19 +1103,38 @@ function maybeAdjustPositionRisk(position, tickPrice) {
   return position;
 }
 
-function evaluatePendingOrderFill(order, tickPrice) {
+function evaluatePendingOrderFill(order, {
+  tickPrice,
+  candleHigh,
+  candleLow,
+}) {
   const triggerPrice = asSafeNumber(order.triggerPrice);
-  if (!Number.isFinite(triggerPrice) || !Number.isFinite(tickPrice)) {
+  if (!Number.isFinite(triggerPrice)) {
     return { shouldFill: false, reason: null };
   }
-  // Limit order fill rule:
-  // LONG: buy at/under entry, SHORT: sell at/above entry.
-  // This also handles price gaps/crosses (not relying on strict equality).
+
+  const hasTick = Number.isFinite(tickPrice);
+  const hasLow = Number.isFinite(candleLow);
+  const hasHigh = Number.isFinite(candleHigh);
+
+  // Tick crossing.
   if (order.side === "LONG" && tickPrice <= triggerPrice) {
-    return { shouldFill: true, reason: "PRICE_CROSSED" };
+    return { shouldFill: true, reason: "TICK_AT_OR_BELOW_ENTRY" };
   }
   if (order.side === "SHORT" && tickPrice >= triggerPrice) {
-    return { shouldFill: true, reason: "PRICE_CROSSED" };
+    return { shouldFill: true, reason: "TICK_AT_OR_ABOVE_ENTRY" };
+  }
+
+  // Candle crossing.
+  if (order.side === "LONG" && hasLow && candleLow <= triggerPrice) {
+    return { shouldFill: true, reason: "CANDLE_LOW_AT_OR_BELOW_ENTRY" };
+  }
+  if (order.side === "SHORT" && hasHigh && candleHigh >= triggerPrice) {
+    return { shouldFill: true, reason: "CANDLE_HIGH_AT_OR_ABOVE_ENTRY" };
+  }
+
+  if (!hasTick && !hasLow && !hasHigh) {
+    return { shouldFill: false, reason: "NO_MARKET_DATA" };
   }
   return { shouldFill: false, reason: null };
 }
@@ -1148,7 +1227,19 @@ function isOrderPriceDrifted(order, tickPrice) {
 }
 
 function maybeFillPendingOrders(state, {
-  tickPrice, candleClose, rsi, macd, ma20, candleTime, symbol, timestamp = nowIso(), triggeredBy = "MARKET_TICK",
+  tickPrice,
+  candleHigh,
+  candleLow,
+  candleClose,
+  rsi,
+  macd,
+  ma20,
+  candleTime,
+  symbol,
+  timestamp = nowIso(),
+  triggeredBy = "MARKET_TICK",
+  selectedSymbolAtThatMoment = null,
+  marketDataBySymbol = null,
 }) {
   const normalizedCandleTime = normalizeBarTime(candleTime);
   let nextState = {
@@ -1166,12 +1257,17 @@ function maybeFillPendingOrders(state, {
 
   nextState.pendingOrders = nextState.pendingOrders.map((order) => {
     if (order.status !== "PENDING") return order;
-    if (symbol && order.symbol !== symbol) return order;
+    const scopedMarket = (marketDataBySymbol && order.symbol)
+      ? marketDataBySymbol[order.symbol]
+      : null;
+    const orderTickPrice = normalizeNumber(scopedMarket?.tickPrice ?? scopedMarket?.price ?? (order.symbol === symbol ? tickPrice : undefined));
+    const orderCandleHigh = normalizeNumber(scopedMarket?.candleHigh ?? scopedMarket?.high ?? (order.symbol === symbol ? candleHigh : undefined));
+    const orderCandleLow = normalizeNumber(scopedMarket?.candleLow ?? scopedMarket?.low ?? (order.symbol === symbol ? candleLow : undefined));
     const nextWaitBars = Number.isFinite(normalizedCandleTime)
       ? calculateBarsDelta(order.createdCandleTime ?? order.placementSnapshot?.createdCandleTime, normalizedCandleTime)
       : asSafeNumber(order.waitedBars);
-    const distancePct = Number.isFinite(tickPrice) && Number.isFinite(order.triggerPrice) && tickPrice !== 0
-      ? (Math.abs(order.triggerPrice - tickPrice) / Math.abs(tickPrice)) * 100
+    const distancePct = Number.isFinite(orderTickPrice) && Number.isFinite(order.triggerPrice) && orderTickPrice !== 0
+      ? (Math.abs(order.triggerPrice - orderTickPrice) / Math.abs(orderTickPrice)) * 100
       : null;
     const observedOrder = {
       ...order,
@@ -1189,8 +1285,8 @@ function maybeFillPendingOrders(state, {
         orderId: order.id,
         waitedBars: nextWaitBars,
       });
-      const refreshedEntry = Number.isFinite(tickPrice)
-        ? (order.side === "SHORT" ? tickPrice * 1.001 : tickPrice * 0.999)
+      const refreshedEntry = Number.isFinite(orderTickPrice)
+        ? (order.side === "SHORT" ? orderTickPrice * 1.001 : orderTickPrice * 0.999)
         : order.triggerPrice;
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "PENDING_TIMEOUT_REEVALUATED", timestamp, {
         triggeredBy,
@@ -1202,10 +1298,10 @@ function maybeFillPendingOrders(state, {
         cancelReason: "PENDING_TIMEOUT_REEVALUATED",
         candleTime,
         timestamp,
-        markPrice: tickPrice,
+        markPrice: orderTickPrice,
       });
       nextState = appendOrderLifecycleEvent(nextState, {
-        symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PENDING_TIMEOUT_REEVALUATED", triggeredBy, timestamp,
+        symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PENDING_TIMEOUT_REEVALUATED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed: order.symbol,
       });
       return {
         ...order,
@@ -1216,10 +1312,10 @@ function maybeFillPendingOrders(state, {
     }
     if (isOrderExpired(order, timestamp)) {
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "EXPIRED", timestamp, { triggeredBy }));
-      nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "EXPIRED", triggeredBy, timestamp });
+      nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "EXPIRED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed: order.symbol });
       return { ...order, status: "CANCELLED" };
     }
-    if (isOrderPriceDrifted(order, tickPrice)) {
+    if (isOrderPriceDrifted(order, orderTickPrice)) {
       nextState = incrementWaitingReason(nextState, "canceledByPriceDrift", {
         symbol: order.symbol,
         orderId: order.id,
@@ -1230,32 +1326,51 @@ function maybeFillPendingOrders(state, {
         cancelReason: "PRICE_DRIFTED",
         candleTime,
         timestamp,
-        markPrice: tickPrice,
+        markPrice: orderTickPrice,
       });
       nextState = registerReentryGuard(nextState, order, "PRICE_DRIFTED", timestamp, order?.decisionSnapshot, candleTime);
-      nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PRICE_DRIFTED", triggeredBy, timestamp });
+      nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PRICE_DRIFTED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed: order.symbol });
       return { ...order, status: "CANCELLED", canceledByPriceDrift: true };
     }
-    if (isPreEntryInvalidated(order, tickPrice)) {
+    if (isPreEntryInvalidated(order, orderTickPrice)) {
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp, { triggeredBy }));
-      nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "SETUP_INVALIDATED", triggeredBy, timestamp });
+      nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "SETUP_INVALIDATED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed: order.symbol });
       return { ...order, status: "CANCELLED" };
     }
-    const fillEvaluation = evaluatePendingOrderFill(order, tickPrice);
+    const fillEvaluation = evaluatePendingOrderFill(order, {
+      tickPrice: orderTickPrice,
+      candleHigh: orderCandleHigh,
+      candleLow: orderCandleLow,
+    });
+    nextState = appendPendingFillCheck(nextState, {
+      orderId: order.id,
+      symbol: order.symbol,
+      side: order.side,
+      entryPrice: order.triggerPrice,
+      marketPrice: orderTickPrice,
+      candleHigh: orderCandleHigh,
+      candleLow: orderCandleLow,
+      shouldFill: fillEvaluation.shouldFill,
+      fillReason: fillEvaluation.reason,
+      checkedAt: timestamp,
+      checkedBy: triggeredBy,
+    });
     console.debug("[paper-trading] pending order fill evaluation", {
       orderId: order.id,
       symbol: order.symbol,
       timeframe: order.timeframe,
       side: order.side,
       triggerPrice: order.triggerPrice,
-      tickPrice,
+      tickPrice: orderTickPrice,
+      candleHigh: orderCandleHigh,
+      candleLow: orderCandleLow,
       shouldFill: fillEvaluation.shouldFill,
       fillReason: fillEvaluation.reason,
     });
     if (!fillEvaluation.shouldFill) return observedOrder;
 
     const confirmation = runConfirmationEngine(
-      buildConfirmationPayload(order.decisionSnapshot, tickPrice, {
+      buildConfirmationPayload(order.decisionSnapshot, orderTickPrice, {
         rsi,
         macd,
         currentVolume: order?.placementSnapshot?.currentVolume,
@@ -1279,7 +1394,7 @@ function maybeFillPendingOrders(state, {
       };
     }
 
-    const entryPrice = asSafeNumber(order.triggerPrice, tickPrice);
+    const entryPrice = asSafeNumber(order.triggerPrice, orderTickPrice);
     const normalizedLevels = normalizeDirectionalLevels({
       side: order.side,
       referencePrice: entryPrice,
@@ -1348,7 +1463,7 @@ function maybeFillPendingOrders(state, {
         ].filter((value) => Number.isFinite(value)).slice(0, 300),
       },
     };
-    nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "FILLED", reason: fillEvaluation.reason, triggeredBy, timestamp });
+    nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "FILLED", reason: fillEvaluation.reason, triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed: order.symbol });
     console.info("[paper-trading] pending order executed", {
       orderId: order.id,
       symbol: order.symbol,
@@ -1968,6 +2083,7 @@ export function reconcilePendingOrdersWithDecision({
   timestamp = nowIso(),
   candleTime,
   triggeredBy = "DECISION_ENGINE",
+  selectedSymbolAtThatMoment = null,
 }) {
   if (!state || !decision || !symbol || !timeframe) return state;
 
@@ -2027,6 +2143,8 @@ export function reconcilePendingOrdersWithDecision({
         reason: cancelReason,
         triggeredBy,
         timestamp,
+        selectedSymbolAtThatMoment,
+        marketSymbolUsed: symbol,
       });
       continue;
     }
@@ -2043,7 +2161,21 @@ export function reconcilePendingOrdersWithDecision({
 
 export function applyMarketTickToPaperState(
   state,
-  { price, candleClose, rsi, macd, ma20, candleTime, symbol, timestamp = nowIso(), triggeredBy = "MARKET_TICK" }
+  {
+    price,
+    candleHigh,
+    candleLow,
+    candleClose,
+    rsi,
+    macd,
+    ma20,
+    candleTime,
+    symbol,
+    timestamp = nowIso(),
+    triggeredBy = "MARKET_TICK",
+    selectedSymbolAtThatMoment = null,
+    marketDataBySymbol = null,
+  }
 ) {
   const tickPrice = asSafeNumber(price);
   if (!Number.isFinite(tickPrice)) return state;
@@ -2078,6 +2210,8 @@ export function applyMarketTickToPaperState(
   nextState = maybeFillPendingOrders(nextState, {
     tickPrice,
     candleClose: normalizedCandleClose,
+    candleHigh: normalizeNumber(candleHigh),
+    candleLow: normalizeNumber(candleLow),
     rsi: normalizedRsi,
     macd: normalizedMacd,
     ma20: normalizedMa20,
@@ -2085,6 +2219,8 @@ export function applyMarketTickToPaperState(
     symbol,
     timestamp,
     triggeredBy,
+    selectedSymbolAtThatMoment,
+    marketDataBySymbol,
   });
   const updatedPositions = nextState.openPositions.map((position) => {
     if (symbol && position.symbol !== symbol) return position;
@@ -2124,6 +2260,9 @@ export function applyMarketTickToPaperState(
       ...closeTarget,
       exitPrice: tickPrice,
       closedAt: timestamp,
+      triggeredBy,
+      selectedSymbolAtThatMoment,
+      marketSymbolUsed: symbol,
     });
   }
 
@@ -2139,6 +2278,9 @@ export function closePositionManually(state, { positionId, symbol, timeframe, pr
     positionId: open.id,
     exitPrice: asSafeNumber(price, open.currentPrice),
     closeReason: reason,
+    triggeredBy: "MANUAL_ACTION",
+    selectedSymbolAtThatMoment: symbol || open.symbol,
+    marketSymbolUsed: open.symbol,
   });
 }
 

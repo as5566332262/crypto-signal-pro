@@ -33,6 +33,7 @@ const ANALYSIS_INTERVALS = ["15m", "1h", "4h", "1d"];
 const PAPER_ACCOUNT_STORAGE_KEY = "crypto-signal-pro-paper-account-v7";
 const SIMULATION_SNAPSHOT_STORAGE_KEY = "crypto-signal-pro-simulation-snapshot-v1";
 const PAPER_SUPPORTED_SYMBOLS = ["BTC", "ETH", "SOL"];
+const PAPER_MARKET_SYMBOLS = PAPER_SUPPORTED_SYMBOLS.map((item) => `${item}USDT`);
 
 function normalizeSimulationExecutionStatus(status) {
   if (!status || typeof status !== "object") {
@@ -2712,7 +2713,29 @@ export default function CryptoSignalWebApp() {
       : null
   );
   const lastProcessedCandleRef = useRef(null);
+  const lastAppliedPaperTickKeyRef = useRef({});
   const hasLoggedResumeAfterRestoreRef = useRef(false);
+  const [marketSnapshots, setMarketSnapshots] = useState({});
+
+  const buildPaperMarketSnapshot = (candlesInput = []) => {
+    const validCandles = Array.isArray(candlesInput) ? candlesInput : [];
+    const latest = validCandles[validCandles.length - 1];
+    if (!latest) return null;
+    const closes = validCandles.map((candle) => Number(candle.close)).filter((value) => Number.isFinite(value));
+    const ma20Series = sma(closes, 20);
+    const macd = calculateMACD(closes);
+    return {
+      price: Number(latest.close),
+      candleClose: Number(latest.close),
+      candleHigh: Number(latest.high),
+      candleLow: Number(latest.low),
+      candleTime: Number(latest.openTime),
+      rsi: calculateRSI(closes, 14),
+      ma20: ma20Series[ma20Series.length - 1],
+      macd,
+      updatedAt: new Date().toISOString(),
+    };
+  };
 
   const loadData = async (nextSymbol = symbol, nextTimeframe = timeframe) => {
     setIsLoading(true);
@@ -2729,7 +2752,15 @@ export default function CryptoSignalWebApp() {
       const candlesByInterval = Object.fromEntries(intervalEntries);
 
       setCandles(candlesByInterval[nextTimeframe] || []);
-      setAnalysis(analyzeMarket(candlesByInterval, nextTimeframe, nextSymbol));
+      const analyzed = analyzeMarket(candlesByInterval, nextTimeframe, nextSymbol);
+      setAnalysis(analyzed);
+      const nextPaperSnapshot = buildPaperMarketSnapshot(candlesByInterval[nextTimeframe] || []);
+      if (nextPaperSnapshot) {
+        setMarketSnapshots((prev) => ({
+          ...prev,
+          [nextSymbol]: nextPaperSnapshot,
+        }));
+      }
       setLastUpdated(new Date().toLocaleString());
     } catch (err) {
       setError(err.message || "讀取資料失敗");
@@ -2799,21 +2830,61 @@ export default function CryptoSignalWebApp() {
   const paperCurrentPrice = symbol === paperMarketSymbol ? analysis?.price : null;
 
   useEffect(() => {
-    if (symbol !== paperMarketSymbol) return;
-    if (!paperCurrentPrice) return;
-    setPaperAccount((prev) =>
-      applyMarketTickToPaperState(prev, {
-        price: paperCurrentPrice,
-        symbol: paperMarketSymbol,
-        candleClose: currentCandle?.close,
-        rsi: analysis?.rsi,
-        macd: analysis?.macd,
-        ma20: analysis?.ma20,
-        candleTime: currentCandle?.openTime,
-        triggeredBy: "MARKET_TICK",
-      })
-    );
-  }, [symbol, paperMarketSymbol, paperCurrentPrice, currentCandle?.close, currentCandle?.openTime, analysis?.rsi, analysis?.macd, analysis?.ma20]);
+    let cancelled = false;
+    const refreshSnapshots = async () => {
+      try {
+        const results = await Promise.all(
+          PAPER_MARKET_SYMBOLS.map(async (marketSymbol) => {
+            const rows = await fetchBinanceKlines(marketSymbol, timeframe, 120);
+            return [marketSymbol, buildPaperMarketSnapshot(rows)];
+          })
+        );
+        if (cancelled) return;
+        setMarketSnapshots((prev) => {
+          const next = { ...prev };
+          for (const [marketSymbol, snapshot] of results) {
+            if (snapshot) next[marketSymbol] = snapshot;
+          }
+          return next;
+        });
+      } catch (pollError) {
+        console.debug("[paper-market] snapshot refresh failed", pollError);
+      }
+    };
+    refreshSnapshots();
+    const timer = window.setInterval(refreshSnapshots, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [timeframe]);
+
+  useEffect(() => {
+    const snapshotEntries = Object.entries(marketSnapshots || {});
+    if (!snapshotEntries.length) return;
+    setPaperAccount((prev) => {
+      let next = prev;
+      for (const [marketSymbol, snapshot] of snapshotEntries) {
+        const dedupeKey = `${snapshot?.candleTime || "na"}-${snapshot?.price || "na"}`;
+        if (lastAppliedPaperTickKeyRef.current?.[marketSymbol] === dedupeKey) continue;
+        lastAppliedPaperTickKeyRef.current[marketSymbol] = dedupeKey;
+        next = applyMarketTickToPaperState(next, {
+          price: snapshot?.price,
+          symbol: marketSymbol,
+          candleClose: snapshot?.candleClose,
+          candleHigh: snapshot?.candleHigh,
+          candleLow: snapshot?.candleLow,
+          rsi: snapshot?.rsi,
+          macd: snapshot?.macd,
+          ma20: snapshot?.ma20,
+          candleTime: snapshot?.candleTime,
+          triggeredBy: "MARKET_CANDLE",
+          selectedSymbolAtThatMoment: paperMarketSymbol,
+        });
+      }
+      return next;
+    });
+  }, [marketSnapshots, paperMarketSymbol]);
 
   useEffect(() => {
     if (symbol !== paperMarketSymbol) return;
@@ -2827,6 +2898,7 @@ export default function CryptoSignalWebApp() {
         currentPrice: paperCurrentPrice,
         candleTime: currentCandle?.openTime,
         triggeredBy: "DECISION_ENGINE",
+        selectedSymbolAtThatMoment: paperMarketSymbol,
       })
     );
   }, [analysis?.aiDecisionOutput, symbol, paperCurrentPrice, paperMarketSymbol, timeframe, currentCandle?.openTime]);
@@ -2986,6 +3058,7 @@ export default function CryptoSignalWebApp() {
         currentPrice: paperCurrentPrice,
         candleTime: currentCandle?.openTime,
         triggeredBy: "DECISION_ENGINE",
+        selectedSymbolAtThatMoment: paperMarketSymbol,
       });
       const previousCancelledCount = (prev.cancelledOrders || []).length;
       const cancelledCount = (reconciledState.cancelledOrders || []).length - previousCancelledCount;
@@ -3183,11 +3256,14 @@ const simulationAgentState = {
           price: paperCurrentPrice,
           symbol: paperMarketSymbol,
           candleClose: currentCandle?.close,
+          candleHigh: currentCandle?.high,
+          candleLow: currentCandle?.low,
           rsi: analysis?.rsi,
           macd: analysis?.macd,
           ma20: analysis?.ma20,
           candleTime: currentCandle?.openTime,
           triggeredBy: "MARKET_TICK",
+          selectedSymbolAtThatMoment: paperMarketSymbol,
         })
         : result.state;
 
