@@ -1277,6 +1277,13 @@ function evaluatePendingOrderFill(order, {
   candleTime,
 }) {
   const entryPrice = resolveOrderEntryPrice(order);
+  const orderType = String(order?.orderType || "LIMIT").toUpperCase();
+  if (orderType === "MARKET") {
+    if (!Number.isFinite(entryPrice)) {
+      return { shouldFill: false, reason: "INVALID_MARKET_ENTRY_PRICE", triggerSource: null };
+    }
+    return { shouldFill: true, reason: "MARKET_EXECUTE_NOW", triggerSource: "MARKET_ORDER" };
+  }
   if (!Number.isFinite(entryPrice)) {
     return { shouldFill: false, reason: "INVALID_TRIGGER_PRICE", triggerSource: null };
   }
@@ -1825,6 +1832,7 @@ function maybeFillPendingOrders(state, {
     });
     console.info("[POSITION_CREATED]", {
       orderId: order.id,
+      source: "FILL_ENGINE",
       sourceFunction: checkedFunctionName,
       filledPrice: entryPrice,
       orderType: order.orderType || "LIMIT",
@@ -2145,7 +2153,7 @@ export function simulateDecisionExecution({
     symbol,
     timeframe,
     side,
-    orderType: "LIMIT",
+    orderType: executionOrderType === "MARKET" ? "MARKET" : "LIMIT",
     entryPrice: triggerPrice,
     triggerPrice,
     invalidationPrice,
@@ -2258,124 +2266,13 @@ export function simulateDecisionExecution({
     };
   }
 
-  if (
-    executionOrderType === "MARKET" &&
-    !reentryAttempt &&
-    (effectiveEligibility.eligibility === "READY_TO_EXECUTE" || (executionIntent === "EXECUTE_NOW" && confirmationResult.canExecute))
-  ) {
-    if (isReentryBlockedByGuard(state, {
-      symbol,
-      timeframe,
-      side,
-      triggerPrice,
-      decisionContextKey: contextKey,
-      decisionRevision,
-      atr: atrValue,
-      candleTime: signalContext?.candleTime,
-    })) {
-      return {
-        state,
-        result: "REENTRY_GUARD_BLOCKED",
-        executionIntent: "WATCH_AND_ARM",
-        confirmationResult,
-        ...performanceDebugPayload,
-        eligibilityInfo: {
-          ...effectiveEligibility,
-          reasonCode: "REENTRY_GUARD_BLOCKED",
-          reason: "PRICE_DRIFTED 後尚未有新 candle/decision revision，暫停重建相近訂單",
-        },
-      };
-    }
-    const timestamp = nowIso();
-    const entryPrice = asSafeNumber(triggerPrice, currentPrice);
-    const quantityValue = asSafeNumber(
-      asSafeNumber(quantity, DEFAULT_POSITION_SIZE) * getSizingMultiplier(confirmationResult.decisionType),
-      DEFAULT_POSITION_SIZE
-    );
-    const position = {
-      id: createId("pos"),
-      symbol,
-      timeframe,
-      side,
-      orderType: "MARKET",
-      status: "OPEN",
-      entryPrice,
-      triggerPrice,
-      currentPrice: entryPrice,
-      quantity: quantityValue,
-      notional: quantityValue * entryPrice,
-      leverage: DEFAULT_LEVERAGE,
-      stopLoss: normalizedLevels.stopLoss,
-      takeProfit1: normalizedLevels.takeProfit1,
-      takeProfit2: normalizedLevels.takeProfit2,
-      takeProfit3: normalizedLevels.takeProfit3,
-      invalidationPrice,
-      openedAt: timestamp,
-      unrealizedPnl: 0,
-      entryReason: decision.entryReason || null,
-      entryMode: plannedEntry.mode,
-      entryAdjusted: constrainedEntry.wasAdjusted || Boolean(reentryAttempt?.reentryAdjustedEntry),
-      isReentryAttempt: Boolean(reentryAttempt?.isReentryAttempt),
-      reentryCount: reentryAttempt?.reentryCount ?? 0,
-      reentryReason: reentryAttempt?.reentryReason ?? null,
-      reentryAdjustedEntry: Boolean(reentryAttempt?.reentryAdjustedEntry),
-      simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
-      riskProfile: REDUCED_CONFIDENCE_TYPES.has(confirmationResult.decisionType) ? "LOW_CONFIDENCE_SMALL_SIZE" : "STANDARD",
-      decisionSnapshot: decision,
-      decisionContextKey: contextKey,
-      hitTargets: [],
-      createdAt: timestamp,
-      ...tradeMetadata,
-    };
-
-    let nextState = recalculateAccountState({
-      ...state,
-      openPositions: [position, ...state.openPositions],
-    }, {
-      timestamp,
-      selectedSymbol: symbol,
-      affectedSymbol: symbol,
-      eventType: "FILL_ORDER",
-      sourceFunction: "simulateDecisionExecution",
+  if (executionIntent === "EXECUTE_NOW" && executionOrderType !== "MARKET") {
+    console.warn("[EXECUTION_BLOCKED]", {
+      orderId: pendingOrder.id,
+      reason: "NOT_MARKET_EXECUTE_NOW_BLOCKED",
+      executionIntent,
+      orderType: executionOrderType,
     });
-    if (reentryAttempt?.key) {
-      const tracked = nextState?.reentryTracking?.[reentryAttempt.key] || {};
-      nextState = {
-        ...nextState,
-        reentryTracking: {
-          ...(nextState?.reentryTracking || {}),
-          [reentryAttempt.key]: {
-            ...tracked,
-            active: false,
-            failureStreak: 0,
-            reentryCount: reentryAttempt.reentryCount,
-          },
-        },
-      };
-    }
-    nextState = appendOrderLifecycleEvent(nextState, {
-      symbol,
-      orderId: position.id,
-      eventType: "FILLED",
-      reason: "EXECUTE_NOW",
-      triggeredBy,
-      timestamp,
-    });
-    console.info("[POSITION_CREATED]", {
-      orderId: position.id,
-      sourceFunction: "simulateDecisionExecution",
-      filledPrice: entryPrice,
-      orderType: "MARKET",
-    });
-    return {
-      state: nextState,
-      result: "EXECUTED_IMMEDIATELY",
-      executionIntent: "EXECUTE_NOW",
-      confirmationResult,
-      ...performanceDebugPayload,
-      position,
-      eligibilityInfo: effectiveEligibility,
-    };
   }
 
   if (isReentryBlockedByGuard(state, {
@@ -2404,6 +2301,12 @@ export function simulateDecisionExecution({
 
   const pendingCreation = createPendingOrder({ baseState: state, order: pendingOrder });
   if (pendingCreation.created) {
+    console.info("[PENDING_CREATED_FROM_DECISION]", {
+      orderId: pendingOrder.id,
+      entry: pendingOrder.entryPrice,
+      orderType: pendingOrder.orderType,
+      executionIntent,
+    });
     console.info("[ORDER_CREATED]", {
       orderId: pendingOrder.id,
       side: pendingOrder.side,
@@ -2446,7 +2349,7 @@ export function simulateDecisionExecution({
     };
     pendingOrder.signalToPlaceBars = signalToPlaceBars ?? 0;
   }
-  const stateWithLifecycle = appendOrderLifecycleEvent(pendingCreation.nextState, {
+  let stateWithLifecycle = appendOrderLifecycleEvent(pendingCreation.nextState, {
     symbol,
     orderId: pendingOrder.id,
     eventType: "PLACED",
@@ -2455,10 +2358,27 @@ export function simulateDecisionExecution({
     timestamp: pendingOrder.createdAt,
   });
 
+  if (pendingOrder.orderType === "MARKET") {
+    stateWithLifecycle = maybeFillPendingOrders(stateWithLifecycle, {
+      tickPrice: normalizeNumber(currentPrice),
+      candleHigh: normalizeNumber(signalContext?.candleHigh ?? signalContext?.high ?? currentPrice),
+      candleLow: normalizeNumber(signalContext?.candleLow ?? signalContext?.low ?? currentPrice),
+      candleClose: normalizeNumber(signalContext?.candleClose ?? signalContext?.close ?? currentPrice),
+      rsi: normalizeNumber(signalContext?.rsi),
+      macd: signalContext?.macd ?? null,
+      ma20: normalizeNumber(signalContext?.ma20),
+      candleTime: signalContext?.candleTime,
+      symbol,
+      timestamp: nowIso(),
+      triggeredBy: "DECISION_ENGINE_EXECUTE_NOW",
+      selectedSymbolAtThatMoment: symbol,
+    });
+  }
+
   return {
     state: stateWithLifecycle,
-    result: "PENDING_CREATED",
-    executionIntent: "PLACE_PENDING",
+    result: pendingOrder.orderType === "MARKET" ? "EXECUTED_IMMEDIATELY" : "PENDING_CREATED",
+    executionIntent: pendingOrder.orderType === "MARKET" ? "EXECUTE_NOW" : "PLACE_PENDING",
     confirmationResult,
     ...performanceDebugPayload,
     pendingOrder,
