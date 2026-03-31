@@ -1248,20 +1248,25 @@ function evaluatePendingOrderFill(order, {
   const hasLow = Number.isFinite(candleLow);
   const hasHigh = Number.isFinite(candleHigh);
 
+  const resolveFillReason = (pricePoint) => {
+    if (!Number.isFinite(pricePoint)) return "PRICE_CROSSED";
+    return pricePoint === triggerPrice ? "PRICE_TOUCHED" : "PRICE_CROSSED";
+  };
+
   // Tick crossing.
   if (order.side === "LONG" && tickPrice <= triggerPrice) {
-    return { shouldFill: true, reason: "TICK_AT_OR_BELOW_ENTRY" };
+    return { shouldFill: true, reason: resolveFillReason(tickPrice) };
   }
   if (order.side === "SHORT" && tickPrice >= triggerPrice) {
-    return { shouldFill: true, reason: "TICK_AT_OR_ABOVE_ENTRY" };
+    return { shouldFill: true, reason: resolveFillReason(tickPrice) };
   }
 
   // Candle crossing.
   if (order.side === "LONG" && hasLow && candleLow <= triggerPrice) {
-    return { shouldFill: true, reason: "CANDLE_LOW_AT_OR_BELOW_ENTRY" };
+    return { shouldFill: true, reason: resolveFillReason(candleLow) };
   }
   if (order.side === "SHORT" && hasHigh && candleHigh >= triggerPrice) {
-    return { shouldFill: true, reason: "CANDLE_HIGH_AT_OR_ABOVE_ENTRY" };
+    return { shouldFill: true, reason: resolveFillReason(candleHigh) };
   }
 
   if (!hasTick && !hasLow && !hasHigh) {
@@ -1513,11 +1518,12 @@ function maybeFillPendingOrders(state, {
       symbol: order.symbol,
       side: order.side,
       entryPrice: order.triggerPrice,
-      marketPrice: orderTickPrice,
+      tickPrice: orderTickPrice,
       candleHigh: orderCandleHigh,
       candleLow: orderCandleLow,
       shouldFill: fillEvaluation.shouldFill,
       fillReason: fillEvaluation.reason,
+      blockedByDecision: false,
       checkedAt: timestamp,
       checkedBy: triggeredBy,
     });
@@ -1534,31 +1540,6 @@ function maybeFillPendingOrders(state, {
       fillReason: fillEvaluation.reason,
     });
     if (!fillEvaluation.shouldFill) return observedOrder;
-
-    const confirmation = runConfirmationEngine(
-      buildConfirmationPayload(order.decisionSnapshot, orderTickPrice, {
-        rsi,
-        macd,
-        currentVolume: order?.placementSnapshot?.currentVolume,
-        avgVolume20: order?.placementSnapshot?.avgVolume20,
-        candleClose,
-        structure: order?.placementSnapshot?.structure,
-        mtf: order?.placementSnapshot?.mtf,
-      })
-    );
-    if (!confirmation.canExecute) {
-      const waitingReasonKey = order.entryMode === "pullback" ? "waitingForPullback" : "waitingForBreakout";
-      nextState = incrementWaitingReason(nextState, waitingReasonKey, {
-        symbol: order.symbol,
-        orderId: order.id,
-        waitedBars: nextWaitBars,
-      });
-      return {
-        ...observedOrder,
-        lastConfirmation: confirmation,
-        waitReason: "等待 confirmation-engine 條件成立",
-      };
-    }
 
     const entryPrice = asSafeNumber(order.triggerPrice, orderTickPrice);
     const normalizedLevels = normalizeDirectionalLevels({
@@ -1604,12 +1585,12 @@ function maybeFillPendingOrders(state, {
       placeToFillBars: nextWaitBars,
       ...resolveTradeMetadata({
         decision: order.decisionSnapshot,
-        confirmationResult: confirmation,
+        confirmationResult: order.decisionSnapshot?.confirmationResult || null,
         signalContext: {
           ...order?.placementSnapshot,
           rsi,
-          hasKlineConfirmation: true,
-          klineConfirmed: true,
+          hasKlineConfirmation: order?.hasKlineConfirmation ?? null,
+          klineConfirmed: order?.hasKlineConfirmation ?? null,
         },
         side: order.side,
       }),
