@@ -2927,11 +2927,12 @@ export default function CryptoSignalWebApp() {
           candleTime: snapshot?.candleTime,
           triggeredBy: "MARKET_CANDLE",
           selectedSymbolAtThatMoment: paperMarketSymbol,
+          allowPendingFills: simulationLifecycle === "running",
         });
       }
       return next;
     });
-  }, [marketSnapshots, paperMarketSymbol]);
+  }, [marketSnapshots, paperMarketSymbol, simulationLifecycle]);
 
   useEffect(() => {
     if (symbol !== paperMarketSymbol) return;
@@ -3305,8 +3306,8 @@ const simulationAgentState = {
           price: paperCurrentPrice,
           symbol: paperMarketSymbol,
           candleClose: currentCandle?.close,
-          candleHigh: currentCandle?.high,
-          candleLow: currentCandle?.low,
+          candleHigh: undefined,
+          candleLow: undefined,
           rsi: analysis?.rsi,
           macd: analysis?.macd,
           ma20: analysis?.ma20,
