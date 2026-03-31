@@ -113,6 +113,19 @@ function resolveRangeBounds({ structure = {}, aiDecisionOutput = {} }) {
   return { rangeLow, rangeHigh };
 }
 
+function resolvePositionInRange({ currentPrice, rangeLow, rangeHigh }) {
+  const price = normalizeNumber(currentPrice);
+  const low = normalizeNumber(rangeLow);
+  const high = normalizeNumber(rangeHigh);
+  if (!Number.isFinite(price) || !Number.isFinite(low) || !Number.isFinite(high)) return null;
+  const normalizedLow = Math.min(low, high);
+  const normalizedHigh = Math.max(low, high);
+  const denominator = normalizedHigh - normalizedLow;
+  if (!Number.isFinite(denominator) || denominator <= 0) return null;
+  const rawPosition = (price - normalizedLow) / denominator;
+  return Math.min(1, Math.max(0, rawPosition));
+}
+
 function isNearSupport(price, rangeLow, tolerancePct = RANGE_EDGE_TOLERANCE_PCT) {
   const normalizedPrice = normalizeNumber(price);
   const normalizedRangeLow = normalizeNumber(rangeLow);
@@ -422,7 +435,12 @@ export function runConfirmationEngine({
   const rangeMarket = resolveRangeMarket({ confirmationState, indicators, mtf });
   const normalizedMarketRegime = String(indicators?.marketRegime ?? "").trim().toUpperCase();
   const isExplicitRangeRegime = normalizedMarketRegime === "RANGE" || normalizedMarketRegime === "RANGING";
+  const isExplicitTrendRegime = normalizedMarketRegime === "TREND" || normalizedMarketRegime === "TRENDING";
   const { rangeLow, rangeHigh } = resolveRangeBounds({ structure, aiDecisionOutput });
+  const positionInRange = resolvePositionInRange({ currentPrice, rangeLow, rangeHigh });
+  const longLocationQualified = Number.isFinite(positionInRange) ? positionInRange < 0.4 : true;
+  const shortLocationQualified = Number.isFinite(positionInRange) ? positionInRange > 0.6 : true;
+  const locationFilterQualified = side === "LONG" ? longLocationQualified : side === "SHORT" ? shortLocationQualified : true;
   const isNearSupportZone = isNearSupport(currentPrice, rangeLow, indicators?.rangeEdgeTolerancePct);
   const isNearResistanceZone = isNearResistance(currentPrice, rangeHigh, indicators?.rangeEdgeTolerancePct);
   const hasRangeEdgeForSide = side === "LONG" ? isNearSupportZone : side === "SHORT" ? isNearResistanceZone : false;
@@ -431,6 +449,15 @@ export function runConfirmationEngine({
     (side === "LONG" ? rsi < 40 : side === "SHORT" ? rsi > 60 : false);
   const rangeEntryQualified = rangeSideRsiQualified && softConditions.klineConfirmed && hasRangeEdgeForSide;
   const blockedByRangeFilter = isExplicitRangeRegime && Boolean(side) && !rangeEntryQualified;
+  const blockedByLocationFilter = isExplicitRangeRegime && Boolean(side) && !locationFilterQualified;
+  let locationFilterScoreImpact = 0;
+  if (isExplicitTrendRegime && Boolean(side) && Number.isFinite(positionInRange)) {
+    if (locationFilterQualified) {
+      locationFilterScoreImpact = 6;
+    } else {
+      locationFilterScoreImpact = -10;
+    }
+  }
   const { nearSupport, nearResistance, probeSide: detectedRangeProbeSide } = resolveRangeProbeContext({
     currentPrice,
     side,
@@ -461,6 +488,8 @@ export function runConfirmationEngine({
     isNearSupport: isNearSupportZone,
     isNearResistance: isNearResistanceZone,
     blockedByRangeFilter,
+    positionInRange,
+    blockedByLocationFilter,
     noTradeBars,
     rsiReady: dGradeRsiProbeReady,
     rangeReady: rangeProbeReady,
@@ -489,6 +518,9 @@ export function runConfirmationEngine({
     decisionType = "NO_TRADE";
   }
   if (blockedByRangeFilter) {
+    decisionType = "NO_TRADE";
+  }
+  if (blockedByLocationFilter) {
     decisionType = "NO_TRADE";
   }
 
@@ -541,6 +573,9 @@ export function runConfirmationEngine({
   if (blockedByRangeFilter) {
     canExecute = false;
   }
+  if (blockedByLocationFilter) {
+    canExecute = false;
+  }
 
   return {
     decisionType,
@@ -561,9 +596,13 @@ export function runConfirmationEngine({
       nearResistance,
       rangeLow,
       rangeHigh,
+      positionInRange,
       isNearSupport: isNearSupportZone,
       isNearResistance: isNearResistanceZone,
       blockedByRangeFilter,
+      blockedByLocationFilter,
+      locationFilterQualified,
+      locationFilterScoreImpact,
       rangeProbeSide: probeSide,
       dGradeRsiProbeReady,
       forceProbeByNoTradeBars,
