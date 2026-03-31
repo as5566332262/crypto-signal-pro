@@ -31,7 +31,7 @@ function resolveDecisionType(aiDecisionOutput = {}, hasActionableSide) {
   if (entryTiming === "WAIT_PULLBACK" || setupType === "pullback") return "WAIT_PULLBACK";
   if (entryTiming === "WAIT_BREAKOUT" || setupType === "breakout") return "WAIT_BREAKOUT";
   if (entryTiming === "READY" && hasActionableSide) return "IMMEDIATE_ENTRY";
-  if (hasActionableSide) return "CONFIRMATION_REQUIRED";
+  if (hasActionableSide) return "OPPORTUNITY_ENTRY";
   return "NO_TRADE";
 }
 
@@ -99,6 +99,17 @@ function resolveBreakoutConfirmed(aiDecisionOutput = {}, currentPrice, indicator
   return side === "SHORT" ? price <= trigger : price >= trigger;
 }
 
+function resolveRiskRewardAcceptable(aiDecisionOutput = {}) {
+  const rr = normalizeNumber(
+    aiDecisionOutput?.riskReward ??
+      aiDecisionOutput?.riskRewardRatio ??
+      aiDecisionOutput?.executionPlan?.riskReward ??
+      aiDecisionOutput?.rr
+  );
+  if (!Number.isFinite(rr)) return true;
+  return rr >= 1.4;
+}
+
 export function runConfirmationEngine({
   aiDecisionOutput,
   currentPrice,
@@ -117,6 +128,7 @@ export function runConfirmationEngine({
   };
 
   const breakoutConfirmed = resolveBreakoutConfirmed(aiDecisionOutput, currentPrice, indicators);
+  const riskRewardAcceptable = resolveRiskRewardAcceptable(aiDecisionOutput);
 
   const scoring = evaluateDecisionScore({
     aiDecisionOutput,
@@ -136,6 +148,20 @@ export function runConfirmationEngine({
 
   let canExecute = false;
   if (decisionType === "IMMEDIATE_ENTRY") {
+    canExecute = confirmationState.mtfAligned && confirmationState.momentumConfirmed;
+  } else if (decisionType === "OPPORTUNITY_ENTRY") {
+    const relaxedOpportunitySignal =
+      confirmationState.priceInZone || confirmationState.klineConfirmed || breakoutConfirmed;
+    canExecute =
+      confirmationState.mtfAligned &&
+      confirmationState.momentumConfirmed &&
+      riskRewardAcceptable &&
+      relaxedOpportunitySignal;
+  } else if (decisionType === "WAIT_PULLBACK") {
+    canExecute = confirmationState.priceInZone && confirmationState.klineConfirmed;
+  } else if (decisionType === "WAIT_BREAKOUT") {
+    canExecute = breakoutConfirmed && confirmationState.volumeConfirmed;
+  } else if (decisionType === "CONFIRMATION_REQUIRED") {
     canExecute =
       scoring.totalScore >= 80 &&
       confirmationState.mtfAligned &&
@@ -164,15 +190,28 @@ export function runConfirmationEngine({
     confirmationState: {
       ...confirmationState,
       breakoutConfirmed,
+      riskRewardAcceptable,
     },
     canExecute,
     side,
   };
 }
 
-export function mapDecisionTypeToExecutionIntent(decisionType) {
+export function mapDecisionTypeToExecutionIntent(decisionType, confirmationResult = null) {
   if (decisionType === "IMMEDIATE_ENTRY") return "EXECUTE_NOW";
-  if (["STANDARD_ENTRY", "WAIT_PULLBACK", "WAIT_BREAKOUT"].includes(decisionType)) return "PLACE_PENDING";
-  if (["OPPORTUNITY_ENTRY", "CONFIRMATION_REQUIRED"].includes(decisionType)) return "WATCH_AND_ARM";
+if (decisionType === "IMMEDIATE_ENTRY") return "EXECUTE_NOW";
+
+if (decisionType === "STANDARD_ENTRY") return "PLACE_PENDING";
+
+if (decisionType === "OPPORTUNITY_ENTRY")
+  return confirmationResult?.canExecute ? "EXECUTE_NOW" : "PLACE_PENDING";
+
+if (decisionType === "WAIT_PULLBACK" || decisionType === "WAIT_BREAKOUT")
+  return "PLACE_PENDING";
+
+if (decisionType === "CONFIRMATION_REQUIRED")
+  return "WATCH_AND_ARM";
+
+return "WATCH_ONLY";
   return "WATCH_ONLY";
 }

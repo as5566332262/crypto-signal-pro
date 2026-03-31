@@ -233,7 +233,7 @@ function evaluateImmediateExecutionReadiness({ decision, side, triggerPrice, mar
 export function getSimulationEligibility(decision, currentPrice, signalContext = {}, options = {}) {
   const bypassSetupGate = shouldBypassSetupGate(options);
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
-  const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType);
+  const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
   if (!decision) {
     return {
       eligibility: bypassSetupGate ? "WATCH_ONLY" : "BLOCKED",
@@ -680,7 +680,7 @@ export function simulateDecisionExecution({
       : { state, result: "NO_DECISION" };
   }
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
-  const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType);
+  const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
   console.debug("[paper-engine:simulateDecisionExecution:before-validator]", {
     symbol,
     timeframe,
@@ -797,7 +797,12 @@ export function simulateDecisionExecution({
     takeProfit1: normalizedLevels.takeProfit1,
     takeProfit2: normalizedLevels.takeProfit2,
     takeProfit3: normalizedLevels.takeProfit3,
-    quantity: asSafeNumber(quantity, DEFAULT_POSITION_SIZE),
+    quantity: asSafeNumber(
+      confirmationResult.decisionType === "OPPORTUNITY_ENTRY"
+        ? asSafeNumber(quantity, DEFAULT_POSITION_SIZE) * 0.4
+        : quantity,
+      DEFAULT_POSITION_SIZE
+    ),
     createdAt: nowIso(),
     status: "PENDING",
     expiresAt: resolveExpiryTimestamp(decision, nowIso()),
@@ -806,6 +811,7 @@ export function simulateDecisionExecution({
     entryMode: plannedEntry.mode,
     entryAdjusted: constrainedEntry.wasAdjusted,
     simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
+    riskProfile: confirmationResult.decisionType === "OPPORTUNITY_ENTRY" ? "LOW_CONFIDENCE_SMALL_SIZE" : "STANDARD",
     placementSnapshot: {
       createdAt: nowIso(),
       symbol,
@@ -873,7 +879,12 @@ export function simulateDecisionExecution({
   if (effectiveEligibility.eligibility === "READY_TO_EXECUTE" || (executionIntent === "EXECUTE_NOW" && confirmationResult.canExecute)) {
     const timestamp = nowIso();
     const entryPrice = asSafeNumber(triggerPrice, currentPrice);
-    const quantityValue = asSafeNumber(quantity, DEFAULT_POSITION_SIZE);
+    const quantityValue = asSafeNumber(
+      confirmationResult.decisionType === "OPPORTUNITY_ENTRY"
+        ? asSafeNumber(quantity, DEFAULT_POSITION_SIZE) * 0.4
+        : quantity,
+      DEFAULT_POSITION_SIZE
+    );
     const position = {
       id: createId("pos"),
       symbol,
@@ -897,6 +908,7 @@ export function simulateDecisionExecution({
       entryMode: plannedEntry.mode,
       entryAdjusted: constrainedEntry.wasAdjusted,
       simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
+      riskProfile: confirmationResult.decisionType === "OPPORTUNITY_ENTRY" ? "LOW_CONFIDENCE_SMALL_SIZE" : "STANDARD",
       decisionSnapshot: decision,
       decisionContextKey: contextKey,
       hitTargets: [],
