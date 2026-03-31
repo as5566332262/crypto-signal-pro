@@ -3,6 +3,7 @@ import { evaluateDecisionScore } from "@/lib/decision/scoring-engine";
 const FALLBACK_WAIT_BARS = 4;
 const MISSED_MOVE_ATR_RATIO = 1.2;
 const FORCE_PROBE_NO_TRADE_BARS = 12;
+const RANGE_EDGE_TOLERANCE_PCT = 0.003;
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -94,6 +95,38 @@ function resolveRangeMarket({ confirmationState = {}, indicators = {}, mtf = {} 
   const momentumOutOfSync = confirmationState?.momentumConfirmed === false;
   const volumeLow = confirmationState?.volumeConfirmed === false;
   return mtfDivergent && momentumOutOfSync && volumeLow;
+}
+
+function resolveRangeBounds({ structure = {}, aiDecisionOutput = {} }) {
+  const rangeLow = normalizeNumber(
+    aiDecisionOutput?.executionPlan?.rangeLow ??
+      aiDecisionOutput?.levels?.structureSupportZone?.low ??
+      structure?.supportLow ??
+      structure?.zoneLow
+  );
+  const rangeHigh = normalizeNumber(
+    aiDecisionOutput?.executionPlan?.rangeHigh ??
+      aiDecisionOutput?.levels?.structureResistanceZone?.high ??
+      structure?.resistanceHigh ??
+      structure?.zoneHigh
+  );
+  return { rangeLow, rangeHigh };
+}
+
+function isNearSupport(price, rangeLow, tolerancePct = RANGE_EDGE_TOLERANCE_PCT) {
+  const normalizedPrice = normalizeNumber(price);
+  const normalizedRangeLow = normalizeNumber(rangeLow);
+  if (!Number.isFinite(normalizedPrice) || !Number.isFinite(normalizedRangeLow) || normalizedRangeLow <= 0) return false;
+  const clampedTolerance = Math.min(0.005, Math.max(0.002, normalizeNumber(tolerancePct) ?? RANGE_EDGE_TOLERANCE_PCT));
+  return Math.abs(normalizedPrice - normalizedRangeLow) / normalizedRangeLow <= clampedTolerance;
+}
+
+function isNearResistance(price, rangeHigh, tolerancePct = RANGE_EDGE_TOLERANCE_PCT) {
+  const normalizedPrice = normalizeNumber(price);
+  const normalizedRangeHigh = normalizeNumber(rangeHigh);
+  if (!Number.isFinite(normalizedPrice) || !Number.isFinite(normalizedRangeHigh) || normalizedRangeHigh <= 0) return false;
+  const clampedTolerance = Math.min(0.005, Math.max(0.002, normalizeNumber(tolerancePct) ?? RANGE_EDGE_TOLERANCE_PCT));
+  return Math.abs(normalizedPrice - normalizedRangeHigh) / normalizedRangeHigh <= clampedTolerance;
 }
 
 function resolveRangeProbeSide({ currentPrice, side, structure = {}, aiDecisionOutput = {}, indicators = {} }) {
@@ -387,6 +420,17 @@ export function runConfirmationEngine({
     softConditions.missedMoveSignalCount >= 2;
   const rsi = normalizeNumber(indicators?.rsi);
   const rangeMarket = resolveRangeMarket({ confirmationState, indicators, mtf });
+  const normalizedMarketRegime = String(indicators?.marketRegime ?? "").trim().toUpperCase();
+  const isExplicitRangeRegime = normalizedMarketRegime === "RANGE" || normalizedMarketRegime === "RANGING";
+  const { rangeLow, rangeHigh } = resolveRangeBounds({ structure, aiDecisionOutput });
+  const isNearSupportZone = isNearSupport(currentPrice, rangeLow, indicators?.rangeEdgeTolerancePct);
+  const isNearResistanceZone = isNearResistance(currentPrice, rangeHigh, indicators?.rangeEdgeTolerancePct);
+  const hasRangeEdgeForSide = side === "LONG" ? isNearSupportZone : side === "SHORT" ? isNearResistanceZone : false;
+  const rangeSideRsiQualified =
+    Number.isFinite(rsi) &&
+    (side === "LONG" ? rsi < 40 : side === "SHORT" ? rsi > 60 : false);
+  const rangeEntryQualified = rangeSideRsiQualified && softConditions.klineConfirmed && hasRangeEdgeForSide;
+  const blockedByRangeFilter = isExplicitRangeRegime && Boolean(side) && !rangeEntryQualified;
   const { nearSupport, nearResistance, probeSide: detectedRangeProbeSide } = resolveRangeProbeContext({
     currentPrice,
     side,
@@ -411,8 +455,12 @@ export function runConfirmationEngine({
   console.debug("[confirmation-engine] PROBE_ENTRY_D check", {
     rsi,
     isRange: rangeMarket,
+    isExplicitRangeRegime,
     nearSupport,
     nearResistance,
+    isNearSupport: isNearSupportZone,
+    isNearResistance: isNearResistanceZone,
+    blockedByRangeFilter,
     noTradeBars,
     rsiReady: dGradeRsiProbeReady,
     rangeReady: rangeProbeReady,
@@ -438,6 +486,9 @@ export function runConfirmationEngine({
     decisionType = "CONFIRMATION_REQUIRED";
   }
   if (cooldownActiveForSide) {
+    decisionType = "NO_TRADE";
+  }
+  if (blockedByRangeFilter) {
     decisionType = "NO_TRADE";
   }
 
@@ -487,6 +538,9 @@ export function runConfirmationEngine({
   } else if (decisionType === "NO_TRADE") {
     canExecute = false;
   }
+  if (blockedByRangeFilter) {
+    canExecute = false;
+  }
 
   return {
     decisionType,
@@ -502,8 +556,14 @@ export function runConfirmationEngine({
       hardConditions,
       softConditions,
       rangeMarket,
+      isExplicitRangeRegime,
       nearSupport,
       nearResistance,
+      rangeLow,
+      rangeHigh,
+      isNearSupport: isNearSupportZone,
+      isNearResistance: isNearResistanceZone,
+      blockedByRangeFilter,
       rangeProbeSide: probeSide,
       dGradeRsiProbeReady,
       forceProbeByNoTradeBars,
