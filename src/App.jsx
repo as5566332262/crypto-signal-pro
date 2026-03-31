@@ -157,7 +157,6 @@ const CONFIDENCE_LEVEL_LABELS = {
   high: "高",
 };
 const SIMULATION_FORCE_PROBE_NO_TRADE_BARS = 12;
-const SIMULATION_DIRECTIONAL_COOLDOWN_BARS = 8;
 const SIMULATION_DIRECTIONAL_LOSS_STREAK_THRESHOLD = 2;
 
 const TRAP_SIGNAL_LABELS = {
@@ -237,34 +236,23 @@ function resolveDecisionSide(decision) {
   return null;
 }
 
-function getDirectionalLossCooldown({ closedTrades = [], candles = [], symbol, timeframe }) {
-  const directionalTrades = closedTrades
-    .filter((trade) => trade?.symbol === symbol && trade?.timeframe === timeframe)
-    .sort((a, b) => new Date(b?.closedAt || 0).getTime() - new Date(a?.closedAt || 0).getTime());
-  const lastTradeDirection = directionalTrades[0]?.side || null;
-  if (!lastTradeDirection) {
-    return { lastTradeDirection: null, consecutiveLossCount: 0, cooldownActive: false, cooldownRemainingBars: 0 };
-  }
-  let consecutiveLossCount = 0;
-  let streakClosedAt = null;
-  for (const trade of directionalTrades) {
-    if (trade?.side !== lastTradeDirection) break;
-    if (Number(trade?.realizedPnl) > 0) break;
-    consecutiveLossCount += 1;
-    if (!streakClosedAt) streakClosedAt = trade?.closedAt;
-  }
-  const lastLossTimestamp = new Date(streakClosedAt || 0).getTime();
-  const barsSinceLastLoss = Number.isFinite(lastLossTimestamp) && lastLossTimestamp > 0
-    ? candles.filter((candle) => Number(candle?.openTime) > lastLossTimestamp).length
-    : 0;
-  const cooldownRemainingBars = consecutiveLossCount >= SIMULATION_DIRECTIONAL_LOSS_STREAK_THRESHOLD
-    ? Math.max(0, SIMULATION_DIRECTIONAL_COOLDOWN_BARS - barsSinceLastLoss)
-    : 0;
+function getDirectionalCooldownStateFromAccount(account = {}) {
+  const longCooldownBarsLeft = Math.max(0, Number(account?.longCooldownBars) || 0);
+  const shortCooldownBarsLeft = Math.max(0, Number(account?.shortCooldownBars) || 0);
+  const longLossStreak = Math.max(0, Number(account?.longLossStreak) || 0);
+  const shortLossStreak = Math.max(0, Number(account?.shortLossStreak) || 0);
+  const lastTradeDirection = account?.lastTradeDirection || null;
+  const consecutiveLossCount = lastTradeDirection === "SHORT" ? shortLossStreak : longLossStreak;
+  const cooldownBarsLeft = lastTradeDirection === "SHORT" ? shortCooldownBarsLeft : longCooldownBarsLeft;
   return {
     lastTradeDirection,
+    longLossStreak,
+    shortLossStreak,
+    longCooldownBarsLeft,
+    shortCooldownBarsLeft,
     consecutiveLossCount,
-    cooldownActive: cooldownRemainingBars > 0,
-    cooldownRemainingBars,
+    cooldownActive: cooldownBarsLeft > 0,
+    cooldownBarsLeft,
   };
 }
 
@@ -2861,33 +2849,39 @@ export default function CryptoSignalWebApp() {
         currentCandle,
         previousCandle,
       });
-      const cooldownState = getDirectionalLossCooldown({
-        closedTrades: prev?.closedTrades || [],
-        candles: candles || [],
-        symbol: paperMarketSymbol,
-        timeframe,
-      });
+      const cooldownState = getDirectionalCooldownStateFromAccount(prev);
       const cooldownActiveForSide =
-        executionSource === "simulation_agent" &&
-        cooldownState.cooldownActive &&
-        cooldownState.lastTradeDirection === decisionSide;
+        (decisionSide === "LONG" && cooldownState.longCooldownBarsLeft > 0) ||
+        (decisionSide === "SHORT" && cooldownState.shortCooldownBarsLeft > 0);
+      const sideCooldownBarsLeft = decisionSide === "SHORT"
+        ? cooldownState.shortCooldownBarsLeft
+        : cooldownState.longCooldownBarsLeft;
+      const sideConsecutiveLossCount = decisionSide === "SHORT"
+        ? cooldownState.shortLossStreak
+        : cooldownState.longLossStreak;
       console.debug("[simulation:agent-guard]", {
         executionSource,
         decisionSide,
         hasKlineConfirmation,
         lastTradeDirection: cooldownState.lastTradeDirection,
-        consecutiveLossCount: cooldownState.consecutiveLossCount,
-        cooldownActive: cooldownState.cooldownActive,
-        cooldownRemainingBars: cooldownState.cooldownRemainingBars,
+        consecutiveLossCount: sideConsecutiveLossCount,
+        cooldownActive: cooldownActiveForSide,
+        cooldownBarsLeft: sideCooldownBarsLeft,
       });
       if (cooldownActiveForSide) {
         nextFeedback = {
           status: "WATCHING",
           statusLabel: "方向冷卻中",
-          reason: `${decisionSide === "LONG" ? "多單" : "空單"}連續虧損已達 ${SIMULATION_DIRECTIONAL_LOSS_STREAK_THRESHOLD} 次，暫停 ${cooldownState.cooldownRemainingBars} 根 K`,
+          reason: `${decisionSide === "LONG" ? "多單" : "空單"}連續虧損已達 ${SIMULATION_DIRECTIONAL_LOSS_STREAK_THRESHOLD} 次，暫停 ${sideCooldownBarsLeft} 根 K`,
           unmetConditions: ["DIRECTIONAL_COOLDOWN_ACTIVE"],
           distances: [],
           timestamp: new Date().toISOString(),
+          cooldownDebug: {
+            lastTradeDirection: cooldownState.lastTradeDirection,
+            consecutiveLossCount: sideConsecutiveLossCount,
+            cooldownActive: cooldownActiveForSide,
+            cooldownBarsLeft: sideCooldownBarsLeft,
+          },
         };
         setSimulationExecutionStatus(nextFeedback);
         return {
@@ -2896,9 +2890,9 @@ export default function CryptoSignalWebApp() {
             ...(reconciledState?.simulationAgentState || {}),
             hasKlineConfirmation,
             lastTradeDirection: cooldownState.lastTradeDirection,
-            consecutiveLossCount: cooldownState.consecutiveLossCount,
-            cooldownActive: cooldownState.cooldownActive,
-            cooldownRemainingBars: cooldownState.cooldownRemainingBars,
+            consecutiveLossCount: sideConsecutiveLossCount,
+            cooldownActive: cooldownActiveForSide,
+            cooldownBarsLeft: sideCooldownBarsLeft,
           },
         };
       }
@@ -2941,6 +2935,7 @@ export default function CryptoSignalWebApp() {
           klineConfirmed: hasKlineConfirmation,
           noTradeBars,
           forceProbeEntry,
+          cooldownActiveForSide,
         },
       });
       const pendingBefore = (reconciledState.pendingOrders || []).length;
@@ -2970,9 +2965,9 @@ const isRangeStrategy = Boolean(result.confirmationResult?.confirmationState?.ra
 const simulationAgentState = {
   hasKlineConfirmation,
   lastTradeDirection: cooldownState.lastTradeDirection,
-  consecutiveLossCount: cooldownState.consecutiveLossCount,
-  cooldownActive: cooldownState.cooldownActive,
-  cooldownRemainingBars: cooldownState.cooldownRemainingBars,
+  consecutiveLossCount: sideConsecutiveLossCount,
+  cooldownActive: cooldownActiveForSide,
+  cooldownBarsLeft: sideCooldownBarsLeft,
 };
       console.debug("[simulation:service-result]", {
         ...manualExecutionMeta,
@@ -3144,6 +3139,15 @@ const simulationAgentState = {
           },
         };
       }
+      nextFeedback = {
+        ...nextFeedback,
+        cooldownDebug: {
+          lastTradeDirection: cooldownState.lastTradeDirection,
+          consecutiveLossCount: sideConsecutiveLossCount,
+          cooldownActive: cooldownActiveForSide,
+          cooldownBarsLeft: sideCooldownBarsLeft,
+        },
+      };
 
       setSimulationExecutionStatus(nextFeedback);
       console.debug("[simulation:position-write]", {

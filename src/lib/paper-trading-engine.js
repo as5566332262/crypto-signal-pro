@@ -11,6 +11,8 @@ const DEFAULT_PENDING_EXPIRY_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_SHORT_BREAKDOWN_ATR_RATIO = 0.2;
 const DEFAULT_PENDING_DRIFT_ATR_RATIO = 2;
 const REDUCED_CONFIDENCE_TYPES = new Set(["OPPORTUNITY_ENTRY", "FALLBACK_ENTRY", "MISSED_MOVE_ENTRY", "PROBE_ENTRY_D"]);
+const DIRECTIONAL_LOSS_STREAK_THRESHOLD = 2;
+const DIRECTIONAL_COOLDOWN_BARS = 6;
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -412,6 +414,12 @@ export function createInitialPaperAccountState() {
     pendingOrders: [],
     cancelledOrders: [],
     closedTrades: [],
+    longLossStreak: 0,
+    shortLossStreak: 0,
+    longCooldownBars: 0,
+    shortCooldownBars: 0,
+    lastTradeDirection: null,
+    cooldownLastCandleTime: null,
     simulationOrderConfig: {
       mode: "fixed_quantity",
       quantity: DEFAULT_POSITION_SIZE,
@@ -491,12 +499,35 @@ function closePosition(state, { positionId, exitPrice, closeReason, closedAt = n
   };
 
   const nextOpen = state.openPositions.filter((item) => item.id !== positionId);
+  const isLosingTrade = realizedPnl < 0;
+  const isWinningTrade = realizedPnl > 0;
+  const nextLongLossStreak = position.side === "LONG"
+    ? isLosingTrade
+      ? asSafeNumber(state.longLossStreak) + 1
+      : isWinningTrade
+        ? 0
+        : asSafeNumber(state.longLossStreak)
+    : asSafeNumber(state.longLossStreak);
+  const nextShortLossStreak = position.side === "SHORT"
+    ? isLosingTrade
+      ? asSafeNumber(state.shortLossStreak) + 1
+      : isWinningTrade
+        ? 0
+        : asSafeNumber(state.shortLossStreak)
+    : asSafeNumber(state.shortLossStreak);
+  const triggerLongCooldown = position.side === "LONG" && nextLongLossStreak >= DIRECTIONAL_LOSS_STREAK_THRESHOLD;
+  const triggerShortCooldown = position.side === "SHORT" && nextShortLossStreak >= DIRECTIONAL_LOSS_STREAK_THRESHOLD;
   return recalculateAccountState({
     ...state,
     balance: asSafeNumber(state.balance) + realizedPnl,
     realizedPnl: asSafeNumber(state.realizedPnl) + realizedPnl,
     openPositions: nextOpen,
     closedTrades: [closedTrade, ...state.closedTrades],
+    longLossStreak: nextLongLossStreak,
+    shortLossStreak: nextShortLossStreak,
+    longCooldownBars: triggerLongCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(state.longCooldownBars),
+    shortCooldownBars: triggerShortCooldown ? DIRECTIONAL_COOLDOWN_BARS : asSafeNumber(state.shortCooldownBars),
+    lastTradeDirection: position.side || null,
   });
 }
 
@@ -1083,7 +1114,16 @@ export function applyMarketTickToPaperState(
   const normalizedMa20 = normalizeNumber(ma20);
   const normalizedMacd = resolveMacdValue(macd);
 
-  let nextState = maybeFillPendingOrders(state, {
+  const normalizedCandleTime = Number(candleTime);
+  const hasNewCandle = Number.isFinite(normalizedCandleTime) && normalizedCandleTime !== Number(state?.cooldownLastCandleTime);
+  let nextState = {
+    ...state,
+    longCooldownBars: hasNewCandle ? Math.max(0, asSafeNumber(state?.longCooldownBars) - 1) : asSafeNumber(state?.longCooldownBars),
+    shortCooldownBars: hasNewCandle ? Math.max(0, asSafeNumber(state?.shortCooldownBars) - 1) : asSafeNumber(state?.shortCooldownBars),
+    cooldownLastCandleTime: hasNewCandle ? normalizedCandleTime : state?.cooldownLastCandleTime ?? null,
+  };
+
+  nextState = maybeFillPendingOrders(nextState, {
     tickPrice,
     candleClose: normalizedCandleClose,
     rsi: normalizedRsi,
