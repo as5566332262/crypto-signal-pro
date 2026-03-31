@@ -809,6 +809,8 @@ export function createInitialPaperAccountState() {
     pendingCancelTrace: [],
     orderFillEventLocks: {},
     orderToPositionMap: {},
+    orderProcessingLocks: {},
+    filledOrderIds: {},
     waitingDiagnostics: createDefaultWaitingDiagnostics(),
     accountTrace: [],
     accountErrorTrace: [],
@@ -1271,15 +1273,15 @@ function evaluatePendingOrderFill(order, {
     return pricePoint === triggerPrice ? "PRICE_TOUCHED" : "PRICE_CROSSED";
   };
 
-  // Tick crossing.
-  if (order.side === "LONG" && tickPrice <= triggerPrice) {
+  // Tick crossing (strict directional checks only).
+  if (order.side === "LONG" && hasTick && tickPrice <= triggerPrice) {
     return { shouldFill: true, reason: resolveFillReason(tickPrice) };
   }
-  if (order.side === "SHORT" && tickPrice >= triggerPrice) {
+  if (order.side === "SHORT" && hasTick && tickPrice >= triggerPrice) {
     return { shouldFill: true, reason: resolveFillReason(tickPrice) };
   }
 
-  // Candle crossing.
+  // Candle crossing (strict directional checks only).
   if (order.side === "LONG" && hasLow && candleLow <= triggerPrice) {
     return { shouldFill: true, reason: resolveFillReason(candleLow) };
   }
@@ -1290,7 +1292,7 @@ function evaluatePendingOrderFill(order, {
   if (!hasTick && !hasLow && !hasHigh) {
     return { shouldFill: false, reason: "NO_MARKET_DATA" };
   }
-  return { shouldFill: false, reason: null };
+  return { shouldFill: false, reason: "TRIGGER_NOT_REACHED" };
 }
 
 function hasActiveTrapSignal(decisionSnapshot) {
@@ -1406,6 +1408,8 @@ function maybeFillPendingOrders(state, {
     waitingDiagnostics: state?.waitingDiagnostics || createDefaultWaitingDiagnostics(),
     orderFillEventLocks: { ...(state?.orderFillEventLocks || {}) },
     orderToPositionMap: { ...(state?.orderToPositionMap || {}) },
+    orderProcessingLocks: { ...(state?.orderProcessingLocks || {}) },
+    filledOrderIds: { ...(state?.filledOrderIds || {}) },
   };
   console.debug("[paper-trading] pending orders check", {
     pendingOrdersCount: (nextState.pendingOrders || []).filter((order) => order.status === "PENDING").length,
@@ -1413,8 +1417,12 @@ function maybeFillPendingOrders(state, {
     timestamp,
   });
 
-  nextState.pendingOrders = nextState.pendingOrders.map((order) => {
-    if (order.status !== "PENDING") return order;
+  const nextPendingOrders = [];
+  for (const order of nextState.pendingOrders) {
+    if (order.status !== "PENDING") {
+      nextPendingOrders.push(order);
+      continue;
+    }
     const checkedFunctionName = "maybeFillPendingOrders";
     const scopedMarket = (marketDataBySymbol && order.symbol)
       ? marketDataBySymbol[order.symbol]
@@ -1436,7 +1444,23 @@ function maybeFillPendingOrders(state, {
       canceledByPriceDrift: false,
     };
     const hasMarketEventForOrder = Boolean(scopedMarket) || order.symbol === symbol;
-    if (!hasMarketEventForOrder) return observedOrder;
+    if (!hasMarketEventForOrder) {
+      nextPendingOrders.push(observedOrder);
+      continue;
+    }
+
+    const orderTerminal =
+      order.status !== "PENDING" ||
+      Boolean(nextState.filledOrderIds?.[order.id]) ||
+      Boolean(nextState.orderToPositionMap?.[order.id]);
+    if (orderTerminal) {
+      console.debug("[FILL_SKIPPED_DUPLICATE]", {
+        symbol: order.symbol,
+        orderId: order.id,
+        reason: "ORDER_ALREADY_TERMINAL",
+      });
+      continue;
+    }
     const cancellationBlockedByTrigger = shouldBlockPendingCancellation(triggeredBy);
     const cancellationBlockedBySymbolMismatch = order.symbol !== marketSymbolUsed;
     if (
@@ -1444,7 +1468,10 @@ function maybeFillPendingOrders(state, {
       Number.isFinite(nextWaitBars) &&
       nextWaitBars >= asSafeNumber(order.maxWaitBars, DEFAULT_PULLBACK_MAX_WAIT_BARS)
     ) {
-      if (cancellationBlockedByTrigger || cancellationBlockedBySymbolMismatch) return observedOrder;
+      if (cancellationBlockedByTrigger || cancellationBlockedBySymbolMismatch) {
+        nextPendingOrders.push(observedOrder);
+        continue;
+      }
       nextState = incrementWaitingReason(nextState, "waitingForPullback", {
         symbol: order.symbol,
         orderId: order.id,
@@ -1473,15 +1500,19 @@ function maybeFillPendingOrders(state, {
         timestamp, orderId: order.id, orderSymbol: order.symbol, selectedSymbolAtThatMoment, marketSymbolUsed, reason: "PENDING_TIMEOUT_REEVALUATED", triggeredBy,
         currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: order.triggerPrice, checkedFunctionName,
       });
-      return {
+      nextPendingOrders.push({
         ...order,
         status: "CANCELLED",
         canceledByPriceDrift: false,
         refreshSuggestion: refreshedEntry,
-      };
+      });
+      continue;
     }
     if (isOrderExpired(order, timestamp)) {
-      if (cancellationBlockedByTrigger || cancellationBlockedBySymbolMismatch) return observedOrder;
+      if (cancellationBlockedByTrigger || cancellationBlockedBySymbolMismatch) {
+        nextPendingOrders.push(observedOrder);
+        continue;
+      }
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "EXPIRED", timestamp, { triggeredBy }));
       nextState = appendOrderLifecycleEvent(nextState, {
         symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "EXPIRED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed,
@@ -1491,7 +1522,8 @@ function maybeFillPendingOrders(state, {
         timestamp, orderId: order.id, orderSymbol: order.symbol, selectedSymbolAtThatMoment, marketSymbolUsed, reason: "EXPIRED", triggeredBy,
         currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: order.triggerPrice, checkedFunctionName,
       });
-      return { ...order, status: "CANCELLED" };
+      nextPendingOrders.push({ ...order, status: "CANCELLED" });
+      continue;
     }
     if (!cancellationBlockedByTrigger && !cancellationBlockedBySymbolMismatch && isOrderPriceDrifted(order, orderTickPrice)) {
       nextState = incrementWaitingReason(nextState, "canceledByPriceDrift", {
@@ -1515,10 +1547,14 @@ function maybeFillPendingOrders(state, {
         timestamp, orderId: order.id, orderSymbol: order.symbol, selectedSymbolAtThatMoment, marketSymbolUsed, reason: "PRICE_DRIFTED", triggeredBy,
         currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: order.triggerPrice, checkedFunctionName,
       });
-      return { ...order, status: "CANCELLED", canceledByPriceDrift: true };
+      nextPendingOrders.push({ ...order, status: "CANCELLED", canceledByPriceDrift: true });
+      continue;
     }
     if (isPreEntryInvalidated(order, orderTickPrice)) {
-      if (cancellationBlockedByTrigger || cancellationBlockedBySymbolMismatch) return observedOrder;
+      if (cancellationBlockedByTrigger || cancellationBlockedBySymbolMismatch) {
+        nextPendingOrders.push(observedOrder);
+        continue;
+      }
       nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp, { triggeredBy }));
       nextState = appendOrderLifecycleEvent(nextState, {
         symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "SETUP_INVALIDATED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed,
@@ -1528,7 +1564,8 @@ function maybeFillPendingOrders(state, {
         timestamp, orderId: order.id, orderSymbol: order.symbol, selectedSymbolAtThatMoment, marketSymbolUsed, reason: "SETUP_INVALIDATED", triggeredBy,
         currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: order.triggerPrice, checkedFunctionName,
       });
-      return { ...order, status: "CANCELLED" };
+      nextPendingOrders.push({ ...order, status: "CANCELLED" });
+      continue;
     }
     const fillEvaluation = evaluatePendingOrderFill(order, {
       tickPrice: orderTickPrice,
@@ -1564,6 +1601,15 @@ function maybeFillPendingOrders(state, {
       candleTimestamp: normalizedCandleTime,
       functionName: checkedFunctionName,
     });
+    console.debug("[FILL_CHECK]", {
+      symbol: order.symbol,
+      side: order.side,
+      orderId: order.id,
+      entry: order.triggerPrice,
+      marketPrice: orderTickPrice,
+      candleHigh: orderCandleHigh,
+      candleLow: orderCandleLow,
+    });
     console.debug("[paper-trading] pending order fill evaluation", {
       orderId: order.id,
       symbol: order.symbol,
@@ -1580,13 +1626,35 @@ function maybeFillPendingOrders(state, {
       eventId,
       functionName: checkedFunctionName,
     });
-    if (!shouldFill) return observedOrder;
+    if (!shouldFill) {
+      if (blockedByEventLock || blockedByOrderFillGuard) {
+        console.debug("[FILL_SKIPPED_DUPLICATE]", {
+          symbol: order.symbol,
+          orderId: order.id,
+          reason: resolvedFillReason,
+        });
+      }
+      nextPendingOrders.push(observedOrder);
+      continue;
+    }
 
     perEventFilledOrderIds.add(order.id);
     const existingOrderLocks = Array.isArray(nextState.orderFillEventLocks?.[order.id])
       ? nextState.orderFillEventLocks[order.id]
       : [];
     nextState.orderFillEventLocks[order.id] = [eventId, ...existingOrderLocks].slice(0, 20);
+
+    const existingProcessingLock = nextState.orderProcessingLocks?.[order.id];
+    if (existingProcessingLock && existingProcessingLock !== eventId) {
+      console.debug("[FILL_SKIPPED_DUPLICATE]", {
+        symbol: order.symbol,
+        orderId: order.id,
+        reason: "ORDER_PROCESSING_LOCKED",
+      });
+      nextPendingOrders.push(observedOrder);
+      continue;
+    }
+    nextState.orderProcessingLocks[order.id] = eventId;
 
     const entryPrice = asSafeNumber(order.triggerPrice, orderTickPrice);
     const normalizedLevels = normalizeDirectionalLevels({
@@ -1642,11 +1710,24 @@ function maybeFillPendingOrders(state, {
         side: order.side,
       }),
     };
-    if (nextState.orderToPositionMap?.[order.id]) {
-      return { ...observedOrder, status: "FILLED", filledAt: timestamp };
+    if (nextState.orderToPositionMap?.[order.id] || nextState.filledOrderIds?.[order.id]) {
+      delete nextState.orderProcessingLocks[order.id];
+      console.debug("[FILL_SKIPPED_DUPLICATE]", {
+        symbol: order.symbol,
+        orderId: order.id,
+        reason: "ORDER_ALREADY_FILLED",
+      });
+      continue;
     }
     nextState.openPositions.push(position);
     nextState.orderToPositionMap[order.id] = position.id;
+    nextState.filledOrderIds[order.id] = {
+      positionId: position.id,
+      filledAt: timestamp,
+      eventId,
+      triggerSource: triggeredBy,
+    };
+    delete nextState.orderProcessingLocks[order.id];
     const diagnostics = nextState?.waitingDiagnostics || createDefaultWaitingDiagnostics();
     nextState.waitingDiagnostics = {
       ...diagnostics,
@@ -1682,10 +1763,16 @@ function maybeFillPendingOrders(state, {
       fillReason: fillEvaluation.reason,
       executedAt: timestamp,
     });
-    return { ...observedOrder, status: "FILLED", filledAt: timestamp };
-  });
+    console.info("[FILL_EXECUTED]", {
+      symbol: order.symbol,
+      orderId: order.id,
+      filledPrice: entryPrice,
+      triggerSource: triggeredBy,
+    });
+    continue;
+  }
 
-  nextState.pendingOrders = nextState.pendingOrders.filter((order) => order.status === "PENDING");
+  nextState.pendingOrders = nextPendingOrders.filter((order) => order.status === "PENDING");
   nextState.cancelledOrders = nextState.cancelledOrders.slice(0, MAX_CANCELLED_ORDERS_HISTORY);
   return recalculateAccountState(nextState, {
     timestamp,
@@ -2606,6 +2693,10 @@ export function normalizePaperAccountState(state, { eventType = "RESTORE", sourc
     pendingOrders: Array.isArray(state?.pendingOrders) ? state.pendingOrders : [],
     cancelledOrders: Array.isArray(state?.cancelledOrders) ? state.cancelledOrders : [],
     closedTrades: Array.isArray(state?.closedTrades) ? state.closedTrades : [],
+    orderFillEventLocks: state?.orderFillEventLocks && typeof state.orderFillEventLocks === "object" ? state.orderFillEventLocks : {},
+    orderToPositionMap: state?.orderToPositionMap && typeof state.orderToPositionMap === "object" ? state.orderToPositionMap : {},
+    orderProcessingLocks: state?.orderProcessingLocks && typeof state.orderProcessingLocks === "object" ? state.orderProcessingLocks : {},
+    filledOrderIds: state?.filledOrderIds && typeof state.filledOrderIds === "object" ? state.filledOrderIds : {},
   }, {
     eventType,
     sourceFunction,
