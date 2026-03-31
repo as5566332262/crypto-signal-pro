@@ -573,6 +573,23 @@ function resolveMacdValue(value) {
   return undefined;
 }
 
+function getCooldownStateForSide(state, side) {
+  const longCooldownBars = Math.max(0, asSafeNumber(state?.longCooldownBars));
+  const shortCooldownBars = Math.max(0, asSafeNumber(state?.shortCooldownBars));
+  const longLossStreak = Math.max(0, asSafeNumber(state?.longLossStreak));
+  const shortLossStreak = Math.max(0, asSafeNumber(state?.shortLossStreak));
+  const sideCooldownBarsLeft = side === "SHORT" ? shortCooldownBars : longCooldownBars;
+  return {
+    lastTradeDirection: state?.lastTradeDirection || null,
+    longLossStreak,
+    shortLossStreak,
+    longCooldownBars,
+    shortCooldownBars,
+    cooldownActive: sideCooldownBarsLeft > 0,
+    cooldownBarsLeft: sideCooldownBarsLeft,
+  };
+}
+
 function isPreEntryInvalidated(order, tickPrice) {
   if (order.invalidationPrice == null) return false;
   const invalidation = asSafeNumber(order.invalidationPrice);
@@ -827,6 +844,26 @@ export function simulateDecisionExecution({
   const side = resolveSideFromDecision(decision) || (bypassSetupGate ? resolveManualSimulationSide(decision) : null);
   if (!side) {
     return { state, result: "SKIP_NO_ACTIONABLE_SIDE", eligibilityInfo: effectiveEligibility };
+  }
+  const cooldownState = getCooldownStateForSide(state, side);
+  if (cooldownState.cooldownActive) {
+    return {
+      state,
+      result: "DIRECTIONAL_COOLDOWN_ACTIVE",
+      executionIntent: "WATCH_ONLY",
+      confirmationResult: {
+        ...confirmationResult,
+        canExecute: false,
+        decisionType: "NO_TRADE",
+      },
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        eligibility: "WATCH_ONLY",
+        reasonCode: "DIRECTIONAL_COOLDOWN_ACTIVE",
+        reason: `${side} directional cooldown active (${cooldownState.cooldownBarsLeft} bars left)`,
+      },
+      cooldownDebug: cooldownState,
+    };
   }
   const plannedEntry = resolvePlannedEntryPrice(decision, side);
   const fallbackEntryPrice = normalizeNumber(currentPrice) ?? plannedEntry.entryPrice ?? normalizeNumber(decision?.price);
