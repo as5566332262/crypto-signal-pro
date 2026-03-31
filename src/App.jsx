@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyMarketTickToPaperState,
   cancelPendingOrderManually,
@@ -278,6 +278,110 @@ function getSimulationButtonState(decision, currentPrice, signalContext = {}) {
     disabledReason: waitingPending ? "目前不可立即進場，但可建立條件掛單" : "",
     eligibility: eligibilityInfo.eligibility,
   };
+}
+
+function calculateSimulationStats(accountSnapshot) {
+  const closedTrades = accountSnapshot.closedTrades || [];
+  const openPositions = accountSnapshot.openPositions || [];
+  const wins = closedTrades.filter((trade) => Number(trade.realizedPnl) > 0);
+  const losses = closedTrades.filter((trade) => Number(trade.realizedPnl) <= 0);
+  const totalTrades = closedTrades.length;
+  const winRate = totalTrades ? (wins.length / totalTrades) * 100 : 0;
+  const realizedPnl = closedTrades.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0);
+  const unrealizedPnl = openPositions.reduce((sum, pos) => sum + Number(pos.unrealizedPnl || 0), 0);
+  const avgWin = wins.length ? wins.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0) / wins.length : 0;
+  const avgLoss = losses.length ? Math.abs(losses.reduce((sum, trade) => sum + Number(trade.realizedPnl || 0), 0) / losses.length) : 0;
+  const avgRR = avgLoss > 0 ? avgWin / avgLoss : 0;
+
+  let maxWinStreak = 0;
+  let maxLossStreak = 0;
+  let currentWinStreak = 0;
+  let currentLossStreak = 0;
+  let peak = 0;
+  let running = 0;
+  let maxDrawdown = 0;
+  for (const trade of [...closedTrades].reverse()) {
+    const pnl = Number(trade.realizedPnl || 0);
+    running += pnl;
+    peak = Math.max(peak, running);
+    maxDrawdown = Math.max(maxDrawdown, peak - running);
+    if (pnl > 0) {
+      currentWinStreak += 1;
+      currentLossStreak = 0;
+    } else {
+      currentLossStreak += 1;
+      currentWinStreak = 0;
+    }
+    maxWinStreak = Math.max(maxWinStreak, currentWinStreak);
+    maxLossStreak = Math.max(maxLossStreak, currentLossStreak);
+  }
+
+  const byKeyWinRate = (key) => {
+    const bucket = {};
+    for (const trade of closedTrades) {
+      const label = trade?.[key] || "UNKNOWN";
+      if (!bucket[label]) bucket[label] = { total: 0, wins: 0 };
+      bucket[label].total += 1;
+      if (Number(trade.realizedPnl) > 0) bucket[label].wins += 1;
+    }
+    return Object.fromEntries(Object.entries(bucket).map(([label, stat]) => [label, stat.total ? (stat.wins / stat.total) * 100 : 0]));
+  };
+  const bySide = (side) => {
+    const rows = closedTrades.filter((trade) => trade.side === side);
+    const winsCount = rows.filter((trade) => Number(trade.realizedPnl) > 0).length;
+    return rows.length ? (winsCount / rows.length) * 100 : 0;
+  };
+
+  return {
+    totalTrades,
+    winRate,
+    totalPnl: realizedPnl + unrealizedPnl,
+    realizedPnl,
+    unrealizedPnl,
+    avgRR,
+    maxWinStreak,
+    maxLossStreak,
+    maxDrawdown,
+    longWinRate: bySide("LONG"),
+    shortWinRate: bySide("SHORT"),
+    decisionTypeWinRate: byKeyWinRate("decisionType"),
+    pendingTypeWinRate: byKeyWinRate("pendingType"),
+  };
+}
+
+function buildDiagnostics(accountSnapshot) {
+  const trades = accountSnapshot.closedTrades || [];
+  if (!trades.length) return { reviewLines: [], suggestions: [] };
+  const statsByDecision = {};
+  const statsByPending = {};
+  const lowVolumeBreakoutLosses = trades.filter((t) => t.pendingType === "BREAKOUT_ENTRY" && Number(t.realizedPnl) <= 0 && String(t.regime || "").includes("低量"));
+  const lowRRLosses = trades.filter((t) => Number(t.realizedPnl) <= 0).filter((t) => {
+    const risk = Math.abs(Number(t.entryPrice || 0) - Number(t?.decisionSnapshot?.stopLoss || t.stopLoss || 0));
+    const reward = Math.abs(Number(t?.decisionSnapshot?.takeProfit1 || t.takeProfit1 || 0) - Number(t.entryPrice || 0));
+    return risk > 0 && reward / risk < 1.2;
+  });
+  for (const trade of trades) {
+    const d = trade.decisionType || "UNKNOWN";
+    const p = trade.pendingType || "UNKNOWN";
+    for (const [key, map] of [[d, statsByDecision], [p, statsByPending]]) {
+      if (!map[key]) map[key] = { total: 0, wins: 0, losses: 0 };
+      map[key].total += 1;
+      if (Number(trade.realizedPnl) > 0) map[key].wins += 1;
+      else map[key].losses += 1;
+    }
+  }
+  const reviewLines = Object.entries(statsByDecision)
+    .filter(([, v]) => v.total >= 3)
+    .sort((a, b) => (a[1].wins / a[1].total) - (b[1].wins / b[1].total))
+    .slice(0, 3)
+    .map(([k, v]) => `${k} 勝率偏低（${((v.wins / v.total) * 100).toFixed(1)}%，${v.losses}/${v.total} 虧損）`);
+  const suggestions = [
+    lowVolumeBreakoutLosses.length >= 2 ? "BREAKOUT_ENTRY 在低量環境勝率低，建議提高量能門檻" : null,
+    (statsByPending.OPPORTUNITY_ENTRY?.losses || 0) >= 2 ? "OPPORTUNITY_ENTRY 虧損偏高，建議進一步降低倉位或降級為觀察" : null,
+    lowRRLosses.length >= 2 ? "RR < 1.2 的交易表現差，建議避免執行" : null,
+    (statsByDecision.WAIT_BREAKOUT?.losses || 0) > (statsByDecision.WAIT_BREAKOUT?.wins || 0) ? "MTF 分歧時建議降級，不要急於突破追價" : null,
+  ].filter(Boolean);
+  return { reviewLines, suggestions };
 }
 
 function calculateATR(candles, period = 14) {
@@ -2315,6 +2419,10 @@ export default function CryptoSignalWebApp() {
   const [paperSymbol, setPaperSymbol] = useState("SOL");
   const [paperAccount, setPaperAccount] = useState(() => loadPaperAccount());
   const [simulationExecutionStatus, setSimulationExecutionStatus] = useState(null);
+  const [simulationLifecycle, setSimulationLifecycle] = useState("idle");
+  const [simulationStartedAt, setSimulationStartedAt] = useState(null);
+  const [lastDecisionAt, setLastDecisionAt] = useState(null);
+  const lastProcessedCandleRef = useRef(null);
 
   const loadData = async (nextSymbol = symbol, nextTimeframe = timeframe) => {
     setIsLoading(true);
@@ -2432,11 +2540,21 @@ export default function CryptoSignalWebApp() {
     );
   }, [analysis?.aiDecisionOutput, paperCurrentPrice, paperMarketSymbol, timeframe]);
 
+  useEffect(() => {
+    if (simulationLifecycle !== "running") return;
+    const candleKey = `${paperMarketSymbol}-${timeframe}-${currentCandle?.openTime || "na"}-${analysis?.price || "na"}`;
+    if (!currentCandle?.openTime || lastProcessedCandleRef.current === candleKey) return;
+    lastProcessedCandleRef.current = candleKey;
+    runSimulationStep({ mode: "agent_loop", executionSource: "simulation_agent" });
+  }, [simulationLifecycle, currentCandle?.openTime, analysis?.price, paperMarketSymbol, timeframe]);
+
   const accountSnapshot = useMemo(() => {
     const wins = paperAccount.closedTrades.filter((trade) => trade.realizedPnl >= 0).length;
     const losses = paperAccount.closedTrades.length - wins;
     const totalTrades = paperAccount.closedTrades.length;
     const winRate = totalTrades ? (wins / totalTrades) * 100 : 0;
+    const simulationStats = calculateSimulationStats(paperAccount);
+    const diagnostics = buildDiagnostics(paperAccount);
 
     return {
       ...paperAccount,
@@ -2444,13 +2562,15 @@ export default function CryptoSignalWebApp() {
       losses,
       totalTrades,
       winRate,
+      simulationStats,
+      diagnostics,
     };
   }, [paperAccount]);
 
-  const handleExecuteSimulation = () => {
+  const runSimulationStep = ({ mode = "manual_click", executionSource = "simulation_manual" } = {}) => {
     const manualExecutionMeta = {
-      mode: "manual_click",
-      executionSource: "simulation_manual",
+      mode,
+      executionSource,
       orderMode: "simulation",
     };
     console.debug("[simulation:click]", manualExecutionMeta);
@@ -2699,7 +2819,10 @@ const scoringResult = result.confirmationResult?.scoring || null;
       });
       return executedState;
     });
+    setLastDecisionAt(new Date().toISOString());
   };
+
+  const handleExecuteSimulation = () => runSimulationStep({ mode: "manual_click", executionSource: "simulation_manual" });
 
   const handleSimulationQuantityChange = (quantity) => {
     setPaperAccount((prev) => ({
@@ -2735,6 +2858,23 @@ const scoringResult = result.confirmationResult?.scoring || null;
   const handleResetPaperAccount = () => {
     setPaperAccount(resetPaperTradingState());
     setSimulationExecutionStatus(null);
+    setSimulationLifecycle("idle");
+    setSimulationStartedAt(null);
+    setLastDecisionAt(null);
+    lastProcessedCandleRef.current = null;
+  };
+
+  const handleStartSimulation = () => {
+    setSimulationLifecycle("running");
+    setSimulationStartedAt((prev) => (simulationLifecycle === "paused" && prev ? prev : new Date().toISOString()));
+  };
+
+  const handlePauseSimulation = () => {
+    setSimulationLifecycle("paused");
+  };
+
+  const handleStopSimulation = () => {
+    setSimulationLifecycle("stopped");
   };
 
   const simulationButtonState = useMemo(
@@ -2763,10 +2903,16 @@ const scoringResult = result.confirmationResult?.scoring || null;
           accountSnapshot={accountSnapshot}
           paperDigits={paperDigits}
           onExecuteSimulation={handleExecuteSimulation}
+          onStartSimulation={handleStartSimulation}
+          onPauseSimulation={handlePauseSimulation}
+          onStopSimulation={handleStopSimulation}
           simulationOrderConfig={accountSnapshot.simulationOrderConfig}
           onSimulationQuantityChange={handleSimulationQuantityChange}
           simulationExecutionStatus={simulationExecutionStatus}
           simulationButtonState={simulationButtonState}
+          simulationLifecycle={simulationLifecycle}
+          simulationStartedAt={simulationStartedAt}
+          lastDecisionAt={lastDecisionAt}
           onClosePosition={handleClosePosition}
           onCancelPendingOrder={handleCancelPendingOrder}
           onResetPaperAccount={handleResetPaperAccount}
