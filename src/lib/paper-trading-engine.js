@@ -10,6 +10,7 @@ const DECISION_STALE_MS = 30 * 60 * 1000;
 const DEFAULT_PENDING_EXPIRY_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_SHORT_BREAKDOWN_ATR_RATIO = 0.2;
 const DEFAULT_PENDING_DRIFT_ATR_RATIO = 2;
+const REDUCED_CONFIDENCE_TYPES = new Set(["OPPORTUNITY_ENTRY", "FALLBACK_ENTRY", "MISSED_MOVE_ENTRY"]);
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -31,6 +32,12 @@ function createId(prefix = "sim") {
 
 function normalizeConfidence(value) {
   return String(value || "").trim().toUpperCase();
+}
+
+function getSizingMultiplier(decisionType) {
+  if (decisionType === "MISSED_MOVE_ENTRY") return 0.3;
+  if (decisionType === "FALLBACK_ENTRY" || decisionType === "OPPORTUNITY_ENTRY") return 0.4;
+  return 1;
 }
 
 function getPnl(side, entryPrice, exitPrice, quantity) {
@@ -798,9 +805,7 @@ export function simulateDecisionExecution({
     takeProfit2: normalizedLevels.takeProfit2,
     takeProfit3: normalizedLevels.takeProfit3,
     quantity: asSafeNumber(
-      confirmationResult.decisionType === "OPPORTUNITY_ENTRY"
-        ? asSafeNumber(quantity, DEFAULT_POSITION_SIZE) * 0.4
-        : quantity,
+      asSafeNumber(quantity, DEFAULT_POSITION_SIZE) * getSizingMultiplier(confirmationResult.decisionType),
       DEFAULT_POSITION_SIZE
     ),
     createdAt: nowIso(),
@@ -811,7 +816,7 @@ export function simulateDecisionExecution({
     entryMode: plannedEntry.mode,
     entryAdjusted: constrainedEntry.wasAdjusted,
     simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
-    riskProfile: confirmationResult.decisionType === "OPPORTUNITY_ENTRY" ? "LOW_CONFIDENCE_SMALL_SIZE" : "STANDARD",
+    riskProfile: REDUCED_CONFIDENCE_TYPES.has(confirmationResult.decisionType) ? "LOW_CONFIDENCE_SMALL_SIZE" : "STANDARD",
     placementSnapshot: {
       createdAt: nowIso(),
       symbol,
@@ -880,9 +885,7 @@ export function simulateDecisionExecution({
     const timestamp = nowIso();
     const entryPrice = asSafeNumber(triggerPrice, currentPrice);
     const quantityValue = asSafeNumber(
-      confirmationResult.decisionType === "OPPORTUNITY_ENTRY"
-        ? asSafeNumber(quantity, DEFAULT_POSITION_SIZE) * 0.4
-        : quantity,
+      asSafeNumber(quantity, DEFAULT_POSITION_SIZE) * getSizingMultiplier(confirmationResult.decisionType),
       DEFAULT_POSITION_SIZE
     );
     const position = {
@@ -908,7 +911,7 @@ export function simulateDecisionExecution({
       entryMode: plannedEntry.mode,
       entryAdjusted: constrainedEntry.wasAdjusted,
       simulationLabel: effectiveEligibility.overrideApplied ? "模擬掛單（非建議）" : null,
-      riskProfile: confirmationResult.decisionType === "OPPORTUNITY_ENTRY" ? "LOW_CONFIDENCE_SMALL_SIZE" : "STANDARD",
+      riskProfile: REDUCED_CONFIDENCE_TYPES.has(confirmationResult.decisionType) ? "LOW_CONFIDENCE_SMALL_SIZE" : "STANDARD",
       decisionSnapshot: decision,
       decisionContextKey: contextKey,
       hitTargets: [],

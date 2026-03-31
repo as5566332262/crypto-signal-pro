@@ -241,6 +241,21 @@ function deriveConfidence(totalScore) {
   return "low";
 }
 
+function applyTimingPenalties({ weightedTotal, confirmationState = {}, factors = [] }) {
+  let adjusted = weightedTotal;
+  const zoneWaitBars = normalizeNumber(confirmationState?.zoneWaitBars);
+  if (Number.isFinite(zoneWaitBars) && zoneWaitBars >= 4 && !confirmationState?.klineConfirmed) {
+    adjusted -= 6;
+    pushFactor(factors, "區間等待過久仍未完整確認", -6);
+  }
+  const missedMoveSignalCount = normalizeNumber(confirmationState?.missedMoveSignalCount);
+  if (Number.isFinite(missedMoveSignalCount) && missedMoveSignalCount >= 2 && !confirmationState?.priceInZone) {
+    adjusted -= 8;
+    pushFactor(factors, "錯過原始進場位，改採次優策略", -8);
+  }
+  return adjusted;
+}
+
 function gradeToDecisionType(grade, fallbackDecisionType = "NO_TRADE") {
   if (grade === "A") return "IMMEDIATE_ENTRY";
   if (grade === "B") return "STANDARD_ENTRY";
@@ -274,7 +289,13 @@ export function evaluateDecisionScore({
     mtfResult.score * 0.14 +
     rr.score * 0.16;
 
-  const totalScore = clamp(Math.round(weightedTotal), 0, 100);
+  const timingPenaltyFactors = [];
+  const adjustedWeightedTotal = applyTimingPenalties({
+    weightedTotal,
+    confirmationState,
+    factors: timingPenaltyFactors,
+  });
+  const totalScore = clamp(Math.round(adjustedWeightedTotal), 0, 100);
   const scoreGrade = deriveGrade(totalScore);
   const confidenceLevel = deriveConfidence(totalScore);
 
@@ -285,6 +306,7 @@ export function evaluateDecisionScore({
     ...volume.factors,
     ...mtfResult.factors,
     ...rr.factors,
+    ...timingPenaltyFactors,
   ].sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
 
   const positiveFactors = allFactors.filter((item) => item.impact > 0).slice(0, 3);
