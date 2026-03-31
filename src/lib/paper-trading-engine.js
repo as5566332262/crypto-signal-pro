@@ -609,7 +609,65 @@ export function createInitialPaperAccountState() {
     symbolIsolationState: {},
     performanceMap: {},
     coarsePerformanceMap: {},
+    reentryGuards: [],
+    orderLifecycleEvents: [],
   };
+}
+
+function appendOrderLifecycleEvent(state, event) {
+  const nextEvents = [event, ...(state?.orderLifecycleEvents || [])].slice(0, 300);
+  return {
+    ...state,
+    orderLifecycleEvents: nextEvents,
+  };
+}
+
+function buildDecisionRevision(decision, timeframe) {
+  return [
+    timeframe || "-",
+    decision?.updatedAt || decision?.timestamp || decision?.signalTime || "-",
+    decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice ?? "-",
+    decision?.executionPlan?.action ?? decision?.action ?? "-",
+  ].join("|");
+}
+
+function registerReentryGuard(state, order, reason, timestamp, decision, candleTime) {
+  if (reason !== "PRICE_DRIFTED") return state;
+  const guard = {
+    symbol: order.symbol,
+    timeframe: order.timeframe,
+    side: order.side,
+    triggerPrice: normalizeNumber(order.triggerPrice),
+    decisionContextKey: order.decisionContextKey || null,
+    decisionRevision: buildDecisionRevision(decision || order?.decisionSnapshot, order.timeframe),
+    cancelledAt: timestamp,
+    cancelledCandleTime: Number.isFinite(Number(candleTime)) ? Number(candleTime) : null,
+  };
+  const deduped = (state?.reentryGuards || []).filter((item) => !(
+    item.symbol === guard.symbol &&
+    item.timeframe === guard.timeframe &&
+    item.side === guard.side
+  ));
+  return {
+    ...state,
+    reentryGuards: [guard, ...deduped].slice(0, 100),
+  };
+}
+
+function isReentryBlockedByGuard(state, {
+  symbol, timeframe, side, triggerPrice, decisionContextKey, decisionRevision, atr, candleTime,
+}) {
+  const currentCandleTime = Number(candleTime);
+  return (state?.reentryGuards || []).some((guard) => {
+    if (guard.symbol !== symbol || guard.timeframe !== timeframe || guard.side !== side) return false;
+    if (Number.isFinite(currentCandleTime) && Number.isFinite(guard.cancelledCandleTime) && currentCandleTime > guard.cancelledCandleTime) {
+      return false;
+    }
+    if (guard.decisionRevision && decisionRevision && guard.decisionRevision !== decisionRevision) return false;
+    if (guard.decisionContextKey && decisionContextKey && guard.decisionContextKey !== decisionContextKey) return false;
+    const priceTolerance = Math.max(Math.abs(asSafeNumber(triggerPrice)) * 0.001, asSafeNumber(atr) * 0.25, 1e-8);
+    return Math.abs(asSafeNumber(triggerPrice) - asSafeNumber(guard.triggerPrice)) <= priceTolerance;
+  });
 }
 
 function hasMaterialNumberChange(previousValue, nextValue, toleranceRatio = LEVEL_CHANGE_TOLERANCE_RATIO) {
@@ -621,12 +679,13 @@ function hasMaterialNumberChange(previousValue, nextValue, toleranceRatio = LEVE
   return Math.abs(prev - next) / baseline > toleranceRatio;
 }
 
-function cancelPendingOrder(order, reason, timestamp = nowIso()) {
+function cancelPendingOrder(order, reason, timestamp = nowIso(), metadata = {}) {
   return {
     ...order,
     status: "CANCELLED",
     cancelReason: reason,
     cancelledAt: timestamp,
+    ...metadata,
   };
 }
 
@@ -842,7 +901,9 @@ function isOrderPriceDrifted(order, tickPrice) {
   return Math.abs(tickPrice - triggerPrice) > atr * DEFAULT_PENDING_DRIFT_ATR_RATIO;
 }
 
-function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20, candleTime, symbol, timestamp = nowIso() }) {
+function maybeFillPendingOrders(state, {
+  tickPrice, candleClose, rsi, macd, ma20, candleTime, symbol, timestamp = nowIso(), triggeredBy = "MARKET_TICK",
+}) {
   let nextState = {
     ...state,
     pendingOrders: [...state.pendingOrders],
@@ -859,15 +920,19 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
     if (order.status !== "PENDING") return order;
     if (symbol && order.symbol !== symbol) return order;
     if (isOrderExpired(order, timestamp)) {
-      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "EXPIRED", timestamp));
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "EXPIRED", timestamp, { triggeredBy }));
+      nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "EXPIRED", triggeredBy, timestamp });
       return { ...order, status: "CANCELLED" };
     }
     if (isOrderPriceDrifted(order, tickPrice)) {
-      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "PRICE_DRIFTED", timestamp));
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "PRICE_DRIFTED", timestamp, { triggeredBy }));
+      nextState = registerReentryGuard(nextState, order, "PRICE_DRIFTED", timestamp, order?.decisionSnapshot, candleTime);
+      nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PRICE_DRIFTED", triggeredBy, timestamp });
       return { ...order, status: "CANCELLED" };
     }
     if (isPreEntryInvalidated(order, tickPrice)) {
-      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp));
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp, { triggeredBy }));
+      nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "SETUP_INVALIDATED", triggeredBy, timestamp });
       return { ...order, status: "CANCELLED" };
     }
     const fillEvaluation = evaluatePendingOrderFill(order, tickPrice);
@@ -951,6 +1016,7 @@ function maybeFillPendingOrders(state, { tickPrice, candleClose, rsi, macd, ma20
       }),
     };
     nextState.openPositions.push(position);
+    nextState = appendOrderLifecycleEvent(nextState, { symbol: order.symbol, orderId: order.id, eventType: "FILLED", reason: fillEvaluation.reason, triggeredBy, timestamp });
     console.info("[paper-trading] pending order executed", {
       orderId: order.id,
       symbol: order.symbol,
@@ -1022,6 +1088,7 @@ export function simulateDecisionExecution({
   signalContext = {},
   executionSource = "",
   orderMode = "",
+  triggeredBy = "DECISION_ENGINE",
 }) {
   const basePerformanceDebug = buildPerformanceDebugState();
   if (!state) {
@@ -1206,6 +1273,7 @@ export function simulateDecisionExecution({
     normalizeNumber(decision.executionPlan?.stopLoss ?? decision.stopLoss) ??
     fallbackInvalidation;
   const contextKey = buildDecisionContextKey(decision, symbol, timeframe);
+  const decisionRevision = buildDecisionRevision(decision, timeframe);
   const normalizedLevels = normalizeDirectionalLevels({
     side,
     referencePrice: triggerPrice,
@@ -1325,6 +1393,29 @@ export function simulateDecisionExecution({
   }
 
   if (effectiveEligibility.eligibility === "READY_TO_EXECUTE" || (executionIntent === "EXECUTE_NOW" && confirmationResult.canExecute)) {
+    if (isReentryBlockedByGuard(state, {
+      symbol,
+      timeframe,
+      side,
+      triggerPrice,
+      decisionContextKey: contextKey,
+      decisionRevision,
+      atr: atrValue,
+      candleTime: signalContext?.candleTime,
+    })) {
+      return {
+        state,
+        result: "REENTRY_GUARD_BLOCKED",
+        executionIntent: "WATCH_AND_ARM",
+        confirmationResult,
+        ...performanceDebugPayload,
+        eligibilityInfo: {
+          ...effectiveEligibility,
+          reasonCode: "REENTRY_GUARD_BLOCKED",
+          reason: "PRICE_DRIFTED 後尚未有新 candle/decision revision，暫停重建相近訂單",
+        },
+      };
+    }
     const timestamp = nowIso();
     const entryPrice = asSafeNumber(triggerPrice, currentPrice);
     const quantityValue = asSafeNumber(
@@ -1362,11 +1453,20 @@ export function simulateDecisionExecution({
       ...tradeMetadata,
     };
 
+    let nextState = recalculateAccountState({
+      ...state,
+      openPositions: [position, ...state.openPositions],
+    });
+    nextState = appendOrderLifecycleEvent(nextState, {
+      symbol,
+      orderId: position.id,
+      eventType: "FILLED",
+      reason: "EXECUTE_NOW",
+      triggeredBy,
+      timestamp,
+    });
     return {
-      state: recalculateAccountState({
-        ...state,
-        openPositions: [position, ...state.openPositions],
-      }),
+      state: nextState,
       result: "EXECUTED_IMMEDIATELY",
       executionIntent: "EXECUTE_NOW",
       confirmationResult,
@@ -1376,10 +1476,42 @@ export function simulateDecisionExecution({
     };
   }
 
+  if (isReentryBlockedByGuard(state, {
+    symbol,
+    timeframe,
+    side,
+    triggerPrice,
+    decisionContextKey: contextKey,
+    decisionRevision,
+    atr: atrValue,
+    candleTime: signalContext?.candleTime,
+  })) {
+    return {
+      state,
+      result: "REENTRY_GUARD_BLOCKED",
+      executionIntent: "WATCH_AND_ARM",
+      confirmationResult,
+      ...performanceDebugPayload,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        reasonCode: "REENTRY_GUARD_BLOCKED",
+        reason: "PRICE_DRIFTED 後尚未有新 candle/decision revision，暫停重建相近訂單",
+      },
+    };
+  }
+
   const pendingCreation = createPendingOrder({ baseState: state, order: pendingOrder });
+  const stateWithLifecycle = appendOrderLifecycleEvent(pendingCreation.nextState, {
+    symbol,
+    orderId: pendingOrder.id,
+    eventType: "PLACED",
+    reason: "PLACE_PENDING",
+    triggeredBy,
+    timestamp: pendingOrder.createdAt,
+  });
 
   return {
-    state: pendingCreation.nextState,
+    state: stateWithLifecycle,
     result: "PENDING_CREATED",
     executionIntent: "PLACE_PENDING",
     confirmationResult,
@@ -1397,6 +1529,8 @@ export function reconcilePendingOrdersWithDecision({
   timeframe,
   currentPrice,
   timestamp = nowIso(),
+  candleTime,
+  triggeredBy = "DECISION_ENGINE",
 }) {
   if (!state || !decision || !symbol || !timeframe) return state;
 
@@ -1432,7 +1566,18 @@ export function reconcilePendingOrdersWithDecision({
     }
 
     if (cancelReason) {
-      cancelledOrders.unshift(cancelPendingOrder(order, cancelReason, timestamp));
+      cancelledOrders.unshift(cancelPendingOrder(order, cancelReason, timestamp, { triggeredBy }));
+      if (cancelReason === "PRICE_DRIFTED") {
+        state = registerReentryGuard(state, order, cancelReason, timestamp, decision, candleTime);
+      }
+      state = appendOrderLifecycleEvent(state, {
+        symbol: order.symbol,
+        orderId: order.id,
+        eventType: "CANCELED",
+        reason: cancelReason,
+        triggeredBy,
+        timestamp,
+      });
       continue;
     }
 
@@ -1448,7 +1593,7 @@ export function reconcilePendingOrdersWithDecision({
 
 export function applyMarketTickToPaperState(
   state,
-  { price, candleClose, rsi, macd, ma20, candleTime, symbol, timestamp = nowIso() }
+  { price, candleClose, rsi, macd, ma20, candleTime, symbol, timestamp = nowIso(), triggeredBy = "MARKET_TICK" }
 ) {
   const tickPrice = asSafeNumber(price);
   if (!Number.isFinite(tickPrice)) return state;
@@ -1489,6 +1634,7 @@ export function applyMarketTickToPaperState(
     candleTime,
     symbol,
     timestamp,
+    triggeredBy,
   });
   const updatedPositions = nextState.openPositions.map((position) => {
     if (symbol && position.symbol !== symbol) return position;
@@ -1551,11 +1697,19 @@ export function cancelPendingOrderManually(state, { orderId, reason = "MANUAL_CA
   const targetOrder = (state.pendingOrders || []).find((order) => order.id === orderId && order.status === "PENDING");
   if (!targetOrder) return state;
 
-  return recalculateAccountState({
+  const nextState = recalculateAccountState({
     ...state,
     pendingOrders: (state.pendingOrders || []).filter((order) => order.id !== orderId),
-    cancelledOrders: [cancelPendingOrder(targetOrder, reason, cancelledAt), ...(state.cancelledOrders || [])]
+    cancelledOrders: [cancelPendingOrder(targetOrder, reason, cancelledAt, { triggeredBy: "MANUAL_ACTION" }), ...(state.cancelledOrders || [])]
       .slice(0, MAX_CANCELLED_ORDERS_HISTORY),
+  });
+  return appendOrderLifecycleEvent(nextState, {
+    symbol: targetOrder.symbol,
+    orderId: targetOrder.id,
+    eventType: "CANCELED",
+    reason,
+    triggeredBy: "MANUAL_ACTION",
+    timestamp: cancelledAt,
   });
 }
 
