@@ -2,8 +2,11 @@ import { evaluateDecisionScore } from "@/lib/decision/scoring-engine";
 
 const FALLBACK_WAIT_BARS = 4;
 const MISSED_MOVE_ATR_RATIO = 1.2;
-const FORCE_PROBE_NO_TRADE_BARS = 12;
+const FORCE_PROBE_NO_TRADE_BARS = 36;
 const RANGE_EDGE_TOLERANCE_PCT = 0.003;
+const TREND_SCORE_RELAXED_THRESHOLD = 0.72;
+const TREND_RR_BASE_THRESHOLD = 1.2;
+const TREND_RR_RELAXED_THRESHOLD = 1.05;
 
 function normalizeNumber(value) {
   const parsed = Number(value);
@@ -205,7 +208,7 @@ function resolveRangeProbeContext({ currentPrice, side, structure = {}, aiDecisi
   return { nearSupport, nearResistance, probeSide };
 }
 
-function resolveKlineConfirmed(aiDecisionOutput = {}, indicators = {}) {
+function resolveKlineConfirmed(aiDecisionOutput = {}, indicators = {}, options = {}) {
   if (typeof indicators?.klineConfirmed === "boolean") return indicators.klineConfirmed;
   const side = normalizeSide(aiDecisionOutput);
   const rsi = normalizeNumber(indicators?.rsi);
@@ -240,10 +243,13 @@ function resolveKlineConfirmed(aiDecisionOutput = {}, indicators = {}) {
     open <= prevClose &&
     close >= prevOpen;
 
+  const trendRelaxed = Boolean(options?.isTrendKlineRelaxed);
   if (side === "SHORT") {
+    if (trendRelaxed) return Number.isFinite(rsi) && rsi > 60 && bearishClose;
     return Number.isFinite(rsi) && rsi > 60 && (hasUpperWick || bearishEngulfing || bearishClose);
   }
   if (side === "LONG") {
+    if (trendRelaxed) return Number.isFinite(rsi) && rsi < 40 && bullishClose;
     return Number.isFinite(rsi) && rsi < 40 && (hasLowerWick || bullishEngulfing || bullishClose);
   }
   return false;
@@ -266,7 +272,7 @@ function resolveBreakoutConfirmed(aiDecisionOutput = {}, currentPrice, indicator
   return side === "SHORT" ? price <= trigger : price >= trigger;
 }
 
-function resolveRiskRewardAcceptable(aiDecisionOutput = {}) {
+function resolveRiskRewardAcceptable(aiDecisionOutput = {}, options = {}) {
   const rr = normalizeNumber(
     aiDecisionOutput?.riskReward ??
       aiDecisionOutput?.riskRewardRatio ??
@@ -274,7 +280,11 @@ function resolveRiskRewardAcceptable(aiDecisionOutput = {}) {
       aiDecisionOutput?.rr
   );
   if (!Number.isFinite(rr)) return true;
-  return rr >= 1.4;
+  const normalizedMarketRegime = String(options?.marketRegime ?? "").trim().toUpperCase();
+  const isTrend = normalizedMarketRegime === "TREND" || normalizedMarketRegime === "TRENDING";
+  if (!isTrend) return rr >= 1.4;
+  if (options?.isTrendRrRelaxed || options?.forcedTradeRelaxation) return rr >= TREND_RR_RELAXED_THRESHOLD;
+  return rr >= TREND_RR_BASE_THRESHOLD;
 }
 
 function resolveZoneWaitBars(indicators = {}, aiDecisionOutput = {}) {
@@ -354,10 +364,20 @@ export function runConfirmationEngine({
   mtf = {},
 } = {}) {
   const side = normalizeSide(aiDecisionOutput);
+  const normalizedMarketRegime = String(indicators?.marketRegime ?? "").trim().toUpperCase();
+  const isExplicitRangeRegime = normalizedMarketRegime === "RANGE" || normalizedMarketRegime === "RANGING";
+  const isExplicitTrendRegime = normalizedMarketRegime === "TREND" || normalizedMarketRegime === "TRENDING";
+  const trendScore = normalizeNumber(indicators?.trendScore ?? mtf?.score ?? mtf?.confluenceScore);
+  const trendScoreHigh = Number.isFinite(trendScore) && trendScore >= TREND_SCORE_RELAXED_THRESHOLD;
+  const noTradeBars = Math.max(0, Math.floor(normalizeNumber(indicators?.noTradeBars) || 0));
+  const forcedTradeRelaxation = isExplicitTrendRegime && noTradeBars >= FORCE_PROBE_NO_TRADE_BARS;
+  const isTrendRelaxed = isExplicitTrendRegime && (trendScoreHigh || forcedTradeRelaxation);
+  const isTrendRrRelaxed = isExplicitTrendRegime && (trendScoreHigh || forcedTradeRelaxation);
+  const isTrendKlineRelaxed = isExplicitTrendRegime && (trendScoreHigh || forcedTradeRelaxation);
   const baselineDecisionType = resolveDecisionType(aiDecisionOutput, Boolean(side));
   const confirmationState = {
     priceInZone: resolvePriceInZone(currentPrice, aiDecisionOutput, structure, side),
-    klineConfirmed: resolveKlineConfirmed(aiDecisionOutput, indicators),
+    klineConfirmed: resolveKlineConfirmed(aiDecisionOutput, indicators, { isTrendKlineRelaxed }),
     volumeConfirmed: resolveVolumeConfirmed(indicators),
     mtfAligned: resolveMtfAligned(mtf),
     momentumConfirmed: resolveMomentumConfirmed(indicators, side),
@@ -365,7 +385,11 @@ export function runConfirmationEngine({
   const rsiThresholdReached = resolveRsiThresholdReached(indicators, side);
 
   const breakoutConfirmed = resolveBreakoutConfirmed(aiDecisionOutput, currentPrice, indicators);
-  const riskRewardAcceptable = resolveRiskRewardAcceptable(aiDecisionOutput);
+  const riskRewardAcceptable = resolveRiskRewardAcceptable(aiDecisionOutput, {
+    marketRegime: normalizedMarketRegime,
+    isTrendRrRelaxed,
+    forcedTradeRelaxation,
+  });
   const zoneWaitBars = resolveZoneWaitBars(indicators, aiDecisionOutput);
   const missedMove = resolveMissedMoveSignals({ side, indicators, structure });
   const atr = normalizeNumber(indicators?.atr ?? aiDecisionOutput?.executionPlan?.atr ?? aiDecisionOutput?.atr);
@@ -433,13 +457,17 @@ export function runConfirmationEngine({
     softConditions.missedMoveSignalCount >= 2;
   const rsi = normalizeNumber(indicators?.rsi);
   const rangeMarket = resolveRangeMarket({ confirmationState, indicators, mtf });
-  const normalizedMarketRegime = String(indicators?.marketRegime ?? "").trim().toUpperCase();
-  const isExplicitRangeRegime = normalizedMarketRegime === "RANGE" || normalizedMarketRegime === "RANGING";
-  const isExplicitTrendRegime = normalizedMarketRegime === "TREND" || normalizedMarketRegime === "TRENDING";
   const { rangeLow, rangeHigh } = resolveRangeBounds({ structure, aiDecisionOutput });
   const positionInRange = resolvePositionInRange({ currentPrice, rangeLow, rangeHigh });
-  const longLocationQualified = Number.isFinite(positionInRange) ? positionInRange < 0.4 : true;
-  const shortLocationQualified = Number.isFinite(positionInRange) ? positionInRange > 0.6 : true;
+  const trendLocationBoundary = isTrendRelaxed ? 0.5 : null;
+  const longLocationThreshold = isExplicitTrendRegime
+    ? (trendLocationBoundary ?? 0.4)
+    : 0.4;
+  const shortLocationThreshold = isExplicitTrendRegime
+    ? (trendLocationBoundary ?? 0.6)
+    : 0.6;
+  const longLocationQualified = Number.isFinite(positionInRange) ? positionInRange < longLocationThreshold : true;
+  const shortLocationQualified = Number.isFinite(positionInRange) ? positionInRange > shortLocationThreshold : true;
   const locationFilterQualified = side === "LONG" ? longLocationQualified : side === "SHORT" ? shortLocationQualified : true;
   const isNearSupportZone = isNearSupport(currentPrice, rangeLow, indicators?.rangeEdgeTolerancePct);
   const isNearResistanceZone = isNearResistance(currentPrice, rangeHigh, indicators?.rangeEdgeTolerancePct);
@@ -471,12 +499,19 @@ export function runConfirmationEngine({
     Number.isFinite(rsi) &&
     (rsi <= 40 || rsi >= 60) &&
     softConditions.klineConfirmed;
-  const noTradeBars = Math.max(0, Math.floor(normalizeNumber(indicators?.noTradeBars) || 0));
   const forceProbeByNoTradeBars = noTradeBars >= FORCE_PROBE_NO_TRADE_BARS;
   const forceProbeByFlag = Boolean(indicators?.forceProbeEntry);
   const cooldownActiveForSide = Boolean(indicators?.cooldownActiveForSide);
   const rangeProbeReady = (nearSupport || nearResistance) && softConditions.klineConfirmed;
   const probeTriggered = dGradeRsiProbeReady || rangeProbeReady || forceProbeByNoTradeBars || forceProbeByFlag;
+  const forcedTrendEntryReady =
+    forcedTradeRelaxation &&
+    isExplicitTrendRegime &&
+    hardConditions.hasActionableSide &&
+    hardConditions.mtfAligned &&
+    hardConditions.priceInZone &&
+    hardConditions.riskRewardAcceptable &&
+    (softConditions.klineConfirmed || softConditions.volumeConfirmed || softConditions.breakoutConfirmed);
   const probeSide = rangeProbeSide || (Number.isFinite(rsi) ? (rsi <= 40 ? "LONG" : rsi >= 60 ? "SHORT" : side) : side);
 
   console.debug("[confirmation-engine] PROBE_ENTRY_D check", {
@@ -508,6 +543,8 @@ export function runConfirmationEngine({
     decisionType = "FALLBACK_ENTRY";
   } else if (missedMoveEntryReady) {
     decisionType = "MISSED_MOVE_ENTRY";
+  } else if (forcedTrendEntryReady) {
+    decisionType = "FALLBACK_ENTRY";
   } else if (probeTriggered) {
     decisionType = "PROBE_ENTRY_D";
   }
@@ -529,8 +566,8 @@ export function runConfirmationEngine({
     canExecute = primaryEntryReady;
   } else if (decisionType === "FALLBACK_ENTRY") {
     canExecute =
-      fallbackEntryReady &&
-      scoring.totalScore >= 52;
+      (fallbackEntryReady && scoring.totalScore >= 52) ||
+      (forcedTrendEntryReady && scoring.totalScore >= 50);
   } else if (decisionType === "MISSED_MOVE_ENTRY") {
     canExecute =
       missedMoveEntryReady &&
@@ -608,6 +645,17 @@ export function runConfirmationEngine({
       forceProbeByNoTradeBars,
       forceProbeByFlag,
       cooldownActiveForSide,
+      isTrendRelaxed,
+      forcedTradeRelaxation,
+      relaxationLevel: {
+        rr: Boolean(isTrendRrRelaxed),
+        kline: Boolean(isTrendKlineRelaxed),
+        location: Boolean(isTrendRelaxed),
+      },
+      trendScore,
+      trendScoreHigh,
+      longLocationThreshold,
+      shortLocationThreshold,
     },
     canExecute,
     hasKlineConfirmation: confirmationState.klineConfirmed,

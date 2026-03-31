@@ -188,7 +188,8 @@ const CONFIDENCE_LEVEL_LABELS = {
   medium: "中",
   high: "高",
 };
-const SIMULATION_FORCE_PROBE_NO_TRADE_BARS = 12;
+const SIMULATION_FORCE_PROBE_NO_TRADE_BARS = 36;
+const TREND_KLINE_RELAXED_SCORE_THRESHOLD = 0.72;
 const SIMULATION_DIRECTIONAL_LOSS_STREAK_THRESHOLD = 2;
 
 const TRAP_SIGNAL_LABELS = {
@@ -291,7 +292,7 @@ function getDirectionalCooldownStateFromAccount(account = {}, symbol) {
   };
 }
 
-function resolveKlineConfirmation({ side, rsi, currentCandle, previousCandle }) {
+function resolveKlineConfirmation({ side, rsi, currentCandle, previousCandle, marketRegime, trendScore, forcedTradeRelaxation }) {
   if (!side || !currentCandle) return false;
   const open = Number(currentCandle?.open);
   const high = Number(currentCandle?.high);
@@ -325,12 +326,18 @@ function resolveKlineConfirmation({ side, rsi, currentCandle, previousCandle }) 
     close > open &&
     open <= prevClose &&
     close >= prevOpen;
+  const normalizedRegime = String(marketRegime || "").trim().toUpperCase();
+  const trendScoreValue = Number(trendScore);
+  const isTrend = normalizedRegime === "TREND" || normalizedRegime === "TRENDING";
+  const isTrendRelaxed = isTrend && (forcedTradeRelaxation || (Number.isFinite(trendScoreValue) && trendScoreValue >= TREND_KLINE_RELAXED_SCORE_THRESHOLD));
   if (side === "SHORT") {
     const rsiReady = Number.isFinite(rsi) ? rsi > 60 : false;
+    if (isTrendRelaxed) return rsiReady && bearishClose && candleRange > 0;
     return rsiReady && (hasUpperWick || bearishEngulfing || bearishClose) && candleRange > 0;
   }
   if (side === "LONG") {
     const rsiReady = Number.isFinite(rsi) ? rsi < 40 : false;
+    if (isTrendRelaxed) return rsiReady && bullishClose && candleRange > 0;
     return rsiReady && (hasLowerWick || bullishEngulfing || bullishClose) && candleRange > 0;
   }
   return false;
@@ -2997,6 +3004,9 @@ export default function CryptoSignalWebApp() {
         return candles.filter((candle) => Number(candle?.openTime) > latestTradeTimestamp).length;
       })();
       const forceProbeEntry = noTradeBars >= SIMULATION_FORCE_PROBE_NO_TRADE_BARS;
+      const trendScore = Number(analysis?.multiTimeframe?.score);
+      const normalizedRegime = String(analysis?.marketRegime || "").trim().toUpperCase();
+      const forcedTradeRelaxation = forceProbeEntry && (normalizedRegime === "TREND" || normalizedRegime === "TRENDING");
       console.debug("[simulation:submit-payload]", {
         ...manualExecutionMeta,
         symbol: paperMarketSymbol,
@@ -3005,6 +3015,8 @@ export default function CryptoSignalWebApp() {
         quantity: selectedQuantity,
         noTradeBars,
         forceProbeEntry,
+        forcedTradeRelaxation,
+        trendScore: Number.isFinite(trendScore) ? trendScore : null,
         setupType: analysis.aiDecisionOutput?.setupType || analysis.aiDecisionOutput?.executionPlan?.setupType || null,
       });
       const decisionSide = resolveDecisionSide(analysis.aiDecisionOutput);
@@ -3014,6 +3026,9 @@ export default function CryptoSignalWebApp() {
         rsi: Number(analysis?.rsi),
         currentCandle,
         previousCandle,
+        marketRegime: analysis?.marketRegime,
+        trendScore,
+        forcedTradeRelaxation,
       });
       const cooldownState = getDirectionalCooldownStateFromAccount(prev, paperMarketSymbol);
       const cooldownActiveForSide =
@@ -3103,11 +3118,13 @@ export default function CryptoSignalWebApp() {
           },
           marketRegime: analysis?.marketRegime,
           breakoutState: analysis?.breakoutState,
+          trendScore,
           hasKlineConfirmation,
           klineConfirmed: hasKlineConfirmation,
           candleTime: currentCandle?.openTime,
           noTradeBars,
           forceProbeEntry,
+          forcedTradeRelaxation,
           cooldownActiveForSide,
         },
       });
@@ -3319,6 +3336,9 @@ const simulationAgentState = {
       nextFeedback = {
         ...nextFeedback,
         hasKlineConfirmation,
+        isTrendRelaxed: Boolean(result.confirmationResult?.confirmationState?.isTrendRelaxed),
+        forcedTradeRelaxation: Boolean(result.confirmationResult?.confirmationState?.forcedTradeRelaxation),
+        relaxationLevel: result.confirmationResult?.confirmationState?.relaxationLevel || null,
         currentSetupKey: result.currentSetupKey,
         currentFullSetupKey: result.currentFullSetupKey,
         currentCoarseSetupKey: result.currentCoarseSetupKey,
