@@ -543,18 +543,110 @@ function resolveEntryMode(decision) {
   return "breakout";
 }
 
+function resolveEntrySourceFunction(decision, side, mode) {
+  if (mode === "pullback") {
+    const entryMid = normalizeNumber(decision?.executionPlan?.entryMid ?? decision?.entryMid);
+    if (Number.isFinite(entryMid)) return "executionPlan.entryMid";
+    const entryLow = normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow);
+    const entryHigh = normalizeNumber(decision?.executionPlan?.entryHigh ?? decision?.entryHigh);
+    if (side === "LONG" && Number.isFinite(entryLow)) return "executionPlan.entryLow";
+    if (side === "SHORT" && Number.isFinite(entryHigh)) return "executionPlan.entryHigh";
+  }
+  const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
+  if (Number.isFinite(triggerPrice)) return "executionPlan.triggerPrice";
+  return "unknown";
+}
+
 function resolvePlannedEntryPrice(decision, side) {
   const mode = resolveEntryMode(decision);
+  const sourceFunction = resolveEntrySourceFunction(decision, side, mode);
   const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
   if (mode === "pullback") {
     const entryMid = normalizeNumber(decision?.executionPlan?.entryMid ?? decision?.entryMid);
     const entryLow = normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow);
     const entryHigh = normalizeNumber(decision?.executionPlan?.entryHigh ?? decision?.entryHigh);
-    if (Number.isFinite(entryMid)) return { entryPrice: entryMid, mode };
-    if (side === "LONG" && Number.isFinite(entryLow)) return { entryPrice: entryLow, mode };
-    if (side === "SHORT" && Number.isFinite(entryHigh)) return { entryPrice: entryHigh, mode };
+    if (Number.isFinite(entryMid)) return { entryPrice: entryMid, mode, sourceFunction };
+    if (side === "LONG" && Number.isFinite(entryLow)) return { entryPrice: entryLow, mode, sourceFunction };
+    if (side === "SHORT" && Number.isFinite(entryHigh)) return { entryPrice: entryHigh, mode, sourceFunction };
   }
-  return { entryPrice: triggerPrice, mode };
+  return { entryPrice: triggerPrice, mode, sourceFunction };
+}
+
+function resolveRangeBoundarySnapshot(decision, signalContext = {}) {
+  const structure = signalContext?.structure ?? decision?.structure ?? decision?.executionPlan?.structure ?? {};
+  const support = normalizeNumber(
+    structure?.supportHigh ??
+    structure?.supportLow ??
+    decision?.executionPlan?.entryLow ??
+    decision?.entryLow
+  );
+  const resistance = normalizeNumber(
+    structure?.resistanceLow ??
+    structure?.resistanceHigh ??
+    decision?.executionPlan?.entryHigh ??
+    decision?.entryHigh
+  );
+  const zoneLowRaw = normalizeNumber(
+    structure?.zoneLow ??
+    structure?.supportLow ??
+    decision?.executionPlan?.entryLow ??
+    decision?.entryLow
+  );
+  const zoneHighRaw = normalizeNumber(
+    structure?.zoneHigh ??
+    structure?.resistanceHigh ??
+    decision?.executionPlan?.entryHigh ??
+    decision?.entryHigh
+  );
+  const zoneLow = Number.isFinite(zoneLowRaw) && Number.isFinite(zoneHighRaw) ? Math.min(zoneLowRaw, zoneHighRaw) : zoneLowRaw;
+  const zoneHigh = Number.isFinite(zoneLowRaw) && Number.isFinite(zoneHighRaw) ? Math.max(zoneLowRaw, zoneHighRaw) : zoneHighRaw;
+  return { support, resistance, zoneLow, zoneHigh };
+}
+
+function isRangeLikeStrategy(decision, signalContext = {}) {
+  const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
+  const marketRegime = String(decision?.marketRegimeLabel ?? decision?.regime ?? signalContext?.marketRegime ?? "").toLowerCase();
+  return setupType === "range" || marketRegime === "range" || marketRegime === "ranging";
+}
+
+function shouldBlockInvalidRangeLongEntry({
+  side,
+  decision,
+  signalContext,
+  currentPrice,
+  entryPrice,
+  support,
+  resistance,
+  zoneLow,
+  zoneHigh,
+}) {
+  if (side !== "LONG") return null;
+  const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
+  const isBreakoutStrategy = setupType === "breakout";
+  const isRangeStrategy = isRangeLikeStrategy(decision, signalContext);
+  if (!Number.isFinite(currentPrice) || !Number.isFinite(entryPrice)) return "INVALID_PRICE_INPUT";
+  if (!isBreakoutStrategy && entryPrice > currentPrice) return "NON_BREAKOUT_LONG_ENTRY_ABOVE_CURRENT_PRICE";
+
+  const upperBoundaryCandidates = [resistance, zoneHigh].filter((value) => Number.isFinite(value));
+  if (!upperBoundaryCandidates.length) return null;
+  const upperBoundary = Math.min(...upperBoundaryCandidates);
+  if (!isBreakoutStrategy && entryPrice >= upperBoundary) {
+    return "NON_BREAKOUT_LONG_ENTRY_AT_OR_ABOVE_UPPER_ZONE";
+  }
+  if (!isRangeStrategy) return null;
+  if (entryPrice > currentPrice) return "LONG_ENTRY_ABOVE_CURRENT_PRICE";
+
+  const rangeLowCandidates = [support, zoneLow].filter((value) => Number.isFinite(value));
+  if (entryPrice >= upperBoundary) return "LONG_ENTRY_AT_OR_ABOVE_RESISTANCE";
+  if (rangeLowCandidates.length) {
+    const rangeLow = Math.min(...rangeLowCandidates);
+    const rangeWidth = upperBoundary - rangeLow;
+    if (rangeWidth > 0) {
+      const distanceToUpper = upperBoundary - entryPrice;
+      if (distanceToUpper <= rangeWidth * 0.2) return "LONG_ENTRY_NEAR_UPPER_ZONE";
+    }
+  }
+  return null;
 }
 
 function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr, marketRegime }) {
@@ -2116,6 +2208,7 @@ export function simulateDecisionExecution({
     };
   }
   const plannedEntry = resolvePlannedEntryPrice(decision, side);
+  const rangeBoundary = resolveRangeBoundarySnapshot(decision, signalContext);
   const reentryAttempt = resolveReentryAttempt(state, {
     decision,
     symbol,
@@ -2128,9 +2221,63 @@ export function simulateDecisionExecution({
     reentryAttempt?.adjustedEntryPrice ??
     plannedEntry.entryPrice ??
     normalizeNumber(decision?.price);
+  const tentativeEntryPrice = normalizeNumber(
+    bypassSetupGate ? fallbackEntryPrice : (reentryAttempt?.adjustedEntryPrice ?? plannedEntry.entryPrice)
+  );
+  console.info("[ENTRY_COMPUTED]", {
+    symbol,
+    strategyType: decision?.setupType ?? decision?.executionPlan?.setupType ?? decision?.marketRegimeLabel ?? decision?.regime ?? "unknown",
+    currentPrice: normalizeNumber(currentPrice),
+    entryPrice: tentativeEntryPrice,
+    support: rangeBoundary.support,
+    resistance: rangeBoundary.resistance,
+    zoneLow: rangeBoundary.zoneLow,
+    zoneHigh: rangeBoundary.zoneHigh,
+    sourceFunction: plannedEntry.sourceFunction || "unknown",
+  });
+
+  const invalidRangeLongReason = shouldBlockInvalidRangeLongEntry({
+    side,
+    decision,
+    signalContext,
+    currentPrice: normalizeNumber(currentPrice),
+    entryPrice: tentativeEntryPrice,
+    support: rangeBoundary.support,
+    resistance: rangeBoundary.resistance,
+    zoneLow: rangeBoundary.zoneLow,
+    zoneHigh: rangeBoundary.zoneHigh,
+  });
+  if (invalidRangeLongReason) {
+    console.warn("[ENTRY_BLOCKED_INVALID_RANGE_LONG]", {
+      symbol,
+      currentPrice: normalizeNumber(currentPrice),
+      entryPrice: tentativeEntryPrice,
+      reason: invalidRangeLongReason,
+    });
+    state = incrementWaitingReason(state, "pendingTooFarFromPrice", { symbol, timeframe, side });
+    return {
+      state,
+      result: "ENTRY_BLOCKED_INVALID_RANGE_LONG",
+      executionIntent: "WATCH_ONLY",
+      confirmationResult: {
+        ...confirmationResult,
+        canExecute: false,
+        decisionType: "NO_TRADE",
+      },
+      ...performanceDebugPayload,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        eligibility: "WATCH_ONLY",
+        reasonCode: "ENTRY_BLOCKED_INVALID_RANGE_LONG",
+        reason: `range LONG entry blocked: ${invalidRangeLongReason}`,
+        executionIntent: "WATCH_ONLY",
+      },
+    };
+  }
+
   const constrainedEntry = applyEntryDistanceConstraint({
     side,
-    entryPrice: bypassSetupGate ? fallbackEntryPrice : (reentryAttempt?.adjustedEntryPrice ?? plannedEntry.entryPrice),
+    entryPrice: tentativeEntryPrice,
     currentPrice: normalizeNumber(currentPrice),
     atr: decision?.executionPlan?.atr ?? decision?.atr,
     marketRegime: decision?.marketRegimeLabel || decision?.regime || signalContext?.marketRegime,
