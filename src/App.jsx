@@ -584,7 +584,7 @@ function resolveTargetEntryZone(decision, levels) {
   return null;
 }
 
-function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diagnostics = [] }) {
+function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diagnostics = [], lockedSetup = null }) {
   const decision = analysis?.aiDecisionOutput;
   const mtfBias = analysis?.mtfBias || {};
   const action = String(decision?.action || decision?.executionPlan?.action || "").toUpperCase();
@@ -595,17 +595,25 @@ function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diag
     : (strategyType === "range" || strategyType === "pullback" || setupType === "pullback")
       ? "PULLBACK"
       : "PULLBACK";
-  const targetZone = resolveTargetEntryZone(decision, analysis?.levels);
+  const targetZone = lockedSetup
+    ? {
+      low: Number(lockedSetup.entryZoneLow),
+      high: Number(lockedSetup.entryZoneHigh),
+    }
+    : resolveTargetEntryZone(decision, analysis?.levels);
   const safePrice = Number(currentPrice);
   const sideText = action === "SHORT" ? "反彈壓力區" : "回踩支撐區";
   const currentMomentum = action === "SHORT" ? mtfBias?.tf15m || "bullish" : mtfBias?.tf15m || "bearish";
   const expectedMomentum = action === "SHORT" ? "bearish" : "bullish";
 
   const keyConditions = [];
-  if (targetZone && Number.isFinite(safePrice)) {
+  if (targetZone && Number.isFinite(targetZone.low) && Number.isFinite(targetZone.high) && Number.isFinite(safePrice)) {
     keyConditions.push(
-      `等待價格${sideText}：${formatNumber(targetZone.low)} – ${formatNumber(targetZone.high)}（現價 ${formatNumber(safePrice)}）`
+      `${lockedSetup ? "等待價格回踩已鎖定支撐區" : `等待價格${sideText}`}：${formatNumber(targetZone.low)} – ${formatNumber(targetZone.high)}（現價 ${formatNumber(safePrice)}）`
     );
+  }
+  if (lockedSetup && Number.isFinite(Number(lockedSetup.stopPrice))) {
+    keyConditions.push(`若跌破 ${formatNumber(lockedSetup.stopPrice)}，此 setup 失效`);
   }
   keyConditions.push(`等待 ${timeframe} 動能轉為 ${expectedMomentum}（目前 ${currentMomentum}）`);
   keyConditions.push(...(Array.isArray(diagnostics) ? diagnostics : []));
@@ -616,7 +624,9 @@ function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diag
   return {
     waitingReason,
     executionMode,
-    targetEntryZone: targetZone ? `${formatNumber(targetZone.low)} – ${formatNumber(targetZone.high)}` : "-",
+    targetEntryZone: targetZone && Number.isFinite(targetZone.low) && Number.isFinite(targetZone.high)
+      ? `${formatNumber(targetZone.low)} – ${formatNumber(targetZone.high)}`
+      : "-",
     currentPrice: Number.isFinite(safePrice) ? safePrice : null,
     unmetConditions,
   };
@@ -3224,6 +3234,12 @@ export default function CryptoSignalWebApp() {
     const totalTrades = currentSymbolClosedTrades.length;
     const winRate = totalTrades ? (wins / totalTrades) * 100 : 0;
     const simulationStats = calculateSimulationStats(paperAccount, paperMarketSymbol);
+    const currentSymbolSetup = Object.values(paperAccount.activeSetups || {}).find(
+      (setup) => setup?.symbol === paperMarketSymbol && setup?.timeframe === timeframe
+    ) || null;
+    const lastReleasedSetup = paperAccount.lastReleasedSetup?.symbol === paperMarketSymbol
+      ? paperAccount.lastReleasedSetup
+      : null;
     const diagnostics = buildDiagnostics({
       ...paperAccount,
       closedTrades: currentSymbolClosedTrades,
@@ -3246,8 +3262,10 @@ export default function CryptoSignalWebApp() {
       winRate,
       simulationStats,
       diagnostics,
+      currentSymbolSetup,
+      lastReleasedSetup,
     };
-  }, [paperAccount, paperMarketSymbol]);
+  }, [paperAccount, paperMarketSymbol, timeframe]);
 
   useEffect(() => {
     const now = Date.now();
@@ -3806,6 +3824,9 @@ const simulationAgentState = {
         timeframe,
         currentPrice: paperCurrentPrice,
         diagnostics: nextFeedback?.unmetConditions,
+        lockedSetup: Object.values(executedState?.activeSetups || {}).find(
+          (setup) => setup?.symbol === paperMarketSymbol && setup?.timeframe === timeframe && setup?.status === "ACTIVE"
+        ) || null,
       });
       const isNonWaitingState =
         result.result === "PENDING_CREATED" && createdPendingOrder

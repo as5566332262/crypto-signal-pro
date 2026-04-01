@@ -13,6 +13,7 @@ const DEFAULT_SHORT_BREAKDOWN_ATR_RATIO = 0.2;
 const DEFAULT_PENDING_DRIFT_ATR_RATIO = 2;
 const DEFAULT_PENDING_TIMEOUT_BARS = 4;
 const DEFAULT_PULLBACK_MAX_WAIT_BARS = 6;
+const DEFAULT_SETUP_TIMEOUT_BARS = 20;
 const DEFAULT_TREND_ENTRY_CLAMP_PCT = 0.002;
 const DEFAULT_RANGE_ENTRY_CLAMP_PCT = 0.0008;
 const PRE_ARM_LONG_UPPER_ZONE_BUFFER_RATIO = 0.2;
@@ -81,6 +82,116 @@ function createDefaultWaitingDiagnostics() {
     signalToPlaceBars: [],
     placeToFillBars: [],
     recentEvents: [],
+  };
+}
+
+function buildActiveSetupKey(symbol, timeframe) {
+  return [symbol || "-", timeframe || "-"].join("|");
+}
+
+function buildLockedSetupFromDecision({
+  decision,
+  signalContext,
+  symbol,
+  timeframe,
+  side,
+  executionMode,
+}) {
+  const setupId = buildDecisionContextKey(decision, symbol, timeframe);
+  const entryLow = normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow);
+  const entryHigh = normalizeNumber(decision?.executionPlan?.entryHigh ?? decision?.entryHigh);
+  const zoneLow = Number.isFinite(entryLow) && Number.isFinite(entryHigh) ? Math.min(entryLow, entryHigh) : undefined;
+  const zoneHigh = Number.isFinite(entryLow) && Number.isFinite(entryHigh) ? Math.max(entryLow, entryHigh) : undefined;
+  const stopPrice = normalizeNumber(decision?.executionPlan?.stopLoss ?? decision?.stopLoss ?? decision?.invalidationPrice);
+  const createdAt = nowIso();
+  return {
+    setupId,
+    symbol,
+    timeframe,
+    side,
+    strategyType: decision?.strategyType ?? decision?.executionPlan?.setupType ?? decision?.setupType ?? null,
+    executionMode,
+    entryZoneLow: zoneLow,
+    entryZoneHigh: zoneHigh,
+    triggerPrice: normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice),
+    support: normalizeNumber(signalContext?.structure?.supportLow ?? decision?.levels?.structureSupportZone?.low),
+    resistance: normalizeNumber(signalContext?.structure?.resistanceHigh ?? decision?.levels?.structureResistanceZone?.high),
+    stopPrice,
+    tp1: normalizeNumber(decision?.executionPlan?.takeProfit1 ?? decision?.takeProfit1),
+    tp2: normalizeNumber(decision?.executionPlan?.takeProfit2 ?? decision?.takeProfit2),
+    setupCreatedAt: createdAt,
+    setupCreatedCandleTime: normalizeBarTime(signalContext?.candleTime),
+    mtfContext: {
+      aligned: signalContext?.mtf?.aligned ?? decision?.multiTimeframe?.aligned ?? null,
+      score: normalizeNumber(signalContext?.mtf?.score ?? decision?.multiTimeframe?.score),
+      disagreement: signalContext?.mtf?.disagreement ?? decision?.multiTimeframe?.disagreement ?? null,
+    },
+    decisionSnapshot: {
+      action: decision?.action ?? decision?.executionPlan?.action ?? null,
+      setupType: decision?.setupType ?? decision?.executionPlan?.setupType ?? null,
+      breakoutState: decision?.breakoutState ?? null,
+      structure: decision?.structure ?? null,
+      rsi: normalizeNumber(decision?.rsi),
+      macdHistogram: normalizeNumber(decision?.macdHistogram ?? decision?.macd?.histogram),
+      mtfAligned: decision?.multiTimeframe?.aligned ?? null,
+    },
+    status: "ACTIVE",
+    invalidationReason: null,
+    releasedAt: null,
+  };
+}
+
+function getLockedSetup(state, symbol, timeframe) {
+  return state?.activeSetups?.[buildActiveSetupKey(symbol, timeframe)] || null;
+}
+
+function lockSetup(state, setup) {
+  const setupKey = buildActiveSetupKey(setup?.symbol, setup?.timeframe);
+  const existing = state?.activeSetups?.[setupKey];
+  if (existing && existing.status === "ACTIVE" && existing.setupId !== setup.setupId) {
+    console.info("[SETUP_RELEASED]", { setupId: existing.setupId, symbol: existing.symbol, timeframe: existing.timeframe, reason: "REPLACED" });
+  }
+  console.info("[SETUP_LOCKED]", {
+    setupId: setup.setupId,
+    symbol: setup.symbol,
+    timeframe: setup.timeframe,
+    executionMode: setup.executionMode,
+    entryZoneLow: setup.entryZoneLow,
+    entryZoneHigh: setup.entryZoneHigh,
+    triggerPrice: setup.triggerPrice,
+  });
+  return {
+    ...state,
+    activeSetups: {
+      ...(state?.activeSetups || {}),
+      [setupKey]: setup,
+    },
+    lastReleasedSetup: state?.lastReleasedSetup || null,
+  };
+}
+
+function releaseSetup(state, setup, reason, metadata = {}) {
+  if (!setup) return state;
+  const setupKey = buildActiveSetupKey(setup.symbol, setup.timeframe);
+  const nextSetup = {
+    ...setup,
+    status: reason === "TIMEOUT_INVALIDATED" ? "EXPIRED" : reason === "TRIGGERED" ? "TRIGGERED" : "INVALIDATED",
+    invalidationReason: reason,
+    releasedAt: metadata.timestamp || nowIso(),
+  };
+  console.info("[SETUP_RELEASED]", {
+    setupId: setup.setupId,
+    symbol: setup.symbol,
+    timeframe: setup.timeframe,
+    reason,
+  });
+  return {
+    ...state,
+    activeSetups: {
+      ...(state?.activeSetups || {}),
+      [setupKey]: nextSetup,
+    },
+    lastReleasedSetup: nextSetup,
   };
 }
 
@@ -1076,6 +1187,8 @@ export function createInitialPaperAccountState() {
     pendingFillChecks: [],
     pendingFillExecutions: [],
     pendingCancelTrace: [],
+    activeSetups: {},
+    lastReleasedSetup: null,
     setupDrafts: [],
     blockedAttempts: [],
     orderFillEventLocks: {},
@@ -1644,6 +1757,45 @@ function isPreEntryInvalidated(order, tickPrice) {
   return tickPrice >= invalidation;
 }
 
+function evaluateSetupInvalidation(setup, { tickPrice, candleTime, decision } = {}) {
+  if (!setup || setup.status !== "ACTIVE") return null;
+  const side = setup.side;
+  if (!side) return null;
+  const current = normalizeNumber(tickPrice);
+  const stop = normalizeNumber(setup.stopPrice);
+  const entryZoneLow = normalizeNumber(setup.entryZoneLow);
+  const entryZoneHigh = normalizeNumber(setup.entryZoneHigh);
+  const support = normalizeNumber(setup.support);
+  const resistance = normalizeNumber(setup.resistance);
+  const waitedBars = Number.isFinite(Number(candleTime))
+    ? calculateBarsDelta(setup.setupCreatedCandleTime, candleTime)
+    : null;
+
+  const structureBroken = side === "LONG"
+    ? ((Number.isFinite(stop) && current < stop) ||
+      (Number.isFinite(entryZoneLow) && current < entryZoneLow) ||
+      (Number.isFinite(support) && current < support))
+    : ((Number.isFinite(stop) && current > stop) ||
+      (Number.isFinite(entryZoneHigh) && current > entryZoneHigh) ||
+      (Number.isFinite(resistance) && current > resistance));
+  if (structureBroken) return { reason: "STRUCTURE_INVALIDATED", waitedBars };
+
+  if (Number.isFinite(waitedBars) && waitedBars >= DEFAULT_SETUP_TIMEOUT_BARS) {
+    return { reason: "TIMEOUT_INVALIDATED", waitedBars };
+  }
+
+  if (decision) {
+    const rsi = normalizeNumber(decision?.rsi);
+    const macdHistogram = normalizeNumber(decision?.macdHistogram ?? decision?.macd?.histogram);
+    const mtfAligned = decision?.multiTimeframe?.aligned;
+    const momentumBroken = side === "LONG"
+      ? ((Number.isFinite(rsi) && rsi < 48) || (Number.isFinite(macdHistogram) && macdHistogram < 0) || mtfAligned === false)
+      : ((Number.isFinite(rsi) && rsi > 52) || (Number.isFinite(macdHistogram) && macdHistogram > 0) || mtfAligned === false);
+    if (momentumBroken) return { reason: "MOMENTUM_INVALIDATED", waitedBars };
+  }
+  return null;
+}
+
 function resolveExpiryTimestamp(decision, createdAtIso) {
   const createdAt = new Date(createdAtIso).getTime();
   const configuredExpiryMinutes = normalizeNumber(
@@ -1759,6 +1911,18 @@ function maybeFillPendingOrders(state, {
       nextPendingOrders.push(observedOrder);
       continue;
     }
+    const linkedSetup = order.setupId ? getLockedSetup(nextState, order.symbol, order.timeframe) : null;
+    if (order.setupId && (!linkedSetup || linkedSetup.status !== "ACTIVE" || linkedSetup.setupId !== order.setupId)) {
+      console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", {
+        orderId: order.id,
+        setupId: order.setupId,
+        symbol: order.symbol,
+        timeframe: order.timeframe,
+      });
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INACTIVE", timestamp, { triggeredBy }));
+      nextPendingOrders.push({ ...order, status: "CANCELLED" });
+      continue;
+    }
 
     const orderTerminal =
       order.status !== "PENDING" ||
@@ -1866,13 +2030,13 @@ function maybeFillPendingOrders(state, {
         nextPendingOrders.push(observedOrder);
         continue;
       }
-      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INVALIDATED", timestamp, { triggeredBy }));
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "STRUCTURE_INVALIDATED", timestamp, { triggeredBy }));
       nextState = appendOrderLifecycleEvent(nextState, {
-        symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "SETUP_INVALIDATED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed,
+        symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "STRUCTURE_INVALIDATED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed,
         currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: orderEntryPrice, checkedFunctionName,
       });
       nextState = appendPendingCancelTrace(nextState, {
-        timestamp, orderId: order.id, orderSymbol: order.symbol, selectedSymbolAtThatMoment, marketSymbolUsed, reason: "SETUP_INVALIDATED", triggeredBy,
+        timestamp, orderId: order.id, orderSymbol: order.symbol, selectedSymbolAtThatMoment, marketSymbolUsed, reason: "STRUCTURE_INVALIDATED", triggeredBy,
         currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: orderEntryPrice, checkedFunctionName,
       });
       nextPendingOrders.push({ ...order, status: "CANCELLED" });
@@ -2203,6 +2367,12 @@ function maybeFillPendingOrders(state, {
       symbol: order.symbol,
       side: order.side,
     });
+    if (order.setupId) {
+      const activeSetup = getLockedSetup(nextState, order.symbol, order.timeframe);
+      if (activeSetup?.setupId === order.setupId && activeSetup.status === "ACTIVE") {
+        nextState = releaseSetup(nextState, activeSetup, "TRIGGERED", { timestamp });
+      }
+    }
     console.info("[paper-trading] pending order executed", {
       orderId: order.id,
       symbol: order.symbol,
@@ -2460,6 +2630,27 @@ export function simulateDecisionExecution({
     };
   }
   const plannedEntry = resolvePlannedEntryPrice(decision, side);
+  const existingLockedSetup = getLockedSetup(state, symbol, timeframe);
+  const setupInvalidation = evaluateSetupInvalidation(existingLockedSetup, {
+    tickPrice: currentPrice,
+    candleTime: signalContext?.candleTime,
+    decision,
+  });
+  if (existingLockedSetup?.status === "ACTIVE" && setupInvalidation) {
+    const setupLogMap = {
+      STRUCTURE_INVALIDATED: "[SETUP_INVALIDATED_STRUCTURE]",
+      MOMENTUM_INVALIDATED: "[SETUP_INVALIDATED_MOMENTUM]",
+      TIMEOUT_INVALIDATED: "[SETUP_INVALIDATED_TIMEOUT]",
+    };
+    console.info(setupLogMap[setupInvalidation.reason] || "[SETUP_INVALIDATED_STRUCTURE]", {
+      setupId: existingLockedSetup.setupId,
+      symbol,
+      timeframe,
+      reason: setupInvalidation.reason,
+    });
+    state = releaseSetup(state, existingLockedSetup, setupInvalidation.reason, { timestamp: nowIso() });
+  }
+  const lockedSetup = getLockedSetup(state, symbol, timeframe);
   const rangeBoundary = resolveRangeBoundarySnapshot(decision, signalContext);
   const reentryAttempt = resolveReentryAttempt(state, {
     decision,
@@ -2474,7 +2665,11 @@ export function simulateDecisionExecution({
     plannedEntry.entryPrice ??
     normalizeNumber(decision?.price);
   const tentativeEntryPrice = normalizeNumber(
-    bypassSetupGate ? fallbackEntryPrice : (reentryAttempt?.adjustedEntryPrice ?? plannedEntry.entryPrice)
+    lockedSetup?.status === "ACTIVE"
+      ? (lockedSetup.executionMode === "BREAKOUT"
+        ? lockedSetup.triggerPrice
+        : (lockedSetup.entryZoneLow + lockedSetup.entryZoneHigh) / 2)
+      : (bypassSetupGate ? fallbackEntryPrice : (reentryAttempt?.adjustedEntryPrice ?? plannedEntry.entryPrice))
   );
   if (!Number.isFinite(tentativeEntryPrice)) {
     return {
@@ -2588,7 +2783,13 @@ export function simulateDecisionExecution({
   if (constrainedEntry.isRejected && String(constrainedEntry.rejectionReason || "").includes("TOO_FAR")) {
     state = incrementWaitingReason(state, "pendingTooFarFromPrice", { symbol, timeframe, side });
   }
-  const triggerPrice = normalizeNumber(constrainedEntry.entryPrice ?? fallbackEntryPrice);
+  const triggerPrice = normalizeNumber(
+    lockedSetup?.status === "ACTIVE"
+      ? (lockedSetup.executionMode === "BREAKOUT"
+        ? lockedSetup.triggerPrice
+        : constrainedEntry.entryPrice)
+      : (constrainedEntry.entryPrice ?? fallbackEntryPrice)
+  );
   if (constrainedEntry.isRejected) {
     if (bypassSetupGate) {
       return {
@@ -2699,14 +2900,34 @@ export function simulateDecisionExecution({
     return { state, result: "DUPLICATE_SETUP", ...performanceDebugPayload };
   }
 
+  let stateWithSetupLock = state;
+  const resolvedExecutionMode = plannedEntry.mode === "breakout" ? "BREAKOUT" : "PULLBACK";
+  if (executionIntent === "WATCH_AND_ARM" || executionIntent === "PLACE_PENDING" || effectiveEligibility?.eligibility === "READY_TO_EXECUTE") {
+    if (!lockedSetup || lockedSetup.status !== "ACTIVE") {
+      const setupToLock = buildLockedSetupFromDecision({
+        decision,
+        signalContext,
+        symbol,
+        timeframe,
+        side,
+        executionMode: resolvedExecutionMode,
+      });
+      stateWithSetupLock = lockSetup(state, setupToLock);
+    }
+  }
+  const finalLockedSetup = getLockedSetup(stateWithSetupLock, symbol, timeframe);
   const pendingOrder = {
     id: createId("order"),
     symbol,
     timeframe,
     side,
     orderType: executionOrderType === "MARKET" ? "MARKET" : "LIMIT",
-    entryPrice: triggerPrice,
-    triggerPrice,
+    entryPrice: finalLockedSetup?.status === "ACTIVE" && finalLockedSetup.executionMode === "PULLBACK"
+      ? normalizeNumber((finalLockedSetup.entryZoneLow + finalLockedSetup.entryZoneHigh) / 2)
+      : triggerPrice,
+    triggerPrice: finalLockedSetup?.status === "ACTIVE" && finalLockedSetup.executionMode === "BREAKOUT"
+      ? finalLockedSetup.triggerPrice
+      : triggerPrice,
     invalidationPrice,
     stopLoss: normalizedLevels.stopLoss,
     takeProfit1: normalizedLevels.takeProfit1,
@@ -2732,7 +2953,7 @@ export function simulateDecisionExecution({
     }),
     entryReason: decision.entryReason || null,
     entryMode: plannedEntry.mode,
-    executionMode: plannedEntry.mode === "breakout" ? "BREAKOUT" : "PULLBACK",
+    executionMode: resolvedExecutionMode,
     entryAdjusted: constrainedEntry.wasAdjusted || Boolean(reentryAttempt?.reentryAdjustedEntry),
     isReentryAttempt: Boolean(reentryAttempt?.isReentryAttempt),
     reentryCount: reentryAttempt?.reentryCount ?? 0,
@@ -2772,6 +2993,7 @@ export function simulateDecisionExecution({
       ? (Math.abs(triggerPrice - Number(currentPrice)) / Math.abs(Number(currentPrice))) * 100
       : null,
     decisionSnapshot: decision,
+    setupId: finalLockedSetup?.setupId || null,
     decisionContextKey: contextKey,
     ...tradeMetadata,
   };
@@ -2814,7 +3036,7 @@ export function simulateDecisionExecution({
 
   if (executionIntent === "WATCH_AND_ARM") {
     return {
-      state,
+      state: stateWithSetupLock,
       result: "WATCH_AND_ARM",
       executionIntent,
       confirmationResult,
@@ -2897,7 +3119,45 @@ export function simulateDecisionExecution({
     };
   }
 
-  const pendingCreation = createPendingOrder({ baseState: state, order: pendingOrder });
+  if (!finalLockedSetup || finalLockedSetup.status !== "ACTIVE") {
+    console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", { symbol, timeframe, side, executionMode: pendingOrder.executionMode });
+    return {
+      state: stateWithSetupLock,
+      result: "SETUP_INACTIVE_ORDER_BLOCKED",
+      executionIntent: "WATCH_AND_ARM",
+      confirmationResult,
+      ...performanceDebugPayload,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        reasonCode: "SETUP_INACTIVE_ORDER_BLOCKED",
+        reason: "setup 已失效，阻止建立 pending order",
+      },
+    };
+  }
+  if (pendingOrder.executionMode !== finalLockedSetup.executionMode) {
+    console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", {
+      symbol,
+      timeframe,
+      side,
+      reason: "EXECUTION_MODE_MISMATCH",
+      orderMode: pendingOrder.executionMode,
+      setupMode: finalLockedSetup.executionMode,
+    });
+    return {
+      state: stateWithSetupLock,
+      result: "SETUP_INACTIVE_ORDER_BLOCKED",
+      executionIntent: "WATCH_AND_ARM",
+      confirmationResult,
+      ...performanceDebugPayload,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        reasonCode: "SETUP_INACTIVE_ORDER_BLOCKED",
+        reason: "executionMode 與 locked setup 不一致",
+      },
+    };
+  }
+
+  const pendingCreation = createPendingOrder({ baseState: stateWithSetupLock, order: pendingOrder });
   if (pendingCreation.created) {
     console.info("[PENDING_CREATED]", {
       orderId: pendingOrder.id,
@@ -3012,6 +3272,26 @@ export function reconcilePendingOrdersWithDecision({
   const side = resolveSideFromDecision(decision);
   const decisionAtr = normalizeNumber(decision?.executionPlan?.atr ?? decision?.atr);
   const markPrice = normalizeNumber(currentPrice);
+  const lockedSetup = getLockedSetup(state, symbol, timeframe);
+  const setupInvalidation = evaluateSetupInvalidation(lockedSetup, {
+    tickPrice: markPrice,
+    candleTime,
+    decision,
+  });
+  if (lockedSetup?.status === "ACTIVE" && setupInvalidation) {
+    const setupLogMap = {
+      STRUCTURE_INVALIDATED: "[SETUP_INVALIDATED_STRUCTURE]",
+      MOMENTUM_INVALIDATED: "[SETUP_INVALIDATED_MOMENTUM]",
+      TIMEOUT_INVALIDATED: "[SETUP_INVALIDATED_TIMEOUT]",
+    };
+    console.info(setupLogMap[setupInvalidation.reason] || "[SETUP_INVALIDATED_STRUCTURE]", {
+      setupId: lockedSetup.setupId,
+      symbol,
+      timeframe,
+      reason: setupInvalidation.reason,
+    });
+    state = releaseSetup(state, lockedSetup, setupInvalidation.reason, { timestamp });
+  }
 
   const nextPending = [];
   const cancelledOrders = [...(state.cancelledOrders || [])];
@@ -3041,7 +3321,7 @@ export function reconcilePendingOrdersWithDecision({
     } else if (Number.isFinite(markPrice) && isOrderPriceDrifted(order, markPrice)) {
       cancelReason = "PRICE_DRIFTED";
     } else if (isPreEntryInvalidated(order, markPrice)) {
-      cancelReason = "SETUP_INVALIDATED";
+      cancelReason = "STRUCTURE_INVALIDATED";
     } else if (
       order?.conditionalPending?.enabled &&
       side === order.side &&
@@ -3050,7 +3330,7 @@ export function reconcilePendingOrdersWithDecision({
       Number.isFinite(order.invalidationPrice) &&
       markPrice <= order.invalidationPrice
     ) {
-      cancelReason = "SETUP_INVALIDATED";
+      cancelReason = "STRUCTURE_INVALIDATED";
     } else if (
       order?.conditionalPending?.enabled &&
       side === order.side &&
@@ -3058,7 +3338,7 @@ export function reconcilePendingOrdersWithDecision({
       (String(decision?.breakoutState ?? "").toLowerCase().includes("breakdown") ||
         String(decision?.structure ?? "").toLowerCase().includes("break"))
     ) {
-      cancelReason = "STRUCTURE_CHANGED";
+      cancelReason = "STRUCTURE_INVALIDATED";
     } else if (
       order?.conditionalPending?.enabled &&
       side === order.side &&
@@ -3067,7 +3347,7 @@ export function reconcilePendingOrdersWithDecision({
       const rsi = normalizeNumber(decision?.rsi);
       const macdHistogram = normalizeNumber(decision?.macdHistogram ?? decision?.macd?.histogram);
       if ((Number.isFinite(rsi) && rsi < 48) || (Number.isFinite(macdHistogram) && macdHistogram < 0)) {
-        cancelReason = "MOMENTUM_WEAKENED";
+        cancelReason = "MOMENTUM_INVALIDATED";
       }
     } else if (side && order.side !== side && Number.isFinite(referenceAtr) && referenceAtr > 0) {
       const movedDistance = Math.abs(asSafeNumber(markPrice) - asSafeNumber(order.triggerPrice));
@@ -3075,7 +3355,13 @@ export function reconcilePendingOrdersWithDecision({
         cancelReason = "STRUCTURE_CHANGED";
       }
     } else if (Number.isFinite(waitedBars) && waitedBars >= asSafeNumber(order.maxWaitBars, DEFAULT_PENDING_TIMEOUT_BARS)) {
-      cancelReason = "PENDING_TIMEOUT_REEVALUATED";
+      cancelReason = "TIMEOUT_INVALIDATED";
+    }
+    if (order.setupId) {
+      const orderSetup = getLockedSetup(state, order.symbol, order.timeframe);
+      if (!orderSetup || orderSetup.status !== "ACTIVE" || orderSetup.setupId !== order.setupId) {
+        cancelReason = orderSetup?.invalidationReason || "SETUP_INACTIVE";
+      }
     }
 
     if (cancelReason) {
@@ -3187,6 +3473,23 @@ export function applyMarketTickToPaperState(
     cooldownLastCandleTime: hasNewCandle ? normalizedCandleTime : symbolState?.cooldownLastCandleTime ?? null,
     symbolIsolationState: nextSymbolIsolationState,
   };
+  const symbolSetups = Object.values(nextState?.activeSetups || {}).filter((item) => item?.symbol === symbol && item?.status === "ACTIVE");
+  for (const setup of symbolSetups) {
+    const invalidation = evaluateSetupInvalidation(setup, { tickPrice, candleTime });
+    if (!invalidation) continue;
+    const setupLogMap = {
+      STRUCTURE_INVALIDATED: "[SETUP_INVALIDATED_STRUCTURE]",
+      MOMENTUM_INVALIDATED: "[SETUP_INVALIDATED_MOMENTUM]",
+      TIMEOUT_INVALIDATED: "[SETUP_INVALIDATED_TIMEOUT]",
+    };
+    console.info(setupLogMap[invalidation.reason] || "[SETUP_INVALIDATED_STRUCTURE]", {
+      setupId: setup.setupId,
+      symbol: setup.symbol,
+      timeframe: setup.timeframe,
+      reason: invalidation.reason,
+    });
+    nextState = releaseSetup(nextState, setup, invalidation.reason, { timestamp });
+  }
 
   if (allowPendingFills) {
     nextState = maybeFillPendingOrders(nextState, {
