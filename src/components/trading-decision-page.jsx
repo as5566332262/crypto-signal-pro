@@ -249,6 +249,14 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
     { label: "止損（Stop）", shortLabel: "Stop", value: formatNumber(executionPlan?.stopLoss, digits) },
     { label: "止盈（TP）", shortLabel: "TP", value: [executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3].filter((v) => v != null).map((v) => formatNumber(v, digits)).join(" / ") || "-" },
   ];
+  const pullbackChecklist = [
+    ...(executionPlan?.retestConfirmationRules || []),
+    ...(executionPlan?.momentumRecoveryRules || []),
+  ];
+  const breakoutChecklist = [
+    ...(executionPlan?.breakoutConfirmationRules || []),
+    ...(executionPlan?.retestConfirmationRules || []),
+  ];
   const listBlock = (title, rows) => (
     <div className="rounded-xl border border-slate-200 bg-white p-3">
       <div className="text-xs font-semibold tracking-[0.12em] text-slate-500">{title}</div>
@@ -280,10 +288,12 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
             <summary className="cursor-pointer text-xs font-semibold tracking-[0.12em] text-slate-600">展開詳細條件</summary>
             <div className="mt-3 grid gap-2.5">
               {executionMode === "BREAKOUT" ? listBlock("為何採用 Breakout", modeReasons) : null}
-              {listBlock("突破確認條件", executionPlan?.breakoutConfirmationRules)}
-              {listBlock("回踩確認條件", executionPlan?.retestConfirmationRules)}
-              {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
-              {listBlock("下一步確認", executionPlan?.nextConfirmationRules)}
+              {executionMode === "PULLBACK" ? listBlock("回踩條件", pullbackChecklist) : null}
+              {executionMode === "PULLBACK" ? listBlock("動能恢復", executionPlan?.momentumRecoveryRules) : null}
+              {executionMode === "PULLBACK" ? listBlock("MTF", executionPlan?.mtfAlignmentRules) : null}
+              {executionMode === "BREAKOUT" ? listBlock("突破條件", breakoutChecklist) : null}
+              {executionMode === "BREAKOUT" ? listBlock("volume", executionPlan?.breakoutConfirmationRules?.filter((rule) => String(rule).includes("成交量"))) : null}
+              {executionMode === "BREAKOUT" ? listBlock("確認狀態", executionPlan?.nextConfirmationRules) : null}
               {listBlock("失效條件", executionPlan?.invalidationRules)}
             </div>
           </details>
