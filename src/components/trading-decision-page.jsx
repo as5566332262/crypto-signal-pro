@@ -51,6 +51,33 @@ function trapSignalText(signal) {
   return "無明顯陷阱訊號";
 }
 
+function resolveZoneBounds(analysis) {
+  const zoneLow = Number(
+    analysis?.zoneLow
+    ?? analysis?.levels?.zoneLow
+    ?? analysis?.levels?.structureSupportZone?.low
+    ?? analysis?.levels?.structureSupportZone?.high
+  );
+  const zoneHigh = Number(
+    analysis?.zoneHigh
+    ?? analysis?.levels?.zoneHigh
+    ?? analysis?.levels?.structureResistanceZone?.high
+    ?? analysis?.levels?.structureResistanceZone?.low
+  );
+  const hasZone = Number.isFinite(zoneLow) && Number.isFinite(zoneHigh) && zoneHigh > zoneLow;
+  return { zoneLow, zoneHigh, hasZone };
+}
+
+function getZonePosition(currentPrice, zoneLow, zoneHigh) {
+  if (!Number.isFinite(currentPrice) || !Number.isFinite(zoneLow) || !Number.isFinite(zoneHigh) || zoneHigh <= zoneLow) return "-";
+  if (currentPrice <= zoneLow) return "下半段";
+  if (currentPrice >= zoneHigh) return "上半段";
+  const ratio = (currentPrice - zoneLow) / (zoneHigh - zoneLow);
+  if (ratio >= 2 / 3) return "上半段";
+  if (ratio <= 1 / 3) return "下半段";
+  return "中段";
+}
+
 function CandlestickBody(props) {
   const { x, width, payload } = props;
   if (!payload) return null;
@@ -97,10 +124,10 @@ function CustomTooltip({ active, payload, label, symbol, formatNumber }) {
   );
 }
 
-export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel, confidenceLabel, lastUpdated, digits, formatNumber }) {
+export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel, confidenceLabel, lastUpdated, digits, formatNumber, marketPosition }) {
   const blocks = [
     { label: "幣種", value: symbolLabel },
-    { label: "價格", value: formatNumber(currentPrice, digits) },
+    { label: "價格", value: formatNumber(currentPrice, digits), subValue: `位置：${marketPosition || "-"}` },
     { label: "市場狀態", value: regime || "-" },
     { label: "更新時間", value: lastUpdated || "-" },
   ];
@@ -115,6 +142,7 @@ export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel,
           <div key={item.label} className={`pr-4 ${index < blocks.length - 1 ? "border-r border-slate-800/90" : ""}`}>
             <div className="text-[11px] tracking-[0.12em] text-slate-500">{item.label}</div>
             <div className="mt-1.5 text-sm font-semibold tracking-wide text-slate-100">{item.value}</div>
+            {item.subValue ? <div className="mt-1 text-xs tracking-wide text-slate-400">{item.subValue}</div> : null}
           </div>
         ))}
         <div className="rounded-2xl border border-slate-700/80 bg-slate-900/80 px-3.5 py-2.5">
@@ -132,22 +160,14 @@ export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel,
 export function DecisionCard({ analysis, formatNumber }) {
   const decisionData = analysis?.aiDecisionOutput || analysis;
   const tone = decisionTone(decisionData?.action === "LONG" ? "LONG" : decisionData?.action === "SHORT" ? "SHORT" : analysis?.bias);
-  const support = analysis?.levels?.structureSupportZone?.high ?? analysis?.levels?.structureSupportZone?.low;
-  const resistance = analysis?.levels?.structureResistanceZone?.low ?? analysis?.levels?.structureResistanceZone?.high;
+  const { zoneLow, zoneHigh, hasZone } = resolveZoneBounds(analysis);
   const currentPrice = Number(analysis?.price);
-  const hasRange = Number.isFinite(Number(support)) && Number.isFinite(Number(resistance)) && Number(resistance) > Number(support);
-  const rangeMid = hasRange ? (Number(support) + Number(resistance)) / 2 : null;
-  const currentPhase = analysis?.setup || analysis?.triggerEngine?.waitConditionSentence || "等待下一步確認";
   const distanceToEntry = Number(analysis?.distanceToEntry ?? analysis?.distanceToTriggerPrice ?? analysis?.distances?.entry);
   const reasonTags = (analysis?.waitReasons || analysis?.waitForConditions || [])
     .filter(Boolean)
     .slice(0, 4);
   const defaultTags = ["價格在區間中段", "未觸及支撐", "RR 不佳"];
-  const marketLocation = !hasRange || !Number.isFinite(currentPrice)
-    ? "-"
-    : currentPrice >= rangeMid
-      ? (currentPrice > Number(resistance) ? "上半（接近或高於壓力）" : "上半")
-      : (currentPrice < Number(support) ? "下半（接近或低於支撐）" : "下半");
+  const marketLocation = getZonePosition(currentPrice, zoneLow, zoneHigh);
   const isTradable = analysis?.finalDecision === "TRADE" || ["LONG", "SHORT", "BUY", "SELL"].includes(analysis?.finalDecision);
   const decisionLabel = isTradable ? "可交易" : "不交易";
 
@@ -160,11 +180,16 @@ export function DecisionCard({ analysis, formatNumber }) {
         <div className={`rounded-2xl border bg-gradient-to-r p-5 ${tone.glow}`}>
           <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">DECISION</div>
           <div className="mt-2 text-4xl font-black tracking-wide text-slate-900">{decisionLabel}</div>
-          <div className="mt-2 text-sm font-semibold text-slate-700">階段：{currentPhase}</div>
-          <div className="mt-1 text-lg font-bold text-slate-800">
-            差距：{Number.isFinite(distanceToEntry) ? `${formatNumber(Math.abs(distanceToEntry), 2)} USDT` : "-"}
+          <div className="mt-2 text-lg font-bold text-slate-800">
+            距離進場：{Number.isFinite(distanceToEntry) ? `差 ${formatNumber(Math.abs(distanceToEntry), 2)} USDT` : "-"}
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
+            <Badge className="rounded-full border border-slate-300 bg-white/85 px-2.5 py-0.5 text-xs text-slate-700">
+              距離：{Number.isFinite(distanceToEntry) ? `差 ${formatNumber(Math.abs(distanceToEntry), 2)} USDT` : "-"}
+            </Badge>
+            <Badge className="rounded-full border border-slate-300 bg-white/85 px-2.5 py-0.5 text-xs text-slate-700">
+              位置：{marketLocation}
+            </Badge>
             {(reasonTags.length ? reasonTags : defaultTags).map((reason) => (
               <Badge key={reason} className="rounded-full border border-slate-300 bg-white/85 px-2.5 py-0.5 text-xs text-slate-700">
                 {reason}
@@ -176,10 +201,11 @@ export function DecisionCard({ analysis, formatNumber }) {
           <div className="text-xs font-semibold tracking-[0.14em] text-slate-500">位置判斷</div>
           <div className="mt-2 grid gap-2 sm:grid-cols-3">
             <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Current</span><div className="font-semibold">{formatNumber(currentPrice, 2)}</div></div>
-            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Support</span><div className="font-semibold">{formatNumber(support, 2)}</div></div>
-            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Resistance</span><div className="font-semibold">{formatNumber(resistance, 2)}</div></div>
+            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Zone Low</span><div className="font-semibold">{formatNumber(zoneLow, 2)}</div></div>
+            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Zone High</span><div className="font-semibold">{formatNumber(zoneHigh, 2)}</div></div>
           </div>
           <div className="mt-2 text-sm font-semibold text-slate-700">區間位置：{marketLocation}</div>
+          {!hasZone ? <div className="mt-1 text-xs text-slate-500">尚無有效區間資料</div> : null}
         </div>
       </CardContent>
     </Card>
@@ -208,6 +234,10 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
       <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle>執行計畫</CardTitle></CardHeader>
       <CardContent className="space-y-4 px-5 pb-5 text-sm sm:px-6">
         <div className={`rounded-2xl border p-3.5 ${isHold ? "border-amber-200 bg-amber-50/80 text-amber-900" : "border-slate-200 bg-slate-50/70 text-slate-900"}`}>
+          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+            <span className="font-semibold">Summary：</span>
+            Entry {topChecklist[0].value || "-"} / Stop {topChecklist[1].value || "-"} / TP {topChecklist[2].value || "-"}
+          </div>
           <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">EXECUTION CHECKLIST</div>
           <div className="mt-3 grid gap-2.5 sm:grid-cols-3">
             {topChecklist.map((item) => (
@@ -449,6 +479,8 @@ export default function TradingDecisionPage({
   paperSymbol,
 }) {
   const symbolLabel = symbolOptions.find((item) => item.value === symbol)?.label || symbol;
+  const { zoneLow, zoneHigh } = resolveZoneBounds(analysis);
+  const marketPosition = getZonePosition(Number(analysis?.price), zoneLow, zoneHigh);
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-7 px-1 sm:px-2">
@@ -482,6 +514,7 @@ export default function TradingDecisionPage({
         lastUpdated={lastUpdated}
         digits={digits}
         formatNumber={formatNumber}
+        marketPosition={marketPosition}
       />
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
