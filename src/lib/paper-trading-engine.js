@@ -2031,6 +2031,18 @@ function maybeFillPendingOrders(state, {
     }
     const quantity = asSafeNumber(order.quantity, DEFAULT_POSITION_SIZE);
     const notional = quantity * filledPrice;
+    const positionCreationSource = checkedFunctionName;
+    if (positionCreationSource !== "maybeFillPendingOrders") {
+      delete nextState.orderProcessingLocks[order.id];
+      console.error("[ILLEGAL_POSITION_CREATION_BLOCKED]", {
+        reason: "UNAUTHORIZED_POSITION_SOURCE",
+        sourceFunction: positionCreationSource,
+        triggerSource: resolvedTriggerSource,
+        orderId: order.id,
+      });
+      nextPendingOrders.push(observedOrder);
+      continue;
+    }
     const position = {
       id: createId("pos"),
       symbol: order.symbol,
@@ -2063,7 +2075,9 @@ function maybeFillPendingOrders(state, {
       createdAt: order.createdAt || timestamp,
       signalToPlaceBars: order.signalToPlaceBars ?? null,
       placeToFillBars: nextWaitBars,
-      sourceFunction: checkedFunctionName,
+      sourceFunction: positionCreationSource,
+      triggerSource: resolvedTriggerSource,
+      orderId: order.id,
       ...resolveTradeMetadata({
         decision: order.decisionSnapshot,
         confirmationResult: order.decisionSnapshot?.confirmationResult || null,
@@ -2142,7 +2156,8 @@ function maybeFillPendingOrders(state, {
     console.info("[POSITION_CREATED]", {
       orderId: order.id,
       source: "FILL_ENGINE",
-      sourceFunction: checkedFunctionName,
+      sourceFunction: positionCreationSource,
+      triggerSource: resolvedTriggerSource,
       filledPrice,
       orderType: order.orderType || "LIMIT",
     });
@@ -3200,6 +3215,26 @@ export function resetPaperTradingState() {
 }
 
 export function normalizePaperAccountState(state, { eventType = "RESTORE", sourceFunction = "normalizePaperAccountState" } = {}) {
+  const restoredOpenPositions = Array.isArray(state?.openPositions) ? state.openPositions : [];
+  const normalizedOpenPositions = restoredOpenPositions.filter((position) => {
+    const isAllowedSource = position?.sourceFunction === "maybeFillPendingOrders";
+    if (!isAllowedSource) {
+      console.error("[ILLEGAL_POSITION_CREATION_BLOCKED]", {
+        reason: "RESTORE_BLOCKED_NON_FILL_ENGINE_POSITION",
+        sourceFunction: position?.sourceFunction || sourceFunction,
+        triggerSource: position?.triggerSource || "RESTORE",
+        orderId: position?.orderId || null,
+        positionId: position?.id || null,
+      });
+      return false;
+    }
+    return true;
+  }).map((position) => ({
+    ...position,
+    sourceFunction: "maybeFillPendingOrders",
+    triggerSource: position?.triggerSource || "RESTORE",
+    orderId: position?.orderId || null,
+  }));
   const normalizedPendingOrders = (Array.isArray(state?.pendingOrders) ? state.pendingOrders : []).map((order) => {
     if (eventType !== "RESTORE") {
       return {
@@ -3223,7 +3258,7 @@ export function normalizePaperAccountState(state, { eventType = "RESTORE", sourc
   return recalculateAccountState({
     ...createInitialPaperAccountState(),
     ...(state || {}),
-    openPositions: Array.isArray(state?.openPositions) ? state.openPositions : [],
+    openPositions: normalizedOpenPositions,
     pendingOrders: normalizedPendingOrders,
     cancelledOrders: Array.isArray(state?.cancelledOrders) ? state.cancelledOrders : [],
     closedTrades: Array.isArray(state?.closedTrades) ? state.closedTrades : [],
