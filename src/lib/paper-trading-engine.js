@@ -759,8 +759,7 @@ function resolvePlannedEntryPrice(decision, side) {
   return { entryPrice: triggerPrice, mode, sourceFunction };
 }
 
-function validateExecutionPlanConsistency({ side, entryPrice, normalizedLevels, executionMode, sourceFunction }) {
-  if (!Number.isFinite(entryPrice) || !normalizedLevels) return { valid: true };
+function validateExecutionPlanConsistency({ side, entryPrice, normalizedLevels, executionMode, sourceFunction, decision }) {
   const takeProfit1 = normalizeNumber(normalizedLevels.takeProfit1);
   const takeProfit2 = normalizeNumber(normalizedLevels.takeProfit2);
   const stopLoss = normalizeNumber(normalizedLevels.stopLoss);
@@ -769,15 +768,35 @@ function validateExecutionPlanConsistency({ side, entryPrice, normalizedLevels, 
   const normalizedSourceFunction = String(sourceFunction || "");
   const sourceFromTargetEntryZone = /entryMid|entryLow|entryHigh/.test(normalizedSourceFunction);
   const sourceFromTriggerPrice = normalizedSourceFunction.includes("triggerPrice");
+  const executionPlan = decision?.executionPlan || {};
+  const modeReasons = Array.isArray(executionPlan?.modeSelectionReasons) ? executionPlan.modeSelectionReasons : [];
+  const breakoutReasonsDetected = modeReasons.some((reason) => /breakout|突破|trigger|收盤站上/i.test(String(reason || "")));
+  const hasEntryZone = [executionPlan?.entryLow, executionPlan?.entryHigh, decision?.entryLow, decision?.entryHigh]
+    .some((value) => Number.isFinite(normalizeNumber(value)));
+  const hasTriggerPrice = Number.isFinite(normalizeNumber(executionPlan?.triggerPrice ?? decision?.triggerPrice));
+  const hasBreakoutLevel = Number.isFinite(normalizeNumber(executionPlan?.breakoutLevel ?? decision?.breakoutLevel));
 
   if (normalizedExecutionMode === "PULLBACK") {
     if (!sourceFromTargetEntryZone || sourceFromTriggerPrice) {
       violations.push("PULLBACK_ENTRY_SOURCE_MUST_BE_TARGET_ENTRY_ZONE");
     }
+    if (hasTriggerPrice || hasBreakoutLevel) {
+      violations.push("PULLBACK_MUST_NOT_INCLUDE_BREAKOUT_LEVEL_OR_TRIGGER");
+    }
+    if (breakoutReasonsDetected) {
+      violations.push("PULLBACK_MUST_NOT_INCLUDE_BREAKOUT_REASON");
+    }
   } else if (normalizedExecutionMode === "BREAKOUT") {
     if (!sourceFromTriggerPrice || sourceFromTargetEntryZone) {
       violations.push("BREAKOUT_ENTRY_SOURCE_MUST_BE_TRIGGER_PRICE");
     }
+    if (hasEntryZone) {
+      violations.push("BREAKOUT_MUST_NOT_INCLUDE_ENTRY_ZONE");
+    }
+  }
+  if (!Number.isFinite(entryPrice) || !normalizedLevels) {
+    if (!violations.length) return { valid: true };
+    return { valid: false, violations, entryPrice, stopLoss, takeProfit1, takeProfit2 };
   }
 
   if (side === "LONG") {
@@ -2303,9 +2322,21 @@ function maybeFillPendingOrders(state, {
       normalizedLevels,
       executionMode: order.executionMode,
       sourceFunction: order.sourceFunction,
+      decision: order,
     });
     if (!finalExecutionPlanGuard.valid) {
       delete nextState.orderProcessingLocks[order.id];
+      const hasExecutionModeConflict = finalExecutionPlanGuard.violations.some((violation) => violation.includes("PULLBACK_MUST_NOT") || violation.includes("BREAKOUT_MUST_NOT"));
+      if (hasExecutionModeConflict) {
+        console.error("[EXECUTION_MODE_CONFLICT]", {
+          symbol: order.symbol,
+          timeframe: order.timeframe,
+          orderId: order.id,
+          executionMode: order.executionMode ?? null,
+          violations: finalExecutionPlanGuard.violations,
+          triggeredBy,
+        });
+      }
       const hasExecutionModeMismatch = finalExecutionPlanGuard.violations.some(
         (violation) => violation === "PULLBACK_ENTRY_SOURCE_MUST_BE_TARGET_ENTRY_ZONE" || violation === "BREAKOUT_ENTRY_SOURCE_MUST_BE_TRIGGER_PRICE"
       );
@@ -2928,8 +2959,19 @@ export function simulateDecisionExecution({
     normalizedLevels,
     executionMode: decision?.executionPlan?.executionMode ?? null,
     sourceFunction: plannedEntry.sourceFunction,
+    decision,
   });
   if (!planConsistency.valid) {
+    const hasExecutionModeConflict = planConsistency.violations.some((violation) => violation.includes("PULLBACK_MUST_NOT") || violation.includes("BREAKOUT_MUST_NOT"));
+    if (hasExecutionModeConflict) {
+      console.error("[EXECUTION_MODE_CONFLICT]", {
+        symbol,
+        timeframe,
+        side,
+        executionMode: decision?.executionPlan?.executionMode ?? null,
+        violations: planConsistency.violations,
+      });
+    }
     const hasExecutionModeMismatch = planConsistency.violations.some(
       (violation) => violation === "PULLBACK_ENTRY_SOURCE_MUST_BE_TARGET_ENTRY_ZONE" || violation === "BREAKOUT_ENTRY_SOURCE_MUST_BE_TRIGGER_PRICE"
     );

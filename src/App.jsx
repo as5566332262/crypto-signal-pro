@@ -2303,6 +2303,94 @@ function buildAiDecisionOutput({
       `多週期偏多一致（aligned=${formatNumber((mtfAlignedRatio || 0) * 100, 1)}%）`,
     ]
     : [];
+  const pullbackModeReasons = ["回踩策略：等待價格回到 entry zone，再確認動能恢復後進場"];
+  const rawExecutionPlan = {
+    action,
+    setupType,
+    executionMode,
+    modeSelectionReasons: executionMode === "BREAKOUT" ? breakoutModeReasons : pullbackModeReasons,
+    atr,
+    preferredSide: bias === "偏空" ? "SHORT" : bias === "偏多" ? "LONG" : undefined,
+    currentActionLabel:
+      action === "LONG" ? "偏多劇本：等待觸發後執行做多" : action === "SHORT" ? "偏空劇本：等待觸發後執行做空" : "目前動作：觀望，等待條件完成",
+    rangeHigh,
+    rangeLow,
+    triggerPrice: triggerPrice != null ? Number(triggerPrice.toFixed(4)) : undefined,
+    breakoutStyle: "CONSERVATIVE",
+    entryLow: finalTradePlan?.entryLow,
+    entryHigh: finalTradePlan?.entryHigh,
+    entryMid: finalTradePlan?.entryMid,
+    breakoutConfirmationRules: [
+      action === "SHORT"
+        ? `15m 收盤跌破 ${formatNumber(rangeLow)}`
+        : `15m 收盤站上 ${formatNumber(rangeHigh)}`,
+      "突破/跌破當根成交量 > 近 20 根平均成交量",
+      action === "SHORT"
+        ? `MACD 柱體維持負值，RSI <= 45（目前 ${formatNumber(rsi, 2)}）`
+        : `MACD 柱體維持正值，RSI >= 55（目前 ${formatNumber(rsi, 2)}）`,
+    ],
+    retestConfirmationRules: [
+      action === "SHORT"
+        ? `回測 ${formatNumber(rangeLow)} 無法站回，且收盤再度跌破`
+        : `回踩 ${formatNumber(rangeHigh)} 後不破，且收盤重新站上`,
+      action === "SHORT" ? "回測時上影線放大、實體收弱" : "回踩時下影線承接、實體收強",
+    ],
+    mtfAlignmentRules,
+    nextConfirmationRules: [
+      triggerEngine?.nextAction || "滿足觸發條件後再執行",
+      `確認強度：${triggerEngine?.confirmationLabel || "-"}`,
+    ],
+    invalidationRules: [
+      `價格收盤重新回到觸發位反向（${formatNumber(triggerPrice)}）`,
+      ...(triggerEngine?.invalidationTriggers || []),
+      ...(trapDetection.trapSignal !== "NONE" ? trapDetection.trapInvalidationRules : []),
+      action === "SHORT"
+        ? `RSI 重新回到 50 上方（目前 ${formatNumber(rsi, 2)}）`
+        : `RSI 重新跌回 50 下方（目前 ${formatNumber(rsi, 2)}）`,
+      action === "SHORT" ? `MACD 柱體轉正（目前 ${formatNumber(macd?.histogram, 4)}）` : `MACD 柱體轉負（目前 ${formatNumber(macd?.histogram, 4)}）`,
+    ].filter(Boolean).slice(0, 6),
+    invalidationPrice: invalidationPrice != null ? Number(Number(invalidationPrice).toFixed(4)) : undefined,
+    stopLoss: finalTradePlan?.stop,
+    takeProfit1: finalTradePlan?.target1,
+    takeProfit2: finalTradePlan?.target2,
+    takeProfit3:
+      action === "LONG" ? levels?.secondResistance : action === "SHORT" ? levels?.secondSupport : undefined,
+  };
+  const sanitizeExecutionPlanByMode = (plan) => {
+    const normalizedMode = String(plan?.executionMode || "").toUpperCase();
+    if (normalizedMode === "PULLBACK") {
+      if (plan?.triggerPrice != null || Array.isArray(plan?.breakoutConfirmationRules) || Array.isArray(plan?.retestConfirmationRules) || plan?.breakoutStyle) {
+        console.info("[INVALID_PULLBACK_CONDITION_REMOVED]", {
+          removed: ["triggerPrice", "breakoutConfirmationRules", "retestConfirmationRules", "breakoutStyle"],
+        });
+      }
+      return {
+        ...plan,
+        triggerPrice: undefined,
+        breakoutStyle: undefined,
+        breakoutConfirmationRules: undefined,
+        retestConfirmationRules: [
+          "回踩區間後出現 bounce / engulfing / rejection",
+          "站回 MA20（或關鍵均線）並維持收盤",
+        ],
+        momentumRecoveryRules: [
+          action === "SHORT"
+            ? `RSI <= 45 且 MACD 柱體維持負值（目前 RSI ${formatNumber(rsi, 2)}）`
+            : `RSI >= 55 且 MACD 柱體維持正值（目前 RSI ${formatNumber(rsi, 2)}）`,
+        ],
+      };
+    }
+    if (normalizedMode === "BREAKOUT") {
+      return {
+        ...plan,
+        entryLow: undefined,
+        entryHigh: undefined,
+        entryMid: undefined,
+      };
+    }
+    return plan;
+  };
+  const executionPlan = sanitizeExecutionPlanByMode(rawExecutionPlan);
 
   return {
     symbol,
@@ -2315,58 +2403,7 @@ function buildAiDecisionOutput({
     summary,
     marketRegime: localizeMarketRegime(marketRegime),
     mtfBias: mtfBiasObject,
-    executionPlan: {
-      action,
-      setupType,
-      executionMode,
-      modeSelectionReasons: executionMode === "BREAKOUT" ? breakoutModeReasons : ["回踩策略：等待價格回到 entry zone 再進場"],
-      atr,
-      preferredSide: bias === "偏空" ? "SHORT" : bias === "偏多" ? "LONG" : undefined,
-      currentActionLabel:
-        action === "LONG" ? "偏多劇本：等待觸發後執行做多" : action === "SHORT" ? "偏空劇本：等待觸發後執行做空" : "目前動作：觀望，等待條件完成",
-      rangeHigh,
-      rangeLow,
-      triggerPrice: triggerPrice != null ? Number(triggerPrice.toFixed(4)) : undefined,
-      breakoutStyle: "CONSERVATIVE",
-      entryLow: finalTradePlan?.entryLow,
-      entryHigh: finalTradePlan?.entryHigh,
-      entryMid: finalTradePlan?.entryMid,
-      breakoutConfirmationRules: [
-        action === "SHORT"
-          ? `15m 收盤跌破 ${formatNumber(rangeLow)}`
-          : `15m 收盤站上 ${formatNumber(rangeHigh)}`,
-        "突破/跌破當根成交量 > 近 20 根平均成交量",
-        action === "SHORT"
-          ? `MACD 柱體維持負值，RSI <= 45（目前 ${formatNumber(rsi, 2)}）`
-          : `MACD 柱體維持正值，RSI >= 55（目前 ${formatNumber(rsi, 2)}）`,
-      ],
-      retestConfirmationRules: [
-        action === "SHORT"
-          ? `回測 ${formatNumber(rangeLow)} 無法站回，且收盤再度跌破`
-          : `回踩 ${formatNumber(rangeHigh)} 後不破，且收盤重新站上`,
-        action === "SHORT" ? "回測時上影線放大、實體收弱" : "回踩時下影線承接、實體收強",
-      ],
-      mtfAlignmentRules,
-      nextConfirmationRules: [
-        triggerEngine?.nextAction || "滿足觸發條件後再執行",
-        `確認強度：${triggerEngine?.confirmationLabel || "-"}`,
-      ],
-      invalidationRules: [
-        `價格收盤重新回到觸發位反向（${formatNumber(triggerPrice)}）`,
-        ...(triggerEngine?.invalidationTriggers || []),
-        ...(trapDetection.trapSignal !== "NONE" ? trapDetection.trapInvalidationRules : []),
-        action === "SHORT"
-          ? `RSI 重新回到 50 上方（目前 ${formatNumber(rsi, 2)}）`
-          : `RSI 重新跌回 50 下方（目前 ${formatNumber(rsi, 2)}）`,
-        action === "SHORT" ? `MACD 柱體轉正（目前 ${formatNumber(macd?.histogram, 4)}）` : `MACD 柱體轉負（目前 ${formatNumber(macd?.histogram, 4)}）`,
-      ].filter(Boolean).slice(0, 6),
-      invalidationPrice: invalidationPrice != null ? Number(Number(invalidationPrice).toFixed(4)) : undefined,
-      stopLoss: finalTradePlan?.stop,
-      takeProfit1: finalTradePlan?.target1,
-      takeProfit2: finalTradePlan?.target2,
-      takeProfit3:
-        action === "LONG" ? levels?.secondResistance : action === "SHORT" ? levels?.secondSupport : undefined,
-    },
+    executionPlan,
     entryReason,
     trapDetection,
   };
