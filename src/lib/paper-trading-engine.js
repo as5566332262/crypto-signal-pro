@@ -596,12 +596,27 @@ function resolvePlannedEntryPrice(decision, side) {
   return { entryPrice: triggerPrice, mode, sourceFunction };
 }
 
-function validateExecutionPlanConsistency({ side, entryPrice, normalizedLevels }) {
+function validateExecutionPlanConsistency({ side, entryPrice, normalizedLevels, executionMode, sourceFunction }) {
   if (!Number.isFinite(entryPrice) || !normalizedLevels) return { valid: true };
   const takeProfit1 = normalizeNumber(normalizedLevels.takeProfit1);
   const takeProfit2 = normalizeNumber(normalizedLevels.takeProfit2);
   const stopLoss = normalizeNumber(normalizedLevels.stopLoss);
   const violations = [];
+  const normalizedExecutionMode = String(executionMode || "").toUpperCase();
+  const normalizedSourceFunction = String(sourceFunction || "");
+  const sourceFromTargetEntryZone = /entryMid|entryLow|entryHigh/.test(normalizedSourceFunction);
+  const sourceFromTriggerPrice = normalizedSourceFunction.includes("triggerPrice");
+
+  if (normalizedExecutionMode === "PULLBACK") {
+    if (!sourceFromTargetEntryZone || sourceFromTriggerPrice) {
+      violations.push("PULLBACK_ENTRY_SOURCE_MUST_BE_TARGET_ENTRY_ZONE");
+    }
+  } else if (normalizedExecutionMode === "BREAKOUT") {
+    if (!sourceFromTriggerPrice || sourceFromTargetEntryZone) {
+      violations.push("BREAKOUT_ENTRY_SOURCE_MUST_BE_TRIGGER_PRICE");
+    }
+  }
+
   if (side === "LONG") {
     if (!Number.isFinite(takeProfit1) || takeProfit1 <= entryPrice) violations.push("LONG_ENTRY_MUST_BE_BELOW_TP1");
     if (!Number.isFinite(takeProfit2) || takeProfit2 <= entryPrice) violations.push("LONG_ENTRY_MUST_BE_BELOW_TP2");
@@ -1980,9 +1995,25 @@ function maybeFillPendingOrders(state, {
       side: order.side,
       entryPrice: filledPrice,
       normalizedLevels,
+      executionMode: order.executionMode,
+      sourceFunction: order.sourceFunction,
     });
     if (!finalExecutionPlanGuard.valid) {
       delete nextState.orderProcessingLocks[order.id];
+      const hasExecutionModeMismatch = finalExecutionPlanGuard.violations.some(
+        (violation) => violation === "PULLBACK_ENTRY_SOURCE_MUST_BE_TARGET_ENTRY_ZONE" || violation === "BREAKOUT_ENTRY_SOURCE_MUST_BE_TRIGGER_PRICE"
+      );
+      if (hasExecutionModeMismatch) {
+        console.error("[EXECUTION_MODE_MISMATCH_BLOCKED]", {
+          symbol: order.symbol,
+          timeframe: order.timeframe,
+          orderId: order.id,
+          executionMode: order.executionMode ?? null,
+          sourceFunction: order.sourceFunction ?? null,
+          violations: finalExecutionPlanGuard.violations,
+          triggeredBy,
+        });
+      }
       console.error("[INVALID_EXECUTION_PLAN_BLOCKED]", {
         symbol: order.symbol,
         timeframe: order.timeframe,
@@ -2517,8 +2548,23 @@ export function simulateDecisionExecution({
     side,
     entryPrice: triggerPrice,
     normalizedLevels,
+    executionMode: decision?.executionPlan?.executionMode ?? null,
+    sourceFunction: plannedEntry.sourceFunction,
   });
   if (!planConsistency.valid) {
+    const hasExecutionModeMismatch = planConsistency.violations.some(
+      (violation) => violation === "PULLBACK_ENTRY_SOURCE_MUST_BE_TARGET_ENTRY_ZONE" || violation === "BREAKOUT_ENTRY_SOURCE_MUST_BE_TRIGGER_PRICE"
+    );
+    if (hasExecutionModeMismatch) {
+      console.error("[EXECUTION_MODE_MISMATCH_BLOCKED]", {
+        symbol,
+        timeframe,
+        side,
+        executionMode: decision?.executionPlan?.executionMode ?? null,
+        sourceFunction: plannedEntry.sourceFunction ?? null,
+        violations: planConsistency.violations,
+      });
+    }
     console.error("[INVALID_EXECUTION_PLAN_BLOCKED]", {
       symbol,
       timeframe,
