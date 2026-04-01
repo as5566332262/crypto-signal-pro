@@ -2331,15 +2331,22 @@ function buildAiDecisionOutput({
       entryLow: finalTradePlan?.entryLow,
       entryHigh: finalTradePlan?.entryHigh,
       entryMid: finalTradePlan?.entryMid,
-      breakoutConfirmationRules: [
-        action === "SHORT"
-          ? `15m 收盤跌破 ${formatNumber(rangeLow)}`
-          : `15m 收盤站上 ${formatNumber(rangeHigh)}`,
-        "突破/跌破當根成交量 > 近 20 根平均成交量",
-        action === "SHORT"
-          ? `MACD 柱體維持負值，RSI <= 45（目前 ${formatNumber(rsi, 2)}）`
-          : `MACD 柱體維持正值，RSI >= 55（目前 ${formatNumber(rsi, 2)}）`,
-      ],
+      breakoutConfirmationRules: executionMode === "BREAKOUT"
+        ? [
+          action === "SHORT"
+            ? `15m 收盤跌破 ${formatNumber(rangeLow)}`
+            : `15m 收盤站上 ${formatNumber(rangeHigh)}`,
+          "突破/跌破當根成交量 > 近 20 根平均成交量",
+          action === "SHORT"
+            ? `MACD 柱體維持負值，RSI <= 45（目前 ${formatNumber(rsi, 2)}）`
+            : `MACD 柱體維持正值，RSI >= 55（目前 ${formatNumber(rsi, 2)}）`,
+        ]
+        : [
+          action === "SHORT"
+            ? `下方支撐位：${formatNumber(rangeLow)}（非進場條件）`
+            : `上方壓力位：${formatNumber(rangeHigh)}（非進場條件）`,
+          "此條件僅用於趨勢確認，不觸發進場",
+        ],
       retestConfirmationRules: [
         action === "SHORT"
           ? `回測 ${formatNumber(rangeLow)} 無法站回，且收盤再度跌破`
