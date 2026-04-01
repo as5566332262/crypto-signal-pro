@@ -92,6 +92,7 @@ function createDefaultSymbolSimulationState() {
     lastDecisionAt: null,
     currentPhase: "idle",
     waitingReason: "尚未啟動模擬",
+    executionMode: null,
     targetEntryZone: null,
     currentPrice: null,
     unmetConditions: [],
@@ -137,6 +138,7 @@ function normalizeSimulationStateBySymbol(raw) {
         : {},
       currentPhase: item?.currentPhase || "idle",
       waitingReason: item?.waitingReason || "尚未啟動模擬",
+      executionMode: item?.executionMode || null,
       targetEntryZone: item?.targetEntryZone || null,
       currentPrice: Number.isFinite(Number(item?.currentPrice)) ? Number(item.currentPrice) : null,
       unmetConditions: Array.isArray(item?.unmetConditions) ? item.unmetConditions.slice(0, 3) : [],
@@ -583,6 +585,13 @@ function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diag
   const decision = analysis?.aiDecisionOutput;
   const mtfBias = analysis?.mtfBias || {};
   const action = String(decision?.action || decision?.executionPlan?.action || "").toUpperCase();
+  const setupType = String(decision?.setupType || decision?.executionPlan?.setupType || "").toLowerCase();
+  const strategyType = String(decision?.strategyType || "").toLowerCase();
+  const executionMode = setupType === "breakout"
+    ? "BREAKOUT"
+    : (strategyType === "range" || strategyType === "pullback" || setupType === "pullback")
+      ? "PULLBACK"
+      : "PULLBACK";
   const targetZone = resolveTargetEntryZone(decision, analysis?.levels);
   const safePrice = Number(currentPrice);
   const sideText = action === "SHORT" ? "反彈壓力區" : "回踩支撐區";
@@ -603,6 +612,7 @@ function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diag
   const waitingReason = unmetConditions.length ? unmetConditions.join("；") : "等待下一根 K 線確認";
   return {
     waitingReason,
+    executionMode,
     targetEntryZone: targetZone ? `${formatNumber(targetZone.low)} – ${formatNumber(targetZone.high)}` : "-",
     currentPrice: Number.isFinite(safePrice) ? safePrice : null,
     unmetConditions,
@@ -2946,6 +2956,7 @@ export default function CryptoSignalWebApp() {
         lastDecisionAt: state.lastDecisionAt,
         currentPhase: state.currentPhase || "idle",
         waitingReason: state.waitingReason || "-",
+        executionMode: state.executionMode || null,
         targetEntryZone: state.targetEntryZone || "-",
         currentPrice: state.currentPrice,
         unmetConditions: Array.isArray(state.unmetConditions) ? state.unmetConditions.slice(0, 3) : [],
@@ -3827,6 +3838,7 @@ const simulationAgentState = {
         executionStatus: normalizeSimulationExecutionStatus(nextFeedback),
         currentPhase: mappedPhase,
         waitingReason,
+        executionMode: isNonWaitingState ? null : waitingDetails.executionMode,
         targetEntryZone: isNonWaitingState ? null : waitingDetails.targetEntryZone,
         currentPrice: isNonWaitingState ? null : waitingDetails.currentPrice,
         unmetConditions: isNonWaitingState ? [] : waitingDetails.unmetConditions,
