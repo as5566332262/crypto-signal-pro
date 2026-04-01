@@ -21,6 +21,9 @@ const DEFAULT_REENTRY_MAX_ATTEMPTS = 2;
 const DEFAULT_REENTRY_FAIL_LIMIT = 2;
 const DEFAULT_REENTRY_PULLBACK_ATR_RATIO = 0.15;
 const DEFAULT_REENTRY_MIN_DISTANCE_PCT = 0.0004;
+const DEFAULT_BREAKOUT_VOLUME_MULTIPLIER = 1.2;
+const DEFAULT_BREAKOUT_HOLD_BARS = 1;
+const DEFAULT_FAKE_BREAK_MAX_BARS = 1;
 const MAX_ACCOUNT_TRACE_HISTORY = 2000;
 const MAX_ACCOUNT_ERROR_TRACE_HISTORY = 400;
 const ACCOUNT_SURGE_ABS_THRESHOLD = 10000;
@@ -1008,6 +1011,88 @@ function evaluateImmediateExecutionReadiness({ decision, side, triggerPrice, mar
     volumeConfirmed,
     macdConfirmed,
     unmetConditions,
+  };
+}
+
+function resolveBreakoutGuardConfig(decision = {}) {
+  const plan = decision?.executionPlan || {};
+  const style = String(plan?.breakoutStyle ?? decision?.breakoutStyle ?? "CONSERVATIVE").toUpperCase();
+  const aggressive = style === "AGGRESSIVE";
+  return {
+    breakoutCloseRequired: plan?.breakoutCloseRequired !== false,
+    breakoutVolumeMultiplier: normalizeNumber(plan?.breakoutVolumeMultiplier) ?? DEFAULT_BREAKOUT_VOLUME_MULTIPLIER,
+    breakoutHoldBars: Math.max(0, Math.floor(normalizeNumber(plan?.breakoutHoldBars) ?? (aggressive ? 0 : DEFAULT_BREAKOUT_HOLD_BARS))),
+    breakoutRetestRequired: Boolean(plan?.breakoutRetestRequired),
+    fakeBreakMaxBars: Math.max(1, Math.floor(normalizeNumber(plan?.fakeBreakMaxBars) ?? DEFAULT_FAKE_BREAK_MAX_BARS)),
+    breakoutStyle: aggressive ? "AGGRESSIVE" : "CONSERVATIVE",
+  };
+}
+
+function evaluateBreakoutConfirmationGuard({ decision, side, signalContext = {}, triggerPrice }) {
+  const executionMode = String(decision?.executionPlan?.executionMode ?? decision?.executionMode ?? "").toUpperCase();
+  if (executionMode !== "BREAKOUT") return { applies: false, confirmed: true, breakoutSetupState: null, checklist: null };
+  const trigger = normalizeNumber(triggerPrice);
+  if (!Number.isFinite(trigger) || !side) return { applies: true, confirmed: false, breakoutSetupState: "WAIT_BREAKOUT" };
+  const cfg = resolveBreakoutGuardConfig(decision);
+  const high = normalizeNumber(signalContext?.candleHigh ?? signalContext?.high);
+  const low = normalizeNumber(signalContext?.candleLow ?? signalContext?.low);
+  const close = normalizeNumber(signalContext?.candleClose ?? signalContext?.close);
+  const prevClose = normalizeNumber(signalContext?.prevClose);
+  const volume = normalizeNumber(signalContext?.currentVolume);
+  const volumeMA20 = normalizeNumber(signalContext?.avgVolume20);
+  const volumeThreshold = Number.isFinite(volumeMA20) && volumeMA20 > 0 ? volumeMA20 * cfg.breakoutVolumeMultiplier : null;
+  const volumeConfirmed = !Number.isFinite(volumeThreshold) || !Number.isFinite(volume) ? true : volume >= volumeThreshold;
+  const breakDetected = side === "LONG" ? high > trigger : low < trigger;
+  const closeConfirmed = cfg.breakoutCloseRequired ? (side === "LONG" ? close > trigger : close < trigger) : breakDetected;
+  const holdConfirmed = cfg.breakoutHoldBars <= 0
+    ? true
+    : Number.isFinite(prevClose) && (side === "LONG" ? prevClose > trigger && close > trigger : prevClose < trigger && close < trigger);
+  const retestConfirmed = !cfg.breakoutRetestRequired
+    ? true
+    : side === "LONG"
+      ? Number.isFinite(low) && low <= trigger && close > trigger
+      : Number.isFinite(high) && high >= trigger && close < trigger;
+  const holdOrRetestConfirmed = cfg.breakoutRetestRequired ? retestConfirmed : holdConfirmed;
+  const confirmed = breakDetected && closeConfirmed && volumeConfirmed && holdOrRetestConfirmed;
+  const fakeByClose = breakDetected && !closeConfirmed;
+  const fakeByFastRevert = closeConfirmed && Number.isFinite(prevClose) && (side === "LONG" ? prevClose <= trigger : prevClose >= trigger);
+  const fakeByRetestFail = cfg.breakoutRetestRequired && !retestConfirmed && closeConfirmed;
+  const fakeByVolume = closeConfirmed && !volumeConfirmed;
+  const fakeBreakout = fakeByClose || fakeByFastRevert || fakeByRetestFail || fakeByVolume;
+  const breakoutSetupState = !breakDetected
+    ? "WAIT_BREAKOUT"
+    : confirmed
+      ? "BREAKOUT_CONFIRMED"
+      : fakeBreakout
+        ? "BREAKOUT_FAKE"
+        : closeConfirmed
+          ? "BREAKOUT_CONFIRMING"
+          : "BREAK_DETECTED";
+  const confirmMethod = cfg.breakoutRetestRequired ? "RETEST" : "HOLD";
+  return {
+    applies: true,
+    confirmed,
+    fakeBreakout,
+    breakoutSetupState,
+    confirmMethod,
+    waitingReason: !breakDetected
+      ? `尚未突破 trigger ${trigger}`
+      : !closeConfirmed
+        ? `價格已刺穿 ${trigger}，但收盤未站上/下 trigger，暫不追價`
+        : !volumeConfirmed
+          ? `已收盤突破 ${trigger}，但量能不足，暫不建立突破單`
+          : !holdOrRetestConfirmed
+            ? `已突破且量能達標，等待${cfg.breakoutRetestRequired ? "回踩確認" : "站穩確認"}後建立突破單`
+            : "突破已確認，可建立突破單",
+    checklist: {
+      closeConfirmed,
+      volumeConfirmed,
+      holdOrRetestConfirmed,
+      trigger,
+    },
+    metrics: {
+      high, low, close, volume, volumeMA20, multiplier: cfg.breakoutVolumeMultiplier,
+    },
   };
 }
 
@@ -2997,6 +3082,39 @@ export function simulateDecisionExecution({
     decisionContextKey: contextKey,
     ...tradeMetadata,
   };
+  const breakoutGuard = evaluateBreakoutConfirmationGuard({
+    decision,
+    side,
+    signalContext,
+    triggerPrice: pendingOrder.triggerPrice,
+  });
+  if (breakoutGuard.applies) {
+    if (side === "LONG" && breakoutGuard.breakoutSetupState === "BREAK_DETECTED") {
+      console.info("[BREAKOUT_DETECTED]", { symbol, timeframe, side, triggerPrice: pendingOrder.triggerPrice, ...breakoutGuard.metrics });
+      console.info("[BREAKOUT_UNCONFIRMED_CLOSE]", { symbol, triggerPrice: pendingOrder.triggerPrice, candleClose: breakoutGuard.metrics?.close });
+    }
+    if (side === "SHORT" && breakoutGuard.breakoutSetupState === "BREAK_DETECTED") {
+      console.info("[BREAKDOWN_DETECTED]", { symbol, timeframe, side, triggerPrice: pendingOrder.triggerPrice, ...breakoutGuard.metrics });
+      console.info("[BREAKDOWN_UNCONFIRMED_CLOSE]", { symbol, triggerPrice: pendingOrder.triggerPrice, candleClose: breakoutGuard.metrics?.close });
+    }
+    if (!breakoutGuard.checklist?.volumeConfirmed && breakoutGuard.checklist?.closeConfirmed) {
+      console.info(side === "LONG" ? "[BREAKOUT_UNCONFIRMED_VOLUME]" : "[BREAKDOWN_UNCONFIRMED_VOLUME]", {
+        symbol,
+        triggerPrice: pendingOrder.triggerPrice,
+        volume: breakoutGuard.metrics?.volume,
+        volumeMA20: breakoutGuard.metrics?.volumeMA20,
+        multiplier: breakoutGuard.metrics?.multiplier,
+      });
+    }
+    if (breakoutGuard.breakoutSetupState === "BREAKOUT_CONFIRMED") {
+      console.info(side === "LONG" ? "[BREAKOUT_CONFIRMED]" : "[BREAKDOWN_CONFIRMED]", {
+        symbol,
+        triggerPrice: pendingOrder.triggerPrice,
+        confirmMethod: breakoutGuard.confirmMethod,
+        candleClose: breakoutGuard.metrics?.close,
+      });
+    }
+  }
   const draftSetup = isDraftLikeWaitingOrder(pendingOrder);
 
   const createPendingOrder = ({ baseState, order }) => {
@@ -3045,6 +3163,34 @@ export function simulateDecisionExecution({
         ...effectiveEligibility,
         executionIntent,
         confirmationResult,
+      },
+    };
+  }
+
+  if (breakoutGuard.applies && !breakoutGuard.confirmed) {
+    if (breakoutGuard.fakeBreakout) {
+      console.warn(side === "LONG" ? "[BREAKOUT_FAKE_BLOCKED]" : "[BREAKDOWN_FAKE_BLOCKED]", {
+        symbol,
+        triggerPrice: pendingOrder.triggerPrice,
+        reason: breakoutGuard.waitingReason,
+      });
+    }
+    console.warn("[BREAKOUT_ORDER_BLOCKED_UNCONFIRMED]", {
+      symbol,
+      triggerPrice: pendingOrder.triggerPrice,
+      sourceFunction: "simulateDecisionExecution.createPendingOrder",
+    });
+    return {
+      state: incrementWaitingReason(stateWithSetupLock, "waitingForBreakout", { symbol, timeframe, side }),
+      result: "WATCH_AND_ARM",
+      executionIntent: "WATCH_AND_ARM",
+      confirmationResult,
+      ...performanceDebugPayload,
+      breakoutGuard,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        reasonCode: "WAIT_BREAKOUT_CONFIRMATION",
+        reason: breakoutGuard.waitingReason,
       },
     };
   }
@@ -3252,6 +3398,7 @@ export function simulateDecisionExecution({
     ...performanceDebugPayload,
     pendingOrder,
     pendingCreation,
+    breakoutGuard,
     eligibilityInfo: effectiveEligibility,
   };
 }
