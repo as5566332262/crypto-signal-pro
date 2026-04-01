@@ -6,6 +6,8 @@ import {
   createInitialPaperAccountState,
   DEFAULT_PERFORMANCE_DEBUG_STATE,
   getSimulationEligibility,
+  isFormalCancelledOrder,
+  isFormalPendingOrder,
   normalizePaperAccountState,
   paperTradingAnalytics,
   paperTradingConstants,
@@ -3186,9 +3188,13 @@ export default function CryptoSignalWebApp() {
   const accountSnapshot = useMemo(() => {
     const accountSummary = calculateAccountSummary(paperAccount);
     const currentSymbolOpenPositions = (paperAccount.openPositions || []).filter((position) => position.symbol === paperMarketSymbol);
-    const currentSymbolPendingOrders = (paperAccount.pendingOrders || []).filter((order) => order.symbol === paperMarketSymbol);
+    const currentSymbolPendingOrders = (paperAccount.pendingOrders || [])
+      .filter((order) => order.symbol === paperMarketSymbol)
+      .filter((order) => isFormalPendingOrder(order));
     const currentSymbolClosedTrades = (paperAccount.closedTrades || []).filter((trade) => trade.symbol === paperMarketSymbol);
-    const currentSymbolCancelledOrders = (paperAccount.cancelledOrders || []).filter((order) => order.symbol === paperMarketSymbol);
+    const currentSymbolCancelledOrders = (paperAccount.cancelledOrders || [])
+      .filter((order) => order.symbol === paperMarketSymbol)
+      .filter((order) => isFormalCancelledOrder(order));
     const wins = currentSymbolClosedTrades.filter((trade) => trade.realizedPnl >= 0).length;
     const losses = currentSymbolClosedTrades.length - wins;
     const totalTrades = currentSymbolClosedTrades.length;
@@ -3207,7 +3213,7 @@ export default function CryptoSignalWebApp() {
       currentSymbolClosedTrades,
       currentSymbolCancelledOrders,
       totalOpenPositionsAllSymbols: (paperAccount.openPositions || []).length,
-      totalPendingOrdersAllSymbols: (paperAccount.pendingOrders || []).length,
+      totalPendingOrdersAllSymbols: (paperAccount.pendingOrders || []).filter((order) => isFormalPendingOrder(order)).length,
       currentSymbolOpenPositionsCount: currentSymbolOpenPositions.length,
       currentSymbolPendingOrdersCount: currentSymbolPendingOrders.length,
       wins,
@@ -3235,7 +3241,9 @@ export default function CryptoSignalWebApp() {
         next[symbolKey] = {
           ...current,
           elapsedTime,
-          pendingOrders: (paperAccount.pendingOrders || []).filter((order) => order.symbol === marketSymbol),
+          pendingOrders: (paperAccount.pendingOrders || [])
+            .filter((order) => order.symbol === marketSymbol)
+            .filter((order) => isFormalPendingOrder(order)),
           openPositions: (paperAccount.openPositions || []).filter((position) => position.symbol === marketSymbol),
           closedTrades: (paperAccount.closedTrades || []).filter((trade) => trade.symbol === marketSymbol),
           cooldown: getDirectionalCooldownStateFromAccount(paperAccount, marketSymbol),
