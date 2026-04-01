@@ -132,45 +132,55 @@ export function DecisionHeader({ symbolLabel, currentPrice, regime, actionLabel,
 export function DecisionCard({ analysis, formatNumber }) {
   const decisionData = analysis?.aiDecisionOutput || analysis;
   const tone = decisionTone(decisionData?.action === "LONG" ? "LONG" : decisionData?.action === "SHORT" ? "SHORT" : analysis?.bias);
-  const trapSummary = analysis?.trapDetection?.trapSignal === "NONE"
-    ? "無明顯陷阱訊號"
-    : `${trapSignalText(analysis?.trapDetection?.trapSignal)}（${analysis?.trapDetection?.trapConfidence || "-"}）`;
-  const summaryLine = decisionData?.summary || analysis?.triggerEngine?.waitConditionSentence || analysis?.noEntryReason || "等待結構與訊號同步";
-  const metricSignals = [
-    { label: "信心", value: decisionData?.confidence || analysis?.confidenceLevelLabel || "-", tone: "bg-violet-100 text-violet-700 ring-violet-200" },
-    { label: "風險", value: decisionData?.risk || analysis?.riskLevel || "-", tone: "bg-amber-100 text-amber-700 ring-amber-200" },
-    { label: "觸發", value: decisionData?.executionPlan?.triggerPrice ? formatNumber(decisionData?.executionPlan?.triggerPrice, 2) : analysis?.triggerEngine?.confirmationLabel || "-", tone: "bg-sky-100 text-sky-700 ring-sky-200" },
-    { label: "MTF 一致", value: decisionData?.mtfBias ? `${decisionData.mtfBias.tf15m}/${decisionData.mtfBias.tf1h}/${decisionData.mtfBias.tf4h}` : analysis?.confluence || "-", tone: "bg-emerald-100 text-emerald-700 ring-emerald-200" },
-  ];
+  const support = analysis?.levels?.structureSupportZone?.high ?? analysis?.levels?.structureSupportZone?.low;
+  const resistance = analysis?.levels?.structureResistanceZone?.low ?? analysis?.levels?.structureResistanceZone?.high;
+  const currentPrice = Number(analysis?.price);
+  const hasRange = Number.isFinite(Number(support)) && Number.isFinite(Number(resistance)) && Number(resistance) > Number(support);
+  const rangeMid = hasRange ? (Number(support) + Number(resistance)) / 2 : null;
+  const currentPhase = analysis?.setup || analysis?.triggerEngine?.waitConditionSentence || "等待下一步確認";
+  const distanceToEntry = Number(analysis?.distanceToEntry ?? analysis?.distanceToTriggerPrice ?? analysis?.distances?.entry);
+  const reasonTags = (analysis?.waitReasons || analysis?.waitForConditions || [])
+    .filter(Boolean)
+    .slice(0, 4);
+  const defaultTags = ["價格在區間中段", "未觸及支撐", "RR 不佳"];
+  const marketLocation = !hasRange || !Number.isFinite(currentPrice)
+    ? "-"
+    : currentPrice >= rangeMid
+      ? (currentPrice > Number(resistance) ? "上半（接近或高於壓力）" : "上半")
+      : (currentPrice < Number(support) ? "下半（接近或低於支撐）" : "下半");
+  const isTradable = analysis?.finalDecision === "TRADE" || ["LONG", "SHORT", "BUY", "SELL"].includes(analysis?.finalDecision);
+  const decisionLabel = isTradable ? "可交易" : "不交易";
 
   return (
     <Card className="rounded-3xl border-2 border-slate-900 shadow-[0_12px_30px_-18px_rgba(15,23,42,0.55)]">
       <CardHeader className="px-5 pt-5 pb-3 sm:px-6">
-        <CardTitle className="text-2xl tracking-tight">決策中心</CardTitle>
+        <CardTitle className="text-2xl tracking-tight">交易員一眼決策版</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4 px-5 pb-6 text-sm sm:px-6">
         <div className={`rounded-2xl border bg-gradient-to-r p-5 ${tone.glow}`}>
-          <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">FINAL DECISION</div>
-          <div className="mt-3 flex items-center justify-between gap-4">
-            <Badge className={`rounded-full px-5 py-2.5 text-2xl font-extrabold tracking-[0.08em] ${tone.pill}`}>
-              {analysis?.finalDecisionLabel || "-"}
-            </Badge>
-            <div className="text-xs font-medium text-slate-500">請優先依此執行</div>
+          <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">DECISION</div>
+          <div className="mt-2 text-4xl font-black tracking-wide text-slate-900">{decisionLabel}</div>
+          <div className="mt-2 text-sm font-semibold text-slate-700">階段：{currentPhase}</div>
+          <div className="mt-1 text-lg font-bold text-slate-800">
+            差距：{Number.isFinite(distanceToEntry) ? `${formatNumber(Math.abs(distanceToEntry), 2)} USDT` : "-"}
           </div>
-          <div className="mt-3 space-y-2 rounded-xl bg-white/70 px-3 py-2 text-sm text-slate-700">
-            <div>{summaryLine}</div>
-            <div className="text-xs font-medium text-slate-600">陷阱判讀：{trapSummary}</div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {(reasonTags.length ? reasonTags : defaultTags).map((reason) => (
+              <Badge key={reason} className="rounded-full border border-slate-300 bg-white/85 px-2.5 py-0.5 text-xs text-slate-700">
+                {reason}
+              </Badge>
+            ))}
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-2.5">
-          {metricSignals.map((metric) => (
-            <div key={metric.label} className="rounded-xl border border-slate-200 bg-white p-2.5">
-              <div className="text-[11px] tracking-[0.12em] text-slate-500">{metric.label}</div>
-              <div className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-sm font-semibold ring-1 ${metric.tone}`}>{metric.value}</div>
-            </div>
-          ))}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="text-xs font-semibold tracking-[0.14em] text-slate-500">位置判斷</div>
+          <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Current</span><div className="font-semibold">{formatNumber(currentPrice, 2)}</div></div>
+            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Support</span><div className="font-semibold">{formatNumber(support, 2)}</div></div>
+            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Resistance</span><div className="font-semibold">{formatNumber(resistance, 2)}</div></div>
+          </div>
+          <div className="mt-2 text-sm font-semibold text-slate-700">區間位置：{marketLocation}</div>
         </div>
-        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-slate-600">{analysis?.explanation || "-"}</div>
       </CardContent>
     </Card>
   );
@@ -179,12 +189,10 @@ export function DecisionCard({ analysis, formatNumber }) {
 export function TradePlanCard({ analysis, digits, formatNumber }) {
   const executionPlan = analysis?.aiDecisionOutput?.executionPlan || analysis?.executionPlan || {};
   const isHold = executionPlan?.action === "HOLD" || analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
-  const ruleSections = [
-    { label: "目前動作", value: executionPlan?.currentActionLabel || "觀望，暫不進場" },
-    { label: "區間上緣", value: formatNumber(executionPlan?.rangeHigh, digits) },
-    { label: "區間下緣", value: formatNumber(executionPlan?.rangeLow, digits) },
-    { label: "觸發價格", value: executionPlan?.triggerPrice != null ? `15m 收盤觸發 ${formatNumber(executionPlan?.triggerPrice, digits)}` : "-" },
-    { label: "建議方向", value: executionPlan?.action || "HOLD" },
+  const topChecklist = [
+    { label: "Entry", value: executionPlan?.triggerPrice != null ? formatNumber(executionPlan?.triggerPrice, digits) : "-" },
+    { label: "Stop", value: formatNumber(executionPlan?.stopLoss, digits) },
+    { label: "TP", value: [executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3].filter((v) => v != null).map((v) => formatNumber(v, digits)).join(" / ") || "-" },
   ];
   const listBlock = (title, rows) => (
     <div className="rounded-xl border border-slate-200 bg-white p-3">
@@ -201,26 +209,24 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
       <CardContent className="space-y-4 px-5 pb-5 text-sm sm:px-6">
         <div className={`rounded-2xl border p-3.5 ${isHold ? "border-amber-200 bg-amber-50/80 text-amber-900" : "border-slate-200 bg-slate-50/70 text-slate-900"}`}>
           <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">EXECUTION CHECKLIST</div>
-          <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
-            {ruleSections.map((item) => (
+          <div className="mt-3 grid gap-2.5 sm:grid-cols-3">
+            {topChecklist.map((item) => (
               <div key={item.label} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
                 <div className="text-xs font-semibold text-slate-500">{item.label}</div>
                 <div className="text-sm leading-snug text-slate-900">{item.value || "-"}</div>
               </div>
             ))}
           </div>
-          <div className="mt-3 grid gap-2.5">
-            {listBlock("突破確認條件", executionPlan?.breakoutConfirmationRules)}
-            {listBlock("回踩確認條件", executionPlan?.retestConfirmationRules)}
-            {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
-            {listBlock("下一步確認", executionPlan?.nextConfirmationRules)}
-            {listBlock("失效條件", executionPlan?.invalidationRules)}
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-3">
-            <div className="rounded-xl bg-white p-3"><div className="text-slate-500">失效價格</div><div className="font-semibold">{formatNumber(executionPlan?.invalidationPrice, digits)}</div></div>
-            <div className="rounded-xl bg-white p-3"><div className="text-slate-500">止損</div><div className="font-semibold">{formatNumber(executionPlan?.stopLoss, digits)}</div></div>
-            <div className="rounded-xl bg-white p-3 col-span-2"><div className="text-slate-500">TP1 / TP2 / TP3</div><div className="font-semibold">{formatNumber(executionPlan?.takeProfit1, digits)} / {formatNumber(executionPlan?.takeProfit2, digits)} / {formatNumber(executionPlan?.takeProfit3, digits)}</div></div>
-          </div>
+          <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+            <summary className="cursor-pointer text-xs font-semibold tracking-[0.12em] text-slate-600">展開詳細條件</summary>
+            <div className="mt-3 grid gap-2.5">
+              {listBlock("突破確認條件", executionPlan?.breakoutConfirmationRules)}
+              {listBlock("回踩確認條件", executionPlan?.retestConfirmationRules)}
+              {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
+              {listBlock("下一步確認", executionPlan?.nextConfirmationRules)}
+              {listBlock("失效條件", executionPlan?.invalidationRules)}
+            </div>
+          </details>
         </div>
         <div className="rounded-xl border border-slate-200 p-3">
           <div className="text-slate-500">倉位 / 槓桿</div>
