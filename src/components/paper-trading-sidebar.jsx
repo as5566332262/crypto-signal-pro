@@ -948,6 +948,35 @@ export default function PaperTradingSidebar({
                     </span>
                   </div>
                   <div className="text-slate-700">原因：{simulationExecutionStatus?.reason || "-"}</div>
+                  {accountSnapshot?.currentSymbolSetup || accountSnapshot?.lastReleasedSetup ? (
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-slate-700 space-y-1">
+                      {(() => {
+                        const setup = accountSnapshot?.currentSymbolSetup || accountSnapshot?.lastReleasedSetup;
+                        const statusMap = {
+                          ACTIVE: "ACTIVE",
+                          TRIGGERED: "TRIGGERED",
+                          INVALIDATED: "INVALIDATED",
+                          EXPIRED: "EXPIRED",
+                        };
+                        const invalidationReasonMap = {
+                          STRUCTURE_INVALIDATED: "結構失效",
+                          MOMENTUM_INVALIDATED: "動能失效",
+                          TIMEOUT_INVALIDATED: "等待逾時",
+                        };
+                        const livedMs = setup?.setupCreatedAt ? (Date.now() - new Date(setup.setupCreatedAt).getTime()) : null;
+                        const livedMinutes = Number.isFinite(livedMs) ? Math.max(0, Math.floor(livedMs / 60000)) : null;
+                        return (
+                          <>
+                            <div className="font-semibold text-emerald-800">Setup 狀態：{statusMap[setup?.status] || setup?.status || "-"}</div>
+                            <div>Locked Entry Zone：{formatNumber(setup?.entryZoneLow, paperDigits)} – {formatNumber(setup?.entryZoneHigh, paperDigits)}</div>
+                            <div>Setup 建立時間：{formatDate(setup?.setupCreatedAt)}</div>
+                            <div>Setup 存活：{livedMinutes == null ? "-" : `${livedMinutes} 分鐘`}</div>
+                            <div>失效原因：{invalidationReasonMap[setup?.invalidationReason] || "-"}</div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
                   {simulationExecutionStatus?.scoring ? (
                     <div className="rounded-lg border border-violet-200 bg-violet-50 p-2 text-slate-700 space-y-1">
                       <div className="font-semibold text-violet-800">Scoring 引擎</div>
