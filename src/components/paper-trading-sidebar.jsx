@@ -114,6 +114,13 @@ function simulationPhaseLabel(phase) {
   return phaseMap[phase] || "條件檢查中";
 }
 
+function executionModeLabel(mode) {
+  const normalized = String(mode || "").toUpperCase();
+  if (normalized === "PULLBACK") return "Pullback";
+  if (normalized === "BREAKOUT") return "Breakout";
+  return "-";
+}
+
 function yesNoLabel(value) {
   return value ? "是" : "否";
 }
@@ -755,6 +762,7 @@ export default function PaperTradingSidebar({
                   <InfoItem label="isSimulating" value={yesNoLabel(currentSimulationStatus?.isSimulating)} />
                   <InfoItem label="elapsed" value={simulationStartedAt ? runtimeLabel : "-"} />
                   <InfoItem label="phase" value={simulationPhaseLabel(currentSimulationStatus?.currentPhase)} />
+                  <InfoItem label="模式" value={executionModeLabel(currentSimulationStatus?.executionMode)} />
                   <InfoItem
                     label="waiting reason"
                     value={currentSimulationStatus?.waitingReason || "等待下一根 K 線確認"}

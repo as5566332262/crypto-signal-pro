@@ -539,9 +539,15 @@ function resolveManualSimulationSide(decision) {
 
 function resolveEntryMode(decision) {
   const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
-  if (setupType === "breakout") return "breakout";
+  const strategyType = resolveStrategyType(decision);
+  const hasPullbackZone = Number.isFinite(normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow)) &&
+    Number.isFinite(normalizeNumber(decision?.executionPlan?.entryHigh ?? decision?.entryHigh));
+
+  if (strategyType === "range" || strategyType === "pullback") return "pullback";
   if (setupType === "pullback") return "pullback";
-  return "breakout";
+  if (setupType === "breakout") return "breakout";
+  if (hasPullbackZone) return "pullback";
+  return "pullback";
 }
 
 function resolveStrategyType(decision = {}) {
@@ -580,6 +586,10 @@ function resolvePlannedEntryPrice(decision, side) {
     if (Number.isFinite(entryMid)) return { entryPrice: entryMid, mode, sourceFunction };
     if (side === "LONG" && Number.isFinite(entryLow)) return { entryPrice: entryLow, mode, sourceFunction };
     if (side === "SHORT" && Number.isFinite(entryHigh)) return { entryPrice: entryHigh, mode, sourceFunction };
+  }
+  const strategyType = resolveStrategyType(decision);
+  if (strategyType === "range" || strategyType === "pullback") {
+    return { entryPrice: undefined, mode, sourceFunction };
   }
   return { entryPrice: triggerPrice, mode, sourceFunction };
 }
@@ -1462,10 +1472,10 @@ function evaluatePendingOrderFill(order, {
 
   // Tick crossing (strict directional checks only).
   if (order.side === "LONG" && hasTick && tickPrice <= entryPrice) {
-    return { shouldFill: true, reason: resolveFillReason(tickPrice), triggerSource: "TICK_PRICE" };
+    return { shouldFill: true, reason: resolveFillReason(tickPrice), triggerSource: "MARKET_TICK" };
   }
   if (order.side === "SHORT" && hasTick && tickPrice >= entryPrice) {
-    return { shouldFill: true, reason: resolveFillReason(tickPrice), triggerSource: "TICK_PRICE" };
+    return { shouldFill: true, reason: resolveFillReason(tickPrice), triggerSource: "MARKET_TICK" };
   }
 
   if (!allowCandleTrigger) {
@@ -1474,10 +1484,10 @@ function evaluatePendingOrderFill(order, {
 
   // Candle crossing (strict directional checks only).
   if (order.side === "LONG" && hasLow && candleLow <= entryPrice) {
-    return { shouldFill: true, reason: resolveFillReason(candleLow), triggerSource: "CANDLE_LOW" };
+    return { shouldFill: true, reason: resolveFillReason(candleLow), triggerSource: "MARKET_CANDLE" };
   }
   if (order.side === "SHORT" && hasHigh && candleHigh >= entryPrice) {
-    return { shouldFill: true, reason: resolveFillReason(candleHigh), triggerSource: "CANDLE_HIGH" };
+    return { shouldFill: true, reason: resolveFillReason(candleHigh), triggerSource: "MARKET_CANDLE" };
   }
 
   if (!hasTick && !hasLow && !hasHigh) {
@@ -1855,6 +1865,18 @@ function maybeFillPendingOrders(state, {
       functionName: checkedFunctionName,
     });
     if (!shouldFill) {
+      if (resolvedFillReason === "TRIGGER_NOT_REACHED") {
+        console.debug("[FILL_REJECTED_TRIGGER_NOT_REACHED]", {
+          orderId: order.id,
+          side: order.side,
+          entryPrice: orderEntryPrice,
+          tickPrice: orderTickPrice,
+          candleLow: orderCandleLow,
+          candleHigh: orderCandleHigh,
+          triggerSource: resolvedTriggerSource,
+          checkedBy: triggeredBy,
+        });
+      }
       console.debug("[FILL_REJECTED]", {
         orderId: order.id,
         reason: resolvedFillReason,
@@ -2287,6 +2309,27 @@ export function simulateDecisionExecution({
   const tentativeEntryPrice = normalizeNumber(
     bypassSetupGate ? fallbackEntryPrice : (reentryAttempt?.adjustedEntryPrice ?? plannedEntry.entryPrice)
   );
+  if (!Number.isFinite(tentativeEntryPrice)) {
+    return {
+      state,
+      result: "MISSING_ENTRY_PRICE",
+      executionIntent: "WATCH_ONLY",
+      confirmationResult: {
+        ...confirmationResult,
+        canExecute: false,
+        decisionType: "NO_TRADE",
+      },
+      ...performanceDebugPayload,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        eligibility: "WATCH_ONLY",
+        reasonCode: "MISSING_ENTRY_PRICE",
+        reason: plannedEntry.mode === "pullback"
+          ? "pullback 缺少 targetEntryZone，禁止 fallback 到 breakout triggerPrice"
+          : "breakout 缺少 triggerPrice",
+      },
+    };
+  }
   console.info("[ENTRY_COMPUTED]", {
     symbol,
     strategyType: decision?.setupType ?? decision?.executionPlan?.setupType ?? decision?.marketRegimeLabel ?? decision?.regime ?? "unknown",
