@@ -234,9 +234,17 @@ export function DecisionCard({ analysis, formatNumber }) {
 
 export function TradePlanCard({ analysis, digits, formatNumber }) {
   const executionPlan = analysis?.aiDecisionOutput?.executionPlan || analysis?.executionPlan || {};
+  const executionMode = String(executionPlan?.executionMode || "").toUpperCase();
+  const executionModeLabel = executionMode === "BREAKOUT" ? "Breakout" : executionMode === "PULLBACK" ? "Pullback" : "-";
+  const entryValue = executionMode === "PULLBACK"
+    ? [executionPlan?.entryLow, executionPlan?.entryHigh].every((value) => value != null)
+      ? `${formatNumber(executionPlan?.entryLow, digits)} ~ ${formatNumber(executionPlan?.entryHigh, digits)}`
+      : (executionPlan?.entryMid != null ? formatNumber(executionPlan?.entryMid, digits) : "-")
+    : (executionPlan?.triggerPrice != null ? formatNumber(executionPlan?.triggerPrice, digits) : "-");
   const isHold = executionPlan?.action === "HOLD" || analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
   const topChecklist = [
-    { label: "進場（Entry）", shortLabel: "Entry", value: executionPlan?.triggerPrice != null ? formatNumber(executionPlan?.triggerPrice, digits) : "-" },
+    { label: "模式（Mode）", shortLabel: "Mode", value: executionModeLabel },
+    { label: "進場（Entry）", shortLabel: "Entry", value: entryValue },
     { label: "止損（Stop）", shortLabel: "Stop", value: formatNumber(executionPlan?.stopLoss, digits) },
     { label: "止盈（TP）", shortLabel: "TP", value: [executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3].filter((v) => v != null).map((v) => formatNumber(v, digits)).join(" / ") || "-" },
   ];
@@ -259,7 +267,7 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
             {topChecklist[0].label} {topChecklist[0].value || "-"} / {topChecklist[1].label} {topChecklist[1].value || "-"} / {topChecklist[2].label} {topChecklist[2].value || "-"}
           </div>
           <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">EXECUTION CHECKLIST</div>
-          <div className="mt-3 grid gap-2.5 sm:grid-cols-3">
+          <div className="mt-3 grid gap-2.5 sm:grid-cols-4">
             {topChecklist.map((item) => (
               <div key={item.label} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
                 <div className="text-xs font-semibold text-slate-500">{item.label}</div>
