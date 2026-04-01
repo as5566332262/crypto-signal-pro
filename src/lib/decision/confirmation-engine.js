@@ -46,19 +46,20 @@ function resolveDecisionType(aiDecisionOutput = {}, hasActionableSide) {
 function resolvePriceInZone(currentPrice, aiDecisionOutput = {}, structure = {}, side) {
   const price = normalizeNumber(currentPrice);
   if (!Number.isFinite(price)) return false;
+  const executionMode = String(aiDecisionOutput?.executionPlan?.executionMode ?? aiDecisionOutput?.executionMode ?? "").toUpperCase();
   const zoneLow = normalizeNumber(
     structure?.zoneLow ?? aiDecisionOutput?.executionPlan?.entryLow ?? aiDecisionOutput?.entryLow ?? structure?.supportLow
   );
   const zoneHigh = normalizeNumber(
     structure?.zoneHigh ?? aiDecisionOutput?.executionPlan?.entryHigh ?? aiDecisionOutput?.entryHigh ?? structure?.resistanceHigh
   );
-  if (Number.isFinite(zoneLow) && Number.isFinite(zoneHigh)) {
+  if (executionMode !== "BREAKOUT" && Number.isFinite(zoneLow) && Number.isFinite(zoneHigh)) {
     const low = Math.min(zoneLow, zoneHigh);
     const high = Math.max(zoneLow, zoneHigh);
     return price >= low && price <= high;
   }
   const triggerPrice = normalizeNumber(aiDecisionOutput?.executionPlan?.triggerPrice ?? aiDecisionOutput?.triggerPrice);
-  if (Number.isFinite(triggerPrice)) {
+  if (executionMode === "BREAKOUT" && Number.isFinite(triggerPrice)) {
     return side === "SHORT" ? price >= triggerPrice : price <= triggerPrice;
   }
   return false;

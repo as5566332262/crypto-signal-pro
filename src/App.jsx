@@ -1575,6 +1575,7 @@ function evaluateEntryTiming({
   atr,
   tradePlan,
   breakoutState,
+  volumeState,
   marketRegime,
   mtfAlignedRatio,
   fakeBreakoutRisk,
@@ -1599,9 +1600,17 @@ function evaluateEntryTiming({
   }
 
   if (setupType === "breakout") {
+    const breakoutTriggerPrice =
+      bias === "偏空"
+        ? tradePlan?.entryLow ?? price
+        : tradePlan?.entryHigh ?? price;
+    const triggerReady = bias === "偏空" ? price <= breakoutTriggerPrice : price >= breakoutTriggerPrice;
+    const bullishMtfAligned = mtfAlignedRatio >= 0.45;
+    const volumeExpanded = volumeState === "放量";
     if (!["向上突破", "向下跌破"].includes(breakoutState)) return "WAIT_BREAKOUT";
     if (marketRegime === "ranging" && mtfAlignedRatio < 0.4) return "WAIT_BREAKOUT";
-    return entryInZone ? "READY" : "WAIT_BREAKOUT";
+    if (!triggerReady || !volumeExpanded || !bullishMtfAligned) return "WAIT_BREAKOUT";
+    return "READY";
   }
   if (setupType === "pullback") {
     if (!entryInZone) return "WAIT_PULLBACK";
@@ -2198,6 +2207,9 @@ function buildAiDecisionOutput({
   summary,
   rsi,
   macd,
+  breakoutState,
+  volumeState,
+  mtfAlignedRatio,
 }) {
   const action = finalDecision === "BUY" ? "LONG" : finalDecision === "SELL" ? "SHORT" : "HOLD";
   const executionMode = setupType === "breakout" ? "BREAKOUT" : "PULLBACK";
@@ -2227,6 +2239,13 @@ function buildAiDecisionOutput({
         ? `RSI <= 45（目前 ${formatNumber(rsi, 2)}）且 MACD 柱體維持負值（目前 ${formatNumber(macd?.histogram, 4)}）`
         : `RSI >= 55（目前 ${formatNumber(rsi, 2)}）且 MACD 柱體維持正值（目前 ${formatNumber(macd?.histogram, 4)}）`,
   };
+  const breakoutModeReasons = action === "LONG" && executionMode === "BREAKOUT"
+    ? [
+      `價格接近/突破壓力位（trigger=${formatNumber(triggerPrice)}，state=${breakoutState || "-"})`,
+      `成交量確認放大（volumeState=${volumeState || "-"})`,
+      `多週期偏多一致（aligned=${formatNumber((mtfAlignedRatio || 0) * 100, 1)}%）`,
+    ]
+    : [];
 
   return {
     symbol,
@@ -2243,6 +2262,7 @@ function buildAiDecisionOutput({
       action,
       setupType,
       executionMode,
+      modeSelectionReasons: executionMode === "BREAKOUT" ? breakoutModeReasons : ["回踩策略：等待價格回到 entry zone 再進場"],
       atr,
       preferredSide: bias === "偏空" ? "SHORT" : bias === "偏多" ? "LONG" : undefined,
       currentActionLabel:
@@ -2636,6 +2656,7 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
     atr,
     tradePlan,
     breakoutState,
+    volumeState,
     marketRegime,
     mtfAlignedRatio,
     fakeBreakoutRisk: fakeBreakout.risk,
@@ -2811,6 +2832,9 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
     summary: decisionSummary,
     rsi,
     macd,
+    breakoutState,
+    volumeState,
+    mtfAlignedRatio,
   });
 
   return {
