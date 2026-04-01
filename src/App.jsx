@@ -584,7 +584,14 @@ function resolveTargetEntryZone(decision, levels) {
   return null;
 }
 
-function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diagnostics = [], lockedSetup = null }) {
+function buildSimulationWaitingDetails({
+  analysis,
+  timeframe,
+  currentPrice,
+  diagnostics = [],
+  lockedSetup = null,
+  breakoutGuard = null,
+}) {
   const decision = analysis?.aiDecisionOutput;
   const mtfBias = analysis?.mtfBias || {};
   const action = String(decision?.action || decision?.executionPlan?.action || "").toUpperCase();
@@ -605,6 +612,42 @@ function buildSimulationWaitingDetails({ analysis, timeframe, currentPrice, diag
   const sideText = action === "SHORT" ? "反彈壓力區" : "回踩支撐區";
   const currentMomentum = action === "SHORT" ? mtfBias?.tf15m || "bullish" : mtfBias?.tf15m || "bearish";
   const expectedMomentum = action === "SHORT" ? "bearish" : "bullish";
+
+  if (executionMode === "BREAKOUT") {
+    const triggerPrice = Number(
+      lockedSetup?.triggerPrice
+      ?? decision?.executionPlan?.triggerPrice
+      ?? decision?.triggerPrice
+      ?? analysis?.levels?.structureResistanceZone?.high
+      ?? analysis?.levels?.structureSupportZone?.low
+    );
+    const statusMap = {
+      WAIT_BREAKOUT: "尚未突破",
+      BREAK_DETECTED: "已刺穿，未確認",
+      BREAKOUT_CONFIRMING: "已刺穿，未確認",
+      BREAKOUT_CONFIRMED: "已確認突破",
+      BREAKOUT_FAKE: "假突破已阻擋",
+    };
+    const checklist = breakoutGuard?.checklist || {};
+    const checklistItems = [
+      `收盤是否站上/下：${checklist.closeConfirmed ? "是" : "否"}`,
+      `成交量是否達標：${checklist.volumeConfirmed ? "是" : "否"}`,
+      `是否站穩/回踩不破：${checklist.holdOrRetestConfirmed ? "是" : "否"}`,
+    ];
+    const waitingReason = breakoutGuard?.waitingReason
+      || `等待 ${timeframe} 突破確認（trigger ${Number.isFinite(triggerPrice) ? formatNumber(triggerPrice) : "-"})`;
+    return {
+      waitingReason,
+      executionMode,
+      breakoutSetupState: breakoutGuard?.breakoutSetupState || "WAIT_BREAKOUT",
+      breakoutStatusText: statusMap[breakoutGuard?.breakoutSetupState] || "尚未突破",
+      breakoutTriggerPrice: Number.isFinite(triggerPrice) ? triggerPrice : null,
+      confirmationChecklist: checklistItems,
+      targetEntryZone: Number.isFinite(triggerPrice) ? `${formatNumber(triggerPrice)}` : "-",
+      currentPrice: Number.isFinite(safePrice) ? safePrice : null,
+      unmetConditions: [...new Set([waitingReason, ...checklistItems])].slice(0, 4),
+    };
+  }
 
   const keyConditions = [];
   if (targetZone && Number.isFinite(targetZone.low) && Number.isFinite(targetZone.high) && Number.isFinite(safePrice)) {
@@ -3577,6 +3620,8 @@ export default function CryptoSignalWebApp() {
           candleLow: currentCandle?.low,
           candleClose: currentCandle?.close,
           prevOpen: previousCandle?.open,
+          prevHigh: previousCandle?.high,
+          prevLow: previousCandle?.low,
           prevClose: previousCandle?.close,
           currentVolume: latestVolume,
           avgVolume20,
@@ -3824,6 +3869,7 @@ const simulationAgentState = {
         timeframe,
         currentPrice: paperCurrentPrice,
         diagnostics: nextFeedback?.unmetConditions,
+        breakoutGuard: result.breakoutGuard || null,
         lockedSetup: Object.values(executedState?.activeSetups || {}).find(
           (setup) => setup?.symbol === paperMarketSymbol && setup?.timeframe === timeframe && setup?.status === "ACTIVE"
         ) || null,
@@ -3905,6 +3951,10 @@ const simulationAgentState = {
         waitingReason,
         executionMode: isNonWaitingState ? null : waitingDetails.executionMode,
         targetEntryZone: isNonWaitingState ? null : waitingDetails.targetEntryZone,
+        breakoutSetupState: isNonWaitingState ? null : waitingDetails.breakoutSetupState || null,
+        breakoutStatusText: isNonWaitingState ? null : waitingDetails.breakoutStatusText || null,
+        breakoutTriggerPrice: isNonWaitingState ? null : waitingDetails.breakoutTriggerPrice ?? null,
+        breakoutChecklist: isNonWaitingState ? [] : waitingDetails.confirmationChecklist || [],
         currentPrice: isNonWaitingState ? null : waitingDetails.currentPrice,
         unmetConditions: isNonWaitingState ? [] : waitingDetails.unmetConditions,
         lastBlockReason: blockReason,
