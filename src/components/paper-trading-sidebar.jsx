@@ -752,65 +752,15 @@ export default function PaperTradingSidebar({
             {showSimulationStatusPanel ? (
               <CardContent className="space-y-3 text-xs text-slate-700">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <InfoItem label="當前 Symbol" value={currentSimulationStatus?.symbol || `${paperSymbol}USDT`} />
-                  <InfoItem label="模擬執行中" value={yesNoLabel(currentSimulationStatus?.isSimulating)} />
-                  <InfoItem label="啟動時間" value={formatDate(currentSimulationStatus?.startedAt || simulationStartedAt)} />
-                  <InfoItem label="已運行多久" value={simulationStartedAt ? runtimeLabel : "-"} />
-                  <InfoItem label="最新 decision time" value={formatDate(currentSimulationStatus?.lastDecisionAt || lastDecisionAt)} />
-                  <InfoItem label="當前 simulation phase" value={simulationPhaseLabel(currentSimulationStatus?.currentPhase)} />
+                  <InfoItem label="isSimulating" value={yesNoLabel(currentSimulationStatus?.isSimulating)} />
+                  <InfoItem label="elapsed" value={simulationStartedAt ? runtimeLabel : "-"} />
+                  <InfoItem label="phase" value={simulationPhaseLabel(currentSimulationStatus?.currentPhase)} />
                   <InfoItem
-                    label="當前等待原因"
+                    label="waiting reason"
                     value={currentSimulationStatus?.waitingReason || "等待下一根 K 線確認"}
                     className="col-span-2"
                     valueClassName="whitespace-normal leading-relaxed"
                   />
-                  <InfoItem
-                    label="Target Entry Zone"
-                    value={currentSimulationStatus?.targetEntryZone || "-"}
-                    className="sm:col-span-2"
-                  />
-                  <InfoItem
-                    label="Current Price"
-                    value={
-                      Number.isFinite(Number(currentSimulationStatus?.currentPrice))
-                        ? formatNumber(Number(currentSimulationStatus.currentPrice), paperDigits)
-                        : "-"
-                    }
-                  />
-                  <InfoItem
-                    label="最近一次未下單原因"
-                    value={currentSimulationStatus?.lastBlockReason || "-"}
-                    className="sm:col-span-2"
-                  />
-                  <InfoItem label="已有 pending order" value={yesNoLabel(currentSimulationStatus?.hasPendingOrder)} />
-                  <InfoItem label="已有 open position" value={yesNoLabel(currentSimulationStatus?.hasOpenPosition)} />
-                  <InfoItem label="cooldown 啟用中" value={yesNoLabel(currentSimulationStatus?.cooldownActive)} />
-                  <InfoItem label="range filter 阻擋" value={yesNoLabel(currentSimulationStatus?.blockedByRangeFilter)} />
-                  <InfoItem label="performance filter 阻擋" value={yesNoLabel(currentSimulationStatus?.blockedByPerformanceFilter)} />
-                  <InfoItem label="execution 允許下單" value={yesNoLabel(currentSimulationStatus?.executionAllowed)} />
-                  <InfoItem label="最後 agent decision" value={currentSimulationStatus?.lastDecisionSummary || currentSimulationStatus?.latestDecisionResult || "-"} className="col-span-2" />
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
-                  <div className="mb-1 text-[11px] font-semibold text-slate-500">未滿足條件（關鍵 2-3 項）</div>
-                  <ul className="space-y-1 text-[11px] leading-relaxed text-slate-700">
-                    {(currentSimulationStatus?.unmetConditions || []).slice(0, 3).map((condition, index) => (
-                      <li key={`${condition}-${index}`} className="break-words whitespace-pre-wrap [overflow-wrap:anywhere]">• {condition}</li>
-                    ))}
-                    {!currentSimulationStatus?.unmetConditions?.length ? <li className="text-slate-500">目前無待補條件</li> : null}
-                  </ul>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
-                  <div className="mb-1 text-[11px] font-semibold text-slate-500">最近 5 筆模擬事件</div>
-                  <ul className="space-y-1 text-[11px]">
-                    {(currentSimulationStatus?.recentSimulationEvents || []).slice(0, 5).map((event, index) => (
-                      <li key={`${event.timestamp || "na"}-${index}`} className="text-slate-700">
-                        [{formatEventTime(event.timestamp)}] {event.message}
-                      </li>
-                    ))}
-                    {!(currentSimulationStatus?.recentSimulationEvents || []).length ? (
-                      <li className="text-slate-500">目前尚無事件</li>
-                    ) : null}
-                  </ul>
                 </div>
               </CardContent>
             ) : null}
