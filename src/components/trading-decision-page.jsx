@@ -78,6 +78,13 @@ function getZonePosition(currentPrice, zoneLow, zoneHigh) {
   return "中段";
 }
 
+function getDistanceHint(distance) {
+  if (!Number.isFinite(distance)) return "-";
+  if (distance < 15) return "接近";
+  if (distance <= 40) return "中等";
+  return "尚遠";
+}
+
 function CandlestickBody(props) {
   const { x, width, payload } = props;
   if (!payload) return null;
@@ -162,7 +169,17 @@ export function DecisionCard({ analysis, formatNumber }) {
   const tone = decisionTone(decisionData?.action === "LONG" ? "LONG" : decisionData?.action === "SHORT" ? "SHORT" : analysis?.bias);
   const { zoneLow, zoneHigh, hasZone } = resolveZoneBounds(analysis);
   const currentPrice = Number(analysis?.price);
-  const distanceToEntry = Number(analysis?.distanceToEntry ?? analysis?.distanceToTriggerPrice ?? analysis?.distances?.entry);
+  const triggerPrice = Number(
+    analysis?.aiDecisionOutput?.executionPlan?.triggerPrice
+    ?? analysis?.executionPlan?.triggerPrice
+    ?? analysis?.aiDecisionOutput?.triggerPrice
+    ?? analysis?.triggerPrice
+  );
+  const rawDistanceToEntry = Number(analysis?.distanceToEntry ?? analysis?.distanceToTriggerPrice ?? analysis?.distances?.entry);
+  const distanceToEntry = Number.isFinite(rawDistanceToEntry)
+    ? Math.abs(rawDistanceToEntry)
+    : (Number.isFinite(currentPrice) && Number.isFinite(triggerPrice) ? Math.abs(currentPrice - triggerPrice) : Number.NaN);
+  const distanceHint = getDistanceHint(distanceToEntry);
   const reasonTags = (analysis?.waitReasons || analysis?.waitForConditions || [])
     .filter(Boolean)
     .slice(0, 4);
@@ -181,11 +198,14 @@ export function DecisionCard({ analysis, formatNumber }) {
           <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">DECISION</div>
           <div className="mt-2 text-4xl font-black tracking-wide text-slate-900">{decisionLabel}</div>
           <div className="mt-2 text-lg font-bold text-slate-800">
-            距離進場：{Number.isFinite(distanceToEntry) ? `差 ${formatNumber(Math.abs(distanceToEntry), 2)} USDT` : "-"}
+            距離進場：{Number.isFinite(distanceToEntry) ? `↓ ${formatNumber(distanceToEntry, 2)} USDT（${distanceHint}）` : "-"}
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <Badge className="rounded-full border border-slate-300 bg-white/85 px-2.5 py-0.5 text-xs text-slate-700">
-              距離：{Number.isFinite(distanceToEntry) ? `差 ${formatNumber(Math.abs(distanceToEntry), 2)} USDT` : "-"}
+              距離：{Number.isFinite(distanceToEntry) ? `↓ ${formatNumber(distanceToEntry, 2)} USDT` : "-"}
+            </Badge>
+            <Badge className="rounded-full border border-slate-300 bg-white/85 px-2.5 py-0.5 text-xs text-slate-700">
+              距離判斷：{distanceHint}
             </Badge>
             <Badge className="rounded-full border border-slate-300 bg-white/85 px-2.5 py-0.5 text-xs text-slate-700">
               位置：{marketLocation}
