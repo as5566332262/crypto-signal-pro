@@ -1053,7 +1053,9 @@ function evaluateBreakoutConfirmationGuard({ decision, side, signalContext = {},
       ? Number.isFinite(low) && low <= trigger && close > trigger
       : Number.isFinite(high) && high >= trigger && close < trigger;
   const holdOrRetestConfirmed = cfg.breakoutRetestRequired ? retestConfirmed : holdConfirmed;
-  const confirmed = breakDetected && closeConfirmed && volumeConfirmed && holdOrRetestConfirmed;
+  const conservativeConfirmed = breakDetected && closeConfirmed && volumeConfirmed && holdOrRetestConfirmed;
+  const aggressiveConfirmed = breakDetected && closeConfirmed && volumeConfirmed;
+  const confirmed = cfg.breakoutStyle === "AGGRESSIVE" ? aggressiveConfirmed : conservativeConfirmed;
   const fakeByClose = breakDetected && !closeConfirmed;
   const fakeByFastRevert = closeConfirmed && Number.isFinite(prevClose) && (side === "LONG" ? prevClose <= trigger : prevClose >= trigger);
   const fakeByRetestFail = cfg.breakoutRetestRequired && !retestConfirmed && closeConfirmed;
@@ -1068,7 +1070,10 @@ function evaluateBreakoutConfirmationGuard({ decision, side, signalContext = {},
         : closeConfirmed
           ? "BREAKOUT_CONFIRMING"
           : "BREAK_DETECTED";
-  const confirmMethod = cfg.breakoutRetestRequired ? "RETEST" : "HOLD";
+  const confirmMethod = cfg.breakoutStyle === "AGGRESSIVE"
+    ? "AGGRESSIVE"
+    : (cfg.breakoutRetestRequired ? "RETEST" : "HOLD");
+  const breakoutStyle = cfg.breakoutStyle;
   return {
     applies: true,
     confirmed,
@@ -1085,6 +1090,7 @@ function evaluateBreakoutConfirmationGuard({ decision, side, signalContext = {},
             ? `已突破且量能達標，等待${cfg.breakoutRetestRequired ? "回踩確認" : "站穩確認"}後建立突破單`
             : "突破已確認，可建立突破單",
     checklist: {
+      breakoutStyle,
       closeConfirmed,
       volumeConfirmed,
       holdOrRetestConfirmed,

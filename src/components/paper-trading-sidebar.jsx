@@ -773,6 +773,7 @@ export default function PaperTradingSidebar({
                   {String(currentSimulationStatus?.executionMode || "").toUpperCase() === "BREAKOUT" ? (
                     <>
                       <InfoItem label="triggerPrice" value={formatNumber(currentSimulationStatus?.breakoutTriggerPrice, paperDigits)} />
+                      <InfoItem label="breakout style" value={currentSimulationStatus?.breakoutStyle || "Conservative"} />
                       <InfoItem label="breakout status" value={currentSimulationStatus?.breakoutStatusText || "尚未突破"} />
                       <div className="col-span-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-2">
                         <div className="mb-1 text-slate-500">confirmation checklist</div>

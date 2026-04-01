@@ -629,7 +629,10 @@ function buildSimulationWaitingDetails({
       BREAKOUT_FAKE: "假突破已阻擋",
     };
     const checklist = breakoutGuard?.checklist || {};
+    const breakoutStyle = String(checklist.breakoutStyle || decision?.executionPlan?.breakoutStyle || decision?.breakoutStyle || "CONSERVATIVE").toUpperCase();
+    const breakoutStyleLabel = breakoutStyle === "AGGRESSIVE" ? "Aggressive" : "Conservative";
     const checklistItems = [
+      `breakout style：${breakoutStyleLabel}`,
       `收盤是否站上/下：${checklist.closeConfirmed ? "是" : "否"}`,
       `成交量是否達標：${checklist.volumeConfirmed ? "是" : "否"}`,
       `是否站穩/回踩不破：${checklist.holdOrRetestConfirmed ? "是" : "否"}`,
@@ -641,6 +644,7 @@ function buildSimulationWaitingDetails({
       executionMode,
       breakoutSetupState: breakoutGuard?.breakoutSetupState || "WAIT_BREAKOUT",
       breakoutStatusText: statusMap[breakoutGuard?.breakoutSetupState] || "尚未突破",
+      breakoutStyle: breakoutStyleLabel,
       breakoutTriggerPrice: Number.isFinite(triggerPrice) ? triggerPrice : null,
       confirmationChecklist: checklistItems,
       targetEntryZone: Number.isFinite(triggerPrice) ? `${formatNumber(triggerPrice)}` : "-",
@@ -2323,6 +2327,7 @@ function buildAiDecisionOutput({
       rangeHigh,
       rangeLow,
       triggerPrice: triggerPrice != null ? Number(triggerPrice.toFixed(4)) : undefined,
+      breakoutStyle: "CONSERVATIVE",
       entryLow: finalTradePlan?.entryLow,
       entryHigh: finalTradePlan?.entryHigh,
       entryMid: finalTradePlan?.entryMid,
@@ -3951,9 +3956,10 @@ const simulationAgentState = {
         waitingReason,
         executionMode: isNonWaitingState ? null : waitingDetails.executionMode,
         targetEntryZone: isNonWaitingState ? null : waitingDetails.targetEntryZone,
-        breakoutSetupState: isNonWaitingState ? null : waitingDetails.breakoutSetupState || null,
-        breakoutStatusText: isNonWaitingState ? null : waitingDetails.breakoutStatusText || null,
-        breakoutTriggerPrice: isNonWaitingState ? null : waitingDetails.breakoutTriggerPrice ?? null,
+    breakoutSetupState: isNonWaitingState ? null : waitingDetails.breakoutSetupState || null,
+    breakoutStatusText: isNonWaitingState ? null : waitingDetails.breakoutStatusText || null,
+    breakoutStyle: isNonWaitingState ? null : waitingDetails.breakoutStyle || null,
+    breakoutTriggerPrice: isNonWaitingState ? null : waitingDetails.breakoutTriggerPrice ?? null,
         breakoutChecklist: isNonWaitingState ? [] : waitingDetails.confirmationChecklist || [],
         currentPrice: isNonWaitingState ? null : waitingDetails.currentPrice,
         unmetConditions: isNonWaitingState ? [] : waitingDetails.unmetConditions,
