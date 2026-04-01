@@ -2197,6 +2197,7 @@ function buildAiDecisionOutput({
   macd,
 }) {
   const action = finalDecision === "BUY" ? "LONG" : finalDecision === "SELL" ? "SHORT" : "HOLD";
+  const executionMode = setupType === "breakout" ? "BREAKOUT" : "PULLBACK";
   const rangeHigh = Number((levels?.structureResistanceZone?.high ?? levels?.nearestResistance ?? price).toFixed(4));
   const rangeLow = Number((levels?.structureSupportZone?.low ?? levels?.nearestSupport ?? price).toFixed(4));
   const triggerPrice =
@@ -2238,6 +2239,7 @@ function buildAiDecisionOutput({
     executionPlan: {
       action,
       setupType,
+      executionMode,
       atr,
       preferredSide: bias === "偏空" ? "SHORT" : bias === "偏多" ? "LONG" : undefined,
       currentActionLabel:

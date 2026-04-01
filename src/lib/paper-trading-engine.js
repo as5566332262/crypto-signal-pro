@@ -538,6 +538,9 @@ function resolveManualSimulationSide(decision) {
 }
 
 function resolveEntryMode(decision) {
+  const executionMode = String(decision?.executionPlan?.executionMode ?? decision?.executionMode ?? "").toUpperCase();
+  if (executionMode === "PULLBACK") return "pullback";
+  if (executionMode === "BREAKOUT") return "breakout";
   const setupType = String(decision?.setupType ?? decision?.executionPlan?.setupType ?? "").toLowerCase();
   const strategyType = resolveStrategyType(decision);
   const hasPullbackZone = Number.isFinite(normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow)) &&
@@ -570,8 +573,10 @@ function resolveEntrySourceFunction(decision, side, mode) {
     if (side === "LONG" && Number.isFinite(entryLow)) return "executionPlan.entryLow";
     if (side === "SHORT" && Number.isFinite(entryHigh)) return "executionPlan.entryHigh";
   }
-  const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
-  if (Number.isFinite(triggerPrice)) return "executionPlan.triggerPrice";
+  if (mode === "breakout") {
+    const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
+    if (Number.isFinite(triggerPrice)) return "executionPlan.triggerPrice";
+  }
   return "unknown";
 }
 
@@ -586,12 +591,24 @@ function resolvePlannedEntryPrice(decision, side) {
     if (Number.isFinite(entryMid)) return { entryPrice: entryMid, mode, sourceFunction };
     if (side === "LONG" && Number.isFinite(entryLow)) return { entryPrice: entryLow, mode, sourceFunction };
     if (side === "SHORT" && Number.isFinite(entryHigh)) return { entryPrice: entryHigh, mode, sourceFunction };
-  }
-  const strategyType = resolveStrategyType(decision);
-  if (strategyType === "range" || strategyType === "pullback") {
     return { entryPrice: undefined, mode, sourceFunction };
   }
   return { entryPrice: triggerPrice, mode, sourceFunction };
+}
+
+function validateExecutionPlanConsistency({ side, entryPrice, normalizedLevels }) {
+  if (!Number.isFinite(entryPrice) || !normalizedLevels) return { valid: true };
+  const tpCandidates = [
+    normalizeNumber(normalizedLevels.takeProfit1),
+    normalizeNumber(normalizedLevels.takeProfit2),
+    normalizeNumber(normalizedLevels.takeProfit3),
+  ].filter((value) => Number.isFinite(value));
+  if (!tpCandidates.length) return { valid: true };
+  const hasInvalidTp = side === "LONG"
+    ? tpCandidates.some((value) => value <= entryPrice)
+    : tpCandidates.some((value) => value >= entryPrice);
+  if (!hasInvalidTp) return { valid: true };
+  return { valid: false, tpCandidates };
 }
 
 function resolveRangeBoundarySnapshot(decision, signalContext = {}) {
@@ -2463,6 +2480,43 @@ export function simulateDecisionExecution({
     takeProfit2: decision.executionPlan?.takeProfit2 ?? decision.takeProfit2,
     takeProfit3: decision.executionPlan?.takeProfit3 ?? decision.takeProfit3,
   });
+  const planConsistency = validateExecutionPlanConsistency({
+    side,
+    entryPrice: triggerPrice,
+    normalizedLevels,
+  });
+  if (!planConsistency.valid) {
+    console.warn("[INVALID_EXECUTION_PLAN]", {
+      symbol,
+      timeframe,
+      side,
+      entryPrice: triggerPrice,
+      takeProfits: planConsistency.tpCandidates,
+      executionMode: decision?.executionPlan?.executionMode ?? null,
+      reason: side === "LONG"
+        ? "LONG take-profit 必須大於 entry"
+        : "SHORT take-profit 必須小於 entry",
+    });
+    return {
+      state,
+      result: "INVALID_EXECUTION_PLAN",
+      executionIntent: "WATCH_ONLY",
+      confirmationResult: {
+        ...confirmationResult,
+        canExecute: false,
+        decisionType: "NO_TRADE",
+      },
+      ...performanceDebugPayload,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        eligibility: "WATCH_ONLY",
+        reasonCode: "INVALID_EXECUTION_PLAN",
+        reason: side === "LONG"
+          ? "LONG take-profit 必須大於 entry"
+          : "SHORT take-profit 必須小於 entry",
+      },
+    };
+  }
 
   if (isDuplicateContext(state, symbol, timeframe, contextKey)) {
     if (bypassSetupGate) {
@@ -2513,6 +2567,7 @@ export function simulateDecisionExecution({
     }),
     entryReason: decision.entryReason || null,
     entryMode: plannedEntry.mode,
+    executionMode: plannedEntry.mode === "breakout" ? "BREAKOUT" : "PULLBACK",
     entryAdjusted: constrainedEntry.wasAdjusted || Boolean(reentryAttempt?.reentryAdjustedEntry),
     isReentryAttempt: Boolean(reentryAttempt?.isReentryAttempt),
     reentryCount: reentryAttempt?.reentryCount ?? 0,
