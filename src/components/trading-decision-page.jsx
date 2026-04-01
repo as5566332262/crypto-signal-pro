@@ -220,9 +220,9 @@ export function DecisionCard({ analysis, formatNumber }) {
         <div className="rounded-2xl border border-slate-200 bg-white p-4">
           <div className="text-xs font-semibold tracking-[0.14em] text-slate-500">位置判斷</div>
           <div className="mt-2 grid gap-2 sm:grid-cols-3">
-            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Current</span><div className="font-semibold">{formatNumber(currentPrice, 2)}</div></div>
-            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Zone Low</span><div className="font-semibold">{formatNumber(zoneLow, 2)}</div></div>
-            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">Zone High</span><div className="font-semibold">{formatNumber(zoneHigh, 2)}</div></div>
+            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">現價</span><div className="font-semibold">{formatNumber(currentPrice, 2)}</div></div>
+            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">支撐</span><div className="font-semibold">{formatNumber(zoneLow, 2)}</div></div>
+            <div className="rounded-lg bg-slate-50 p-2"><span className="text-xs text-slate-500">壓力</span><div className="font-semibold">{formatNumber(zoneHigh, 2)}</div></div>
           </div>
           <div className="mt-2 text-sm font-semibold text-slate-700">區間位置：{marketLocation}</div>
           {!hasZone ? <div className="mt-1 text-xs text-slate-500">尚無有效區間資料</div> : null}
@@ -236,9 +236,9 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
   const executionPlan = analysis?.aiDecisionOutput?.executionPlan || analysis?.executionPlan || {};
   const isHold = executionPlan?.action === "HOLD" || analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
   const topChecklist = [
-    { label: "Entry", value: executionPlan?.triggerPrice != null ? formatNumber(executionPlan?.triggerPrice, digits) : "-" },
-    { label: "Stop", value: formatNumber(executionPlan?.stopLoss, digits) },
-    { label: "TP", value: [executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3].filter((v) => v != null).map((v) => formatNumber(v, digits)).join(" / ") || "-" },
+    { label: "進場（Entry）", shortLabel: "Entry", value: executionPlan?.triggerPrice != null ? formatNumber(executionPlan?.triggerPrice, digits) : "-" },
+    { label: "止損（Stop）", shortLabel: "Stop", value: formatNumber(executionPlan?.stopLoss, digits) },
+    { label: "止盈（TP）", shortLabel: "TP", value: [executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3].filter((v) => v != null).map((v) => formatNumber(v, digits)).join(" / ") || "-" },
   ];
   const listBlock = (title, rows) => (
     <div className="rounded-xl border border-slate-200 bg-white p-3">
@@ -256,7 +256,7 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
         <div className={`rounded-2xl border p-3.5 ${isHold ? "border-amber-200 bg-amber-50/80 text-amber-900" : "border-slate-200 bg-slate-50/70 text-slate-900"}`}>
           <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
             <span className="font-semibold">Summary：</span>
-            Entry {topChecklist[0].value || "-"} / Stop {topChecklist[1].value || "-"} / TP {topChecklist[2].value || "-"}
+            {topChecklist[0].label} {topChecklist[0].value || "-"} / {topChecklist[1].label} {topChecklist[1].value || "-"} / {topChecklist[2].label} {topChecklist[2].value || "-"}
           </div>
           <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">EXECUTION CHECKLIST</div>
           <div className="mt-3 grid gap-2.5 sm:grid-cols-3">
@@ -438,6 +438,12 @@ export function MarketContextCard({ analysis, currentCandle, digits, formatNumbe
 }
 
 export function AIAnalysisAccordion({ analysis, showRawOutput = false }) {
+  const formatMtfBias = (value) => {
+    if (value === "bullish") return "bullish（偏多）";
+    if (value === "bearish") return "bearish（偏空）";
+    if (value === "neutral") return "neutral（中性）";
+    return value || "-";
+  };
   const trapText = analysis?.trapDetection?.trapSignal === "NONE"
     ? "無明顯陷阱"
     : `${trapSignalText(analysis?.trapDetection?.trapSignal)}風險（${analysis?.trapDetection?.trapConfidence || "-"})`;
@@ -453,7 +459,7 @@ export function AIAnalysisAccordion({ analysis, showRawOutput = false }) {
           <ChevronDown className="h-4 w-4 text-slate-500 transition group-open:rotate-180" />
         </summary>
         <CardContent className="space-y-3 pt-0 text-sm">
-          <div><span className="font-semibold">多週期：</span>{(analysis?.higherBiases || []).map((item) => `${item.interval}:${item.bias}`).join(" · ") || "-"}</div>
+          <div><span className="font-semibold">多週期：</span>{(analysis?.higherBiases || []).map((item) => `${item.interval}:${formatMtfBias(item.bias)}`).join(" · ") || "-"}</div>
           <div><span className="font-semibold">指標摘要：</span>RSI {analysis?.rsi?.toFixed?.(2) || "-"}, MACD {analysis?.macd?.histogram?.toFixed?.(4) || "-"}</div>
           <div><span className="font-semibold">市場結構：</span>{analysis?.structure || "-"} / {analysis?.breakoutState || "-"}</div>
           <div><span className="font-semibold">陷阱判讀：</span>{trapSignalText(analysis?.trapDetection?.trapSignal)}（{analysis?.trapDetection?.trapConfidence || "-"})</div>
