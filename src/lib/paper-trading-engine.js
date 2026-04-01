@@ -40,6 +40,11 @@ const WAITING_REASON_KEYS = [
   "pendingTooFarFromPrice",
   "canceledByPriceDrift",
 ];
+const DRAFT_WAITING_REASON_KEYS = new Set([
+  "blockedByKlineConfirmation",
+  "waitingForPullback",
+  "waitingForBreakout",
+]);
 
 export const DEFAULT_PERFORMANCE_DEBUG_STATE = {
   currentSetupKey: "-",
@@ -76,6 +81,50 @@ function createDefaultWaitingDiagnostics() {
     signalToPlaceBars: [],
     placeToFillBars: [],
     recentEvents: [],
+  };
+}
+
+function isDraftLikeWaitingOrder(order) {
+  const waitingReasons = Array.isArray(order?.waitingReasons) ? order.waitingReasons : [];
+  return waitingReasons.some((reason) => DRAFT_WAITING_REASON_KEYS.has(reason));
+}
+
+function isExecutionPlanValidatedOrder(order) {
+  return Boolean(order?.executionPlanValidated);
+}
+
+export function isFormalPendingOrder(order) {
+  if (!order || typeof order !== "object") return false;
+  if (!order.id || !order.createdAt) return false;
+  if (!["PENDING", "ACTIVE"].includes(order.status)) return false;
+  if (!isExecutionPlanValidatedOrder(order)) return false;
+  if (isDraftLikeWaitingOrder(order)) return false;
+  return true;
+}
+
+export function isFormalCancelledOrder(order) {
+  if (!order || typeof order !== "object") return false;
+  if (order.status !== "CANCELLED") return false;
+  if (!order.cancelledAt || !order.createdAt || !order.id) return false;
+  if (!isExecutionPlanValidatedOrder(order)) return false;
+  if (isDraftLikeWaitingOrder(order)) return false;
+  if (order.cancelReason === "INVALID_EXECUTION_PLAN_BLOCKED") return false;
+  return true;
+}
+
+function appendBlockedAttempt(state, payload) {
+  const next = [{
+    timestamp: payload?.timestamp || nowIso(),
+    reasonCode: payload?.reasonCode || "BLOCKED_ATTEMPT",
+    symbol: payload?.symbol || null,
+    timeframe: payload?.timeframe || null,
+    side: payload?.side || null,
+    orderId: payload?.orderId || null,
+    details: payload?.details || null,
+  }, ...(state?.blockedAttempts || [])].slice(0, 300);
+  return {
+    ...state,
+    blockedAttempts: next,
   };
 }
 
@@ -1027,6 +1076,8 @@ export function createInitialPaperAccountState() {
     pendingFillChecks: [],
     pendingFillExecutions: [],
     pendingCancelTrace: [],
+    setupDrafts: [],
+    blockedAttempts: [],
     orderFillEventLocks: {},
     orderToPositionMap: {},
     orderProcessingLocks: {},
@@ -2026,7 +2077,25 @@ function maybeFillPendingOrders(state, {
         takeProfit2: finalExecutionPlanGuard.takeProfit2,
         triggeredBy,
       });
-      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "INVALID_EXECUTION_PLAN_BLOCKED", timestamp, { triggeredBy }));
+      console.debug("[BLOCKED_DRAFT_NOT_PERSISTED]", {
+        symbol: order.symbol,
+        timeframe: order.timeframe,
+        orderId: order.id,
+        reasonCode: "INVALID_EXECUTION_PLAN_BLOCKED",
+        triggeredBy,
+      });
+      nextState = appendBlockedAttempt(nextState, {
+        timestamp,
+        reasonCode: "INVALID_EXECUTION_PLAN_BLOCKED",
+        symbol: order.symbol,
+        timeframe: order.timeframe,
+        side: order.side,
+        orderId: order.id,
+        details: {
+          violations: finalExecutionPlanGuard.violations,
+          triggeredBy,
+        },
+      });
       continue;
     }
     const quantity = asSafeNumber(order.quantity, DEFAULT_POSITION_SIZE);
@@ -2164,8 +2233,10 @@ function maybeFillPendingOrders(state, {
     continue;
   }
 
-  nextState.pendingOrders = nextPendingOrders.filter((order) => order.status === "PENDING");
-  nextState.cancelledOrders = nextState.cancelledOrders.slice(0, MAX_CANCELLED_ORDERS_HISTORY);
+  nextState.pendingOrders = nextPendingOrders.filter((order) => isFormalPendingOrder(order));
+  nextState.cancelledOrders = nextState.cancelledOrders
+    .filter((order) => isFormalCancelledOrder(order))
+    .slice(0, MAX_CANCELLED_ORDERS_HISTORY);
   return recalculateAccountState(nextState, {
     timestamp,
     selectedSymbol: selectedSymbolAtThatMoment,
@@ -2647,6 +2718,8 @@ export function simulateDecisionExecution({
     ),
     createdAt: nowIso(),
     status: "PENDING",
+    lifecycleType: "PENDING_ORDER",
+    executionPlanValidated: true,
     expiresAt: resolveExpiryTimestamp(decision, nowIso()),
     waitReason: effectiveEligibility.reason,
     waitingReasons: resolveWaitingReasonKeys({
@@ -2702,6 +2775,7 @@ export function simulateDecisionExecution({
     decisionContextKey: contextKey,
     ...tradeMetadata,
   };
+  const draftSetup = isDraftLikeWaitingOrder(pendingOrder);
 
   const createPendingOrder = ({ baseState, order }) => {
     const beforeCount = (baseState?.pendingOrders || []).length;
@@ -2749,6 +2823,43 @@ export function simulateDecisionExecution({
         ...effectiveEligibility,
         executionIntent,
         confirmationResult,
+      },
+    };
+  }
+
+  if (draftSetup) {
+    const nextState = {
+      ...state,
+      setupDrafts: [{
+        ...pendingOrder,
+        lifecycleType: "SETUP_DRAFT",
+        status: "DRAFT",
+      }, ...(state?.setupDrafts || [])].slice(0, 200),
+    };
+    console.debug("[BLOCKED_DRAFT_NOT_PERSISTED]", {
+      symbol,
+      timeframe,
+      side,
+      reasonCode: "SETUP_DRAFT_WAITING",
+      waitingReasons: pendingOrder.waitingReasons,
+    });
+    return {
+      state: appendBlockedAttempt(nextState, {
+        reasonCode: "SETUP_DRAFT_WAITING",
+        symbol,
+        timeframe,
+        side,
+        details: {
+          waitingReasons: pendingOrder.waitingReasons,
+        },
+      }),
+      result: "WATCH_AND_ARM",
+      executionIntent: "WATCH_AND_ARM",
+      confirmationResult,
+      ...performanceDebugPayload,
+      eligibilityInfo: {
+        ...effectiveEligibility,
+        reasonCode: "SETUP_DRAFT_WAITING",
       },
     };
   }
@@ -3254,13 +3365,17 @@ export function normalizePaperAccountState(state, { eventType = "RESTORE", sourc
       restoredAtSimulationStart: true,
     });
     return restoredOrder;
-  });
+  }).filter((order) => isFormalPendingOrder(order));
+  const normalizedCancelledOrders = (Array.isArray(state?.cancelledOrders) ? state.cancelledOrders : [])
+    .filter((order) => isFormalCancelledOrder(order));
   return recalculateAccountState({
     ...createInitialPaperAccountState(),
     ...(state || {}),
     openPositions: normalizedOpenPositions,
     pendingOrders: normalizedPendingOrders,
-    cancelledOrders: Array.isArray(state?.cancelledOrders) ? state.cancelledOrders : [],
+    cancelledOrders: normalizedCancelledOrders,
+    setupDrafts: [],
+    blockedAttempts: Array.isArray(state?.blockedAttempts) ? state.blockedAttempts : [],
     closedTrades: Array.isArray(state?.closedTrades) ? state.closedTrades : [],
     orderFillEventLocks: state?.orderFillEventLocks && typeof state.orderFillEventLocks === "object" ? state.orderFillEventLocks : {},
     orderToPositionMap: state?.orderToPositionMap && typeof state.orderToPositionMap === "object" ? state.orderToPositionMap : {},
