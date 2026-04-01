@@ -89,6 +89,7 @@ function cancelReasonLabel(reason) {
     STRUCTURE_CHANGED: "結構破壞",
     MOMENTUM_WEAKENED: "動能明顯轉弱",
     SETUP_INVALIDATED: "失效區被擊穿",
+    INVALID_EXECUTION_PLAN_BLOCKED: "交易計畫異常，已阻止下單",
     PRICE_DRIFTED: "價格漂移",
     PENDING_TIMEOUT_REEVALUATED: "等待逾時重評估",
     EXPIRED: "掛單過期",
