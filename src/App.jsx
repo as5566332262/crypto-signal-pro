@@ -522,6 +522,7 @@ function mapExecutionBlockedReason(resultCode, decision) {
     SHORT_ENTRY_UNREALISTIC: "空單掛單位置不合理（距現價過遠）",
     SHORT_BREAKDOWN_ATR_REQUIRED: "空單跌破掛單缺少 ATR，無法驗證距離",
     BLOCKED_BY_PERFORMANCE_FILTER: "此 setup 歷史勝率與平均損益過差，已轉為觀察模式",
+    INVALID_EXECUTION_PLAN_BLOCKED: "交易計畫異常，已阻止下單",
   };
   return reasonMap[resultCode] || "條件不足，已轉為觀察模式";
 }
@@ -3718,6 +3719,15 @@ const simulationAgentState = {
           status: "WATCHING",
           statusLabel: "已進入等待確認模式",
           reason: "已進入等待確認模式，條件成立後可轉為掛單或進場",
+          unmetConditions: [],
+          distances: [],
+          timestamp: new Date().toISOString(),
+        };
+      } else if (result.result === "INVALID_EXECUTION_PLAN_BLOCKED") {
+        nextFeedback = {
+          status: "WATCHING",
+          statusLabel: "交易計畫異常，已阻止下單",
+          reason: "交易計畫異常，已阻止下單",
           unmetConditions: [],
           distances: [],
           timestamp: new Date().toISOString(),

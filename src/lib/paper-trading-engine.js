@@ -598,17 +598,28 @@ function resolvePlannedEntryPrice(decision, side) {
 
 function validateExecutionPlanConsistency({ side, entryPrice, normalizedLevels }) {
   if (!Number.isFinite(entryPrice) || !normalizedLevels) return { valid: true };
-  const tpCandidates = [
-    normalizeNumber(normalizedLevels.takeProfit1),
-    normalizeNumber(normalizedLevels.takeProfit2),
-    normalizeNumber(normalizedLevels.takeProfit3),
-  ].filter((value) => Number.isFinite(value));
-  if (!tpCandidates.length) return { valid: true };
-  const hasInvalidTp = side === "LONG"
-    ? tpCandidates.some((value) => value <= entryPrice)
-    : tpCandidates.some((value) => value >= entryPrice);
-  if (!hasInvalidTp) return { valid: true };
-  return { valid: false, tpCandidates };
+  const takeProfit1 = normalizeNumber(normalizedLevels.takeProfit1);
+  const takeProfit2 = normalizeNumber(normalizedLevels.takeProfit2);
+  const stopLoss = normalizeNumber(normalizedLevels.stopLoss);
+  const violations = [];
+  if (side === "LONG") {
+    if (!Number.isFinite(takeProfit1) || takeProfit1 <= entryPrice) violations.push("LONG_ENTRY_MUST_BE_BELOW_TP1");
+    if (!Number.isFinite(takeProfit2) || takeProfit2 <= entryPrice) violations.push("LONG_ENTRY_MUST_BE_BELOW_TP2");
+    if (!Number.isFinite(stopLoss) || stopLoss >= entryPrice) violations.push("LONG_STOP_MUST_BE_BELOW_ENTRY");
+  } else if (side === "SHORT") {
+    if (!Number.isFinite(takeProfit1) || takeProfit1 >= entryPrice) violations.push("SHORT_ENTRY_MUST_BE_ABOVE_TP1");
+    if (!Number.isFinite(takeProfit2) || takeProfit2 >= entryPrice) violations.push("SHORT_ENTRY_MUST_BE_ABOVE_TP2");
+    if (!Number.isFinite(stopLoss) || stopLoss <= entryPrice) violations.push("SHORT_STOP_MUST_BE_ABOVE_ENTRY");
+  }
+  if (!violations.length) return { valid: true };
+  return {
+    valid: false,
+    violations,
+    entryPrice,
+    stopLoss,
+    takeProfit1,
+    takeProfit2,
+  };
 }
 
 function resolveRangeBoundarySnapshot(decision, signalContext = {}) {
@@ -1965,6 +1976,28 @@ function maybeFillPendingOrders(state, {
       takeProfit2: order.takeProfit2,
       takeProfit3: order.takeProfit3,
     });
+    const finalExecutionPlanGuard = validateExecutionPlanConsistency({
+      side: order.side,
+      entryPrice: filledPrice,
+      normalizedLevels,
+    });
+    if (!finalExecutionPlanGuard.valid) {
+      delete nextState.orderProcessingLocks[order.id];
+      console.error("[INVALID_EXECUTION_PLAN_BLOCKED]", {
+        symbol: order.symbol,
+        timeframe: order.timeframe,
+        orderId: order.id,
+        side: order.side,
+        violations: finalExecutionPlanGuard.violations,
+        entryPrice: finalExecutionPlanGuard.entryPrice,
+        stopLoss: finalExecutionPlanGuard.stopLoss,
+        takeProfit1: finalExecutionPlanGuard.takeProfit1,
+        takeProfit2: finalExecutionPlanGuard.takeProfit2,
+        triggeredBy,
+      });
+      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "INVALID_EXECUTION_PLAN_BLOCKED", timestamp, { triggeredBy }));
+      continue;
+    }
     const quantity = asSafeNumber(order.quantity, DEFAULT_POSITION_SIZE);
     const notional = quantity * filledPrice;
     const position = {
@@ -2486,20 +2519,20 @@ export function simulateDecisionExecution({
     normalizedLevels,
   });
   if (!planConsistency.valid) {
-    console.warn("[INVALID_EXECUTION_PLAN]", {
+    console.error("[INVALID_EXECUTION_PLAN_BLOCKED]", {
       symbol,
       timeframe,
       side,
-      entryPrice: triggerPrice,
-      takeProfits: planConsistency.tpCandidates,
+      violations: planConsistency.violations,
+      entryPrice: planConsistency.entryPrice,
+      stopLoss: planConsistency.stopLoss,
+      takeProfit1: planConsistency.takeProfit1,
+      takeProfit2: planConsistency.takeProfit2,
       executionMode: decision?.executionPlan?.executionMode ?? null,
-      reason: side === "LONG"
-        ? "LONG take-profit 必須大於 entry"
-        : "SHORT take-profit 必須小於 entry",
     });
     return {
       state,
-      result: "INVALID_EXECUTION_PLAN",
+      result: "INVALID_EXECUTION_PLAN_BLOCKED",
       executionIntent: "WATCH_ONLY",
       confirmationResult: {
         ...confirmationResult,
@@ -2510,10 +2543,8 @@ export function simulateDecisionExecution({
       eligibilityInfo: {
         ...effectiveEligibility,
         eligibility: "WATCH_ONLY",
-        reasonCode: "INVALID_EXECUTION_PLAN",
-        reason: side === "LONG"
-          ? "LONG take-profit 必須大於 entry"
-          : "SHORT take-profit 必須小於 entry",
+        reasonCode: "INVALID_EXECUTION_PLAN_BLOCKED",
+        reason: "交易計畫異常，已阻止下單",
       },
     };
   }
