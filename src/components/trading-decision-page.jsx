@@ -279,11 +279,19 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
           <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
             <summary className="cursor-pointer text-xs font-semibold tracking-[0.12em] text-slate-600">展開詳細條件</summary>
             <div className="mt-3 grid gap-2.5">
-              {executionMode === "BREAKOUT" ? listBlock("為何採用 Breakout", modeReasons) : null}
-              {listBlock("突破確認條件", executionPlan?.breakoutConfirmationRules)}
-              {listBlock("回踩確認條件", executionPlan?.retestConfirmationRules)}
+              {executionMode === "BREAKOUT" ? (
+                <>
+                  {listBlock("為何採用 Breakout", modeReasons)}
+                  {listBlock("突破條件（主要）", executionPlan?.breakoutConfirmationRules)}
+                </>
+              ) : (
+                <>
+                  {listBlock("回踩條件（主要）", executionPlan?.retestConfirmationRules)}
+                  {listBlock("動能恢復（主要）", executionPlan?.nextConfirmationRules)}
+                  {listBlock("趨勢確認（輔助）", executionPlan?.breakoutConfirmationRules)}
+                </>
+              )}
               {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
-              {listBlock("下一步確認", executionPlan?.nextConfirmationRules)}
               {listBlock("失效條件", executionPlan?.invalidationRules)}
             </div>
           </details>
