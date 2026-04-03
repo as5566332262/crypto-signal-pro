@@ -905,6 +905,12 @@ function evaluateConditionalPendingEligibility({
     rangeWidth > 0 &&
     (upperBoundary - entryPrice) <= rangeWidth * PRE_ARM_LONG_UPPER_ZONE_BUFFER_RATIO;
   const longEntryAboveCurrent = side === "LONG" && canEvaluatePrice && entryPrice > currentPrice;
+  const unmetConditions = [];
+  if (!allowedStrategy) unmetConditions.push("strategy_not_allowed");
+  if (!hasEntryZone) unmetConditions.push("entry_zone_missing");
+  if (longEntryAboveCurrent) unmetConditions.push("long_entry_above_current");
+  if (nearUpperZone) unmetConditions.push("long_entry_near_resistance");
+  const primaryBlockedReason = unmetConditions[0] || null;
   const reasons = [];
   if (allowedStrategy) reasons.push("strategyType 為 range/pullback");
   if (hasEntryZone) reasons.push("已識別有效 entry zone（支撐區）");
@@ -917,9 +923,13 @@ function evaluateConditionalPendingEligibility({
     strategyType,
     allowedStrategy,
     hasEntryZone,
+    lowerBoundary,
+    upperBoundary,
     longEntryAboveCurrent,
     nearUpperZone,
     reasons,
+    unmetConditions,
+    primaryBlockedReason,
     autoCancelConditions: [
       "結構破壞（STRUCTURE_CHANGED）",
       "動能轉弱（MOMENTUM_WEAKENED）",
@@ -2809,7 +2819,11 @@ export function simulateDecisionExecution({
   }
   console.info("[ENTRY_COMPUTED]", {
     symbol,
-    strategyType: decision?.setupType ?? decision?.executionPlan?.setupType ?? decision?.marketRegimeLabel ?? decision?.regime ?? "unknown",
+    strategyType: resolveStrategyType(decision) || "unknown",
+    strategyTypeRaw: decision?.strategyType ?? null,
+    setupType: decision?.setupType ?? null,
+    executionPlanSetupType: decision?.executionPlan?.setupType ?? null,
+    marketRegime: decision?.marketRegimeLabel ?? decision?.regime ?? "unknown",
     currentPrice: normalizeNumber(currentPrice),
     entryPrice: tentativeEntryPrice,
     support: rangeBoundary.support,
@@ -2830,6 +2844,30 @@ export function simulateDecisionExecution({
     const blockedByStrategy =
       !conditionalPendingEligibility.allowedStrategy &&
       ["breakout", "momentum"].includes(conditionalPendingEligibility.strategyType);
+    const blockedReason = conditionalPendingEligibility.primaryBlockedReason ||
+      (blockedByStrategy ? "strategy_not_allowed" : "condition_not_met");
+    console.warn("[ENTRY_BLOCKED]", {
+      symbol,
+      timeframe,
+      side,
+      reason: blockedReason,
+      strategyType: conditionalPendingEligibility.strategyType,
+      unmetConditions: conditionalPendingEligibility.unmetConditions,
+      conditions: {
+        allowedStrategy: conditionalPendingEligibility.allowedStrategy,
+        hasEntryZone: conditionalPendingEligibility.hasEntryZone,
+        longEntryAboveCurrent: conditionalPendingEligibility.longEntryAboveCurrent,
+        nearUpperZone: conditionalPendingEligibility.nearUpperZone,
+      },
+      boundaries: {
+        lowerBoundary: conditionalPendingEligibility.lowerBoundary,
+        upperBoundary: conditionalPendingEligibility.upperBoundary,
+      },
+      prices: {
+        currentPrice: normalizeNumber(currentPrice),
+        entryPrice: tentativeEntryPrice,
+      },
+    });
     return {
       state,
       result: blockedByStrategy ? "PREPEND_BLOCKED_STRATEGY_TYPE" : "PREPEND_BLOCKED_CONDITIONS",
@@ -2843,6 +2881,8 @@ export function simulateDecisionExecution({
         reason: blockedByStrategy
           ? "breakout/momentum 先不預掛，維持確認後再掛"
           : "條件式預掛未通過（需 range/pullback + 有效支撐區 + LONG 不高掛且不靠近阻力）",
+        blockedReason,
+        unmetConditions: conditionalPendingEligibility.unmetConditions,
         executionIntent: "WATCH_AND_ARM",
         conditionalPendingEligibility,
       },
