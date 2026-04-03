@@ -1604,7 +1604,21 @@ function deriveSetupType({
   mtfDisagreement,
   directionalDecision,
 }) {
-  if (directionalDecision === "NO_TRADE") return "no-trade";
+  if (directionalDecision === "NO_TRADE") {
+    console.info("[SETUP_TYPE_RESOLVED]", {
+      resolver: "deriveSetupType",
+      directionalDecision,
+      resolvedSetupType: "no-trade",
+      bias,
+      marketRegime,
+      breakoutState,
+      structure,
+      momentumScore,
+      mtfAlignedRatio,
+      mtfDisagreement,
+    });
+    return "no-trade";
+  }
   if (directionalDecision === "WAIT" && bias === "中性") return "wait";
   if (marketRegime === "ranging" && breakoutState === "區間內") return "range";
   if (["向上突破", "向下跌破"].includes(breakoutState)) return "breakout";
@@ -2303,6 +2317,15 @@ function buildAiDecisionOutput({
       `多週期偏多一致（aligned=${formatNumber((mtfAlignedRatio || 0) * 100, 1)}%）`,
     ]
     : [];
+  console.info("[EXECUTION_PLAN_SETUP_TYPE_RESOLVED]", {
+    resolver: "buildAiDecisionOutput",
+    symbol,
+    setupType,
+    executionPlanSetupType: setupType,
+    action,
+    marketRegime,
+    finalDecision,
+  });
 
   return {
     symbol,
