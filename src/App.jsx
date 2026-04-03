@@ -1638,6 +1638,34 @@ function deriveSetupType({
   return directionalDecision === "WAIT" ? "wait" : "pullback";
 }
 
+function deriveSetupTypeCandidate({
+  bias,
+  marketRegime,
+  breakoutState,
+  structure,
+  momentumScore,
+  mtfAlignedRatio,
+  mtfDisagreement,
+}) {
+  if (bias === "中性") return "wait";
+  if (marketRegime === "ranging" && breakoutState === "區間內") return "range";
+  if (["向上突破", "向下跌破"].includes(breakoutState)) return "breakout";
+  if (momentumScore <= 4.4 && mtfDisagreement > mtfAlignedRatio) return "wait";
+  if (
+    (bias === "偏多" && (breakoutState === "回踩支撐中" || structure === "上升結構")) ||
+    (bias === "偏空" && (breakoutState === "反彈壓力中" || structure === "下降結構"))
+  ) {
+    return "pullback";
+  }
+  if (
+    (bias === "偏多" && breakoutState === "向下跌破" && momentumScore >= 5.6) ||
+    (bias === "偏空" && breakoutState === "向上突破" && momentumScore >= 5.6)
+  ) {
+    return "reversal";
+  }
+  return "pullback";
+}
+
 function evaluateEntryTiming({
   directionalDecision,
   setupType,
@@ -2710,6 +2738,17 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
   else if (confidenceScorePenalty >= 2 && confidenceLevel === "high") adjustedConfidenceLevel = "medium";
   else if (confidenceScorePenalty >= 2 && confidenceLevel === "medium") adjustedConfidenceLevel = "low";
 
+  const setupTypeCandidate = deriveSetupTypeCandidate({
+    bias,
+    marketRegime,
+    breakoutState,
+    structure: structureInfo.structure,
+    momentumScore: dimensionScores.momentum,
+    mtfAlignedRatio,
+    mtfDisagreement,
+  });
+  const isPullbackSetupCandidate = setupTypeCandidate === "pullback";
+
   const shouldWait =
     bias === "中性" ||
     entryScoreAdjusted < 6 ||
@@ -2719,30 +2758,50 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
 
   const shouldNoTrade =
     bias === "中性" ||
-    entryScoreAdjusted < 4.8 ||
-    waitReasons.length >= 5 ||
-    ((marketRegime === "weak trend" || marketRegime === "ranging") &&
-      (mtfDisagreement >= 0.42 || isRangeMiddlePosition || momentumUnclear)) ||
-    (fakeBreakout.risk === "高" && mtfDisagreement >= 0.35);
+    (!isPullbackSetupCandidate &&
+      (entryScoreAdjusted < 4.8 ||
+        waitReasons.length >= 5 ||
+        ((marketRegime === "weak trend" || marketRegime === "ranging") &&
+          (mtfDisagreement >= 0.42 || isRangeMiddlePosition || momentumUnclear)) ||
+        (fakeBreakout.risk === "高" && mtfDisagreement >= 0.35)));
 
   const directionalDecision = shouldNoTrade ? "NO_TRADE" : shouldWait ? "WAIT" : bias === "偏多" ? "BUY" : "SELL";
   const directionalDecisionGateChecks = [
     { rule: "bias_neutral", passed: bias !== "中性", category: "trend", detail: `bias=${bias}` },
-    { rule: "entry_score_min_4_8", passed: entryScoreAdjusted >= 4.8, category: "structure_position", detail: `entryScoreAdjusted=${formatNumber(entryScoreAdjusted, 2)}` },
-    { rule: "wait_reasons_lt_5", passed: waitReasons.length < 5, category: "structure_position", detail: `waitReasons=${waitReasons.length}` },
+    {
+      rule: "entry_score_min_4_8",
+      passed: isPullbackSetupCandidate ? true : entryScoreAdjusted >= 4.8,
+      category: "structure_position",
+      detail: isPullbackSetupCandidate
+        ? `pullback_fill_confirmation_only; entryScoreAdjusted=${formatNumber(entryScoreAdjusted, 2)}`
+        : `entryScoreAdjusted=${formatNumber(entryScoreAdjusted, 2)}`,
+    },
+    {
+      rule: "wait_reasons_lt_5",
+      passed: isPullbackSetupCandidate ? true : waitReasons.length < 5,
+      category: "structure_position",
+      detail: isPullbackSetupCandidate
+        ? `pullback_fill_confirmation_only; waitReasons=${waitReasons.length}`
+        : `waitReasons=${waitReasons.length}`,
+    },
     {
       rule: "regime_mtf_structure_momentum_gate",
-      passed:
-        !((marketRegime === "weak trend" || marketRegime === "ranging") &&
-          (mtfDisagreement >= 0.42 || isRangeMiddlePosition || momentumUnclear)),
+      passed: isPullbackSetupCandidate
+        ? true
+        : !((marketRegime === "weak trend" || marketRegime === "ranging") &&
+            (mtfDisagreement >= 0.42 || isRangeMiddlePosition || momentumUnclear)),
       category: "market_regime",
-      detail: `marketRegime=${marketRegime}, mtfDisagreement=${formatNumber(mtfDisagreement, 3)}, isRangeMiddlePosition=${isRangeMiddlePosition}, momentumUnclear=${momentumUnclear}`,
+      detail: isPullbackSetupCandidate
+        ? `pullback_fill_confirmation_only; marketRegime=${marketRegime}, mtfDisagreement=${formatNumber(mtfDisagreement, 3)}, isRangeMiddlePosition=${isRangeMiddlePosition}, momentumUnclear=${momentumUnclear}`
+        : `marketRegime=${marketRegime}, mtfDisagreement=${formatNumber(mtfDisagreement, 3)}, isRangeMiddlePosition=${isRangeMiddlePosition}, momentumUnclear=${momentumUnclear}`,
     },
     {
       rule: "fake_breakout_high_and_mtf_disagree",
-      passed: !(fakeBreakout.risk === "高" && mtfDisagreement >= 0.35),
+      passed: isPullbackSetupCandidate ? true : !(fakeBreakout.risk === "高" && mtfDisagreement >= 0.35),
       category: "momentum",
-      detail: `fakeBreakoutRisk=${fakeBreakout.risk}, mtfDisagreement=${formatNumber(mtfDisagreement, 3)}`,
+      detail: isPullbackSetupCandidate
+        ? `pullback_fill_confirmation_only; fakeBreakoutRisk=${fakeBreakout.risk}, mtfDisagreement=${formatNumber(mtfDisagreement, 3)}`
+        : `fakeBreakoutRisk=${fakeBreakout.risk}, mtfDisagreement=${formatNumber(mtfDisagreement, 3)}`,
     },
   ];
   const failedDirectionalDecisionChecks = directionalDecisionGateChecks.filter((item) => !item.passed);
