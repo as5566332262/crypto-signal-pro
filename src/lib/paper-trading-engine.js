@@ -2846,6 +2846,30 @@ export function simulateDecisionExecution({
       ["breakout", "momentum"].includes(conditionalPendingEligibility.strategyType);
     const blockedReason = conditionalPendingEligibility.primaryBlockedReason ||
       (blockedByStrategy ? "strategy_not_allowed" : "condition_not_met");
+    const strategyTypeRaw = decision?.strategyType ?? null;
+    const setupType = decision?.setupType ?? null;
+    const executionPlanSetupType = decision?.executionPlan?.setupType ?? null;
+    const marketRegime = decision?.marketRegimeLabel ?? decision?.regime ?? signalContext?.marketRegime ?? "unknown";
+    const debugCurrentPrice = normalizeNumber(currentPrice);
+    const debugZoneLow = normalizeNumber(rangeBoundary?.zoneLow);
+    const debugZoneHigh = normalizeNumber(rangeBoundary?.zoneHigh);
+    console.warn(
+      "[STRATEGY_GATE_DEBUG]\n" +
+      `symbol=${symbol}\n` +
+      `timeframe=${timeframe}\n` +
+      `side=${side}\n` +
+      `marketRegime=${marketRegime}\n` +
+      `setupType=${setupType}\n` +
+      `executionPlanSetupType=${executionPlanSetupType}\n` +
+      `strategyTypeRaw=${strategyTypeRaw}\n` +
+      `resolvedStrategyType=${conditionalPendingEligibility.strategyType}\n` +
+      `allowedStrategy=${conditionalPendingEligibility.allowedStrategy}\n` +
+      `hasEntryZone=${conditionalPendingEligibility.hasEntryZone}\n` +
+      `currentPrice=${debugCurrentPrice}\n` +
+      `zoneLow=${debugZoneLow}\n` +
+      `zoneHigh=${debugZoneHigh}\n` +
+      `reason=${blockedReason}`
+    );
     console.warn("[ENTRY_BLOCKED]", {
       symbol,
       timeframe,
