@@ -2726,6 +2726,67 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
     (fakeBreakout.risk === "高" && mtfDisagreement >= 0.35);
 
   const directionalDecision = shouldNoTrade ? "NO_TRADE" : shouldWait ? "WAIT" : bias === "偏多" ? "BUY" : "SELL";
+  const directionalDecisionGateChecks = [
+    { rule: "bias_neutral", passed: bias !== "中性", category: "trend", detail: `bias=${bias}` },
+    { rule: "entry_score_min_4_8", passed: entryScoreAdjusted >= 4.8, category: "structure_position", detail: `entryScoreAdjusted=${formatNumber(entryScoreAdjusted, 2)}` },
+    { rule: "wait_reasons_lt_5", passed: waitReasons.length < 5, category: "structure_position", detail: `waitReasons=${waitReasons.length}` },
+    {
+      rule: "regime_mtf_structure_momentum_gate",
+      passed:
+        !((marketRegime === "weak trend" || marketRegime === "ranging") &&
+          (mtfDisagreement >= 0.42 || isRangeMiddlePosition || momentumUnclear)),
+      category: "market_regime",
+      detail: `marketRegime=${marketRegime}, mtfDisagreement=${formatNumber(mtfDisagreement, 3)}, isRangeMiddlePosition=${isRangeMiddlePosition}, momentumUnclear=${momentumUnclear}`,
+    },
+    {
+      rule: "fake_breakout_high_and_mtf_disagree",
+      passed: !(fakeBreakout.risk === "高" && mtfDisagreement >= 0.35),
+      category: "momentum",
+      detail: `fakeBreakoutRisk=${fakeBreakout.risk}, mtfDisagreement=${formatNumber(mtfDisagreement, 3)}`,
+    },
+  ];
+  const failedDirectionalDecisionChecks = directionalDecisionGateChecks.filter((item) => !item.passed);
+  const firstFailedDirectionalDecisionCheck = failedDirectionalDecisionChecks[0] || null;
+  const blockedByCategories = [
+    ...new Set(
+      failedDirectionalDecisionChecks.map((item) => item.category).filter(Boolean),
+    ),
+  ];
+  const decisionReason =
+    directionalDecision === "NO_TRADE"
+      ? firstFailedDirectionalDecisionCheck
+        ? `${firstFailedDirectionalDecisionCheck.rule}: ${firstFailedDirectionalDecisionCheck.detail}`
+        : "no_trade_condition_matched"
+      : directionalDecision === "WAIT"
+      ? "wait_conditions_matched"
+      : "directional_conditions_passed";
+  console.info("[DIRECTIONAL_DECISION_DEBUG]", {
+    symbol,
+    timeframe: primaryTimeframe,
+    side: bias === "偏多" ? "LONG" : bias === "偏空" ? "SHORT" : "NEUTRAL",
+    marketRegime,
+    currentPrice: price,
+    support: levels?.nearestSupport ?? null,
+    resistance: levels?.nearestResistance ?? null,
+    entryPrice: tradePlan?.entryMid ?? null,
+    zoneLow: tradePlan?.entryLow ?? null,
+    zoneHigh: tradePlan?.entryHigh ?? null,
+    directionalDecision,
+    decisionReason,
+    trendContext: `bias=${bias}; structure=${structureInfo.structure}; trendStrength=${formatNumber(dimensionScores.trendStrength, 2)}`,
+    momentumContext: `rsi=${formatNumber(rsi, 2)}; macdHistogram=${formatNumber(macd?.histogram, 4)}; momentumScore=${formatNumber(dimensionScores.momentum, 2)}; unclear=${momentumUnclear}; fakeBreakoutRisk=${fakeBreakout.risk}`,
+    maContext: `priceAboveMA20=${priceAboveMA20}; priceAboveMA50=${priceAboveMA50}; ma20=${formatNumber(ma20, 4)}; ma50=${formatNumber(ma50, 4)}`,
+    mtfContext: `alignedRatio=${formatNumber(mtfAlignedRatio, 3)}; disagreement=${formatNumber(mtfDisagreement, 3)}; confluence=${confluence}`,
+    blockedBy:
+      directionalDecision === "NO_TRADE"
+        ? blockedByCategories.length
+          ? blockedByCategories.join(",")
+          : "unknown"
+        : "none",
+    failedConditions: failedDirectionalDecisionChecks.map((item) => item.rule),
+    passedConditions: directionalDecisionGateChecks.filter((item) => item.passed).map((item) => item.rule),
+    firstBlockedRule: firstFailedDirectionalDecisionCheck?.rule ?? null,
+  });
   const setupType = deriveSetupType({
     bias,
     marketRegime,
