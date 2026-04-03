@@ -4013,7 +4013,7 @@ const simulationAgentState = {
     if (!symbolKey) return;
     if (executionLoopTimersRef.current?.[symbolKey]) return;
 
-    console.debug("[EXECUTION_LOOP_START]", {
+    console.log("[EXECUTION_LOOP_START]", {
       symbol: symbolKey,
       source: "App.startExecutionLoop",
     });
