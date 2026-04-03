@@ -163,12 +163,126 @@ if(reason.includes("趨勢不夠乾淨"))return"市場結構不乾淨";
 if(reason.includes("動能")||reason.includes("趨勢強度"))return"動能不足";
 return reason.replace("。","");
 };
+const EXECUTION_LOGS={
+SETUP_CREATED:"[SETUP_CREATED]",
+ZONE_REACHED_CREATE_PENDING:"[ZONE_REACHED_CREATE_PENDING]",
+PENDING_CREATED_WAITING_CONFIRMATION:"[PENDING_CREATED_WAITING_CONFIRMATION]",
+FILL_BLOCKED_BY_CONFIRMATION:"[FILL_BLOCKED_BY_CONFIRMATION]",
+CONFIRMATION_PASSED:"[CONFIRMATION_PASSED]",
+FILL_EXECUTED:"[FILL_EXECUTED]",
+SETUP_INVALIDATED_STRUCTURE:"[SETUP_INVALIDATED_STRUCTURE]",
+SETUP_INVALIDATED_MOMENTUM:"[SETUP_INVALIDATED_MOMENTUM]",
+SETUP_INVALIDATED_TIMEOUT:"[SETUP_INVALIDATED_TIMEOUT]",
+PULLBACK_CONFIRMATION_DIRECTION_MISMATCH:"[PULLBACK_CONFIRMATION_DIRECTION_MISMATCH]"
+};
+const CONFIRMATION_REASON_LABELS={KLINE:"K 線",MA:"MA",MOMENTUM:"MOMENTUM",MTF:"MTF"};
+const resolveExecutionMode=(analysis)=>analysis?.setupType==="breakout"?"BREAKOUT":analysis?.setupType==="pullback"?"PULLBACK":"WAIT";
+const isPriceInZone=(price,zone)=>Number.isFinite(price)&&zone&&price>=zone.low&&price<=zone.high;
+function evaluatePullbackConfirmation({side,candle,analysis}){
+const bullishKline=candle.close>=candle.open;
+const bearishKline=candle.close<=candle.open;
+const klineOk=side==="LONG"?bullishKline:bearishKline;
+const maOk=side==="LONG"?candle.close>=analysis.ma20:candle.close<=analysis.ma20;
+const momentumOk=side==="LONG"?(analysis.rsi??50)>=50:(analysis.rsi??50)<=50;
+const mtfOk=side==="LONG"?analysis.confluence!=="多週期偏空":analysis.confluence!=="多週期偏多";
+const blockers=[];
+if(!klineOk)blockers.push("KLINE");
+if(!maOk)blockers.push("MA");
+if(!momentumOk)blockers.push("MOMENTUM");
+if(!mtfOk)blockers.push("MTF");
+const mismatch=false;
+return{passed:blockers.length===0,blockers,mismatch,description:side==="LONG"?"回踩支撐後止跌 / 站回 MA / 動能恢復":"反彈壓力後轉弱 / 跌回 MA 下方 / 動能轉弱"};
+}
+function buildExecutionFlow({analysis,candles}){
+const diagnostics={totalSetups:0,zoneReachedCount:0,pendingCreatedCount:0,fillBlockedByConfirmationCount:0,filledCount:0,invalidatedBeforeFillCount:0};
+const logs=[],recentEvents=[];
+if(!analysis||!candles?.length)return{diagnostics,logs,recentEvents,pendingOrder:null,statusText:"資料不足",waitingReason:"等待資料",executionMode:"WAIT"};
+const executionMode=resolveExecutionMode(analysis),side=analysis.bias==="偏空"?"SHORT":analysis.bias==="偏多"?"LONG":"NONE";
+const entryZone=analysis?.levels?(side==="LONG"?analysis.levels.structureSupportZone:side==="SHORT"?analysis.levels.structureResistanceZone:null):null;
+const setupQualified=executionMode!=="WAIT"&&side!=="NONE"&&entryZone&&analysis.tradePlan?.invalidation!=="-"&&analysis.structure!=="盤整";
+if(!setupQualified)return{diagnostics,logs,recentEvents,pendingOrder:null,statusText:"尚未掛單",waitingReason:"等待 setup 合格",executionMode};
+const setupId=`setup-${candles.at(-1).openTime}`;
+diagnostics.totalSetups=1;
+logs.push(`${EXECUTION_LOGS.SETUP_CREATED} ${setupId} ${executionMode} ${side}`);
+let pendingOrder=null,pendingCreatedAt=null,zoneReachedAt=null,filled=false,invalidationState=null;
+const invalidation=Number(analysis?.tradePlan?.invalidation?.replace(/,/g,""));
+const startIndex=Math.max(0,candles.length-80);
+for(let i=startIndex;i<candles.length;i++){
+const candle=candles[i],price=candle.close,inZone=isPriceInZone(price,entryZone);
+if(!pendingOrder){
+if(executionMode==="PULLBACK"&&inZone){
+zoneReachedAt=candle.openTime;
+diagnostics.zoneReachedCount++;
+logs.push(`${EXECUTION_LOGS.ZONE_REACHED_CREATE_PENDING} ${new Date(candle.openTime).toISOString()}`);
+pendingOrder={orderId:`pending-${setupId}`,setupId,executionMode,side,entryZoneLow:entryZone.low,entryZoneHigh:entryZone.high,createdAt:candle.openTime,armedBy:"ZONE_REACHED",confirmationRequired:true,confirmationStatus:"WAITING",blockedReason:null};
+pendingCreatedAt=candle.openTime;
+diagnostics.pendingCreatedCount++;
+recentEvents.push({setupId,zoneReachedTime:zoneReachedAt,pendingCreatedTime:pendingCreatedAt,outcome:"PENDING"});
+logs.push(`${EXECUTION_LOGS.PENDING_CREATED_WAITING_CONFIRMATION} ${pendingOrder.orderId}`);
+}
+if(executionMode==="BREAKOUT"&&analysis.breakoutValidation?.validated&&(analysis.breakoutState==="向上突破"||analysis.breakoutState==="向下跌破")){
+pendingOrder={orderId:`pending-${setupId}`,setupId,executionMode,side,entryZoneLow:entryZone.low,entryZoneHigh:entryZone.high,createdAt:candle.openTime,armedBy:"BREAKOUT_CONFIRMED",confirmationRequired:true,confirmationStatus:"WAITING",blockedReason:null};
+pendingCreatedAt=candle.openTime;
+diagnostics.pendingCreatedCount++;
+recentEvents.push({setupId,zoneReachedTime:null,pendingCreatedTime:pendingCreatedAt,outcome:"PENDING"});
+logs.push(`${EXECUTION_LOGS.PENDING_CREATED_WAITING_CONFIRMATION} ${pendingOrder.orderId}`);
+}
+}
+if(!pendingOrder||filled)continue;
+const confirmation=evaluatePullbackConfirmation({side:pendingOrder.side==="LONG"?"LONG":"SHORT",candle,analysis});
+if(confirmation.mismatch)logs.push(`${EXECUTION_LOGS.PULLBACK_CONFIRMATION_DIRECTION_MISMATCH} ${setupId}`);
+if(confirmation.passed){
+logs.push(`${EXECUTION_LOGS.CONFIRMATION_PASSED} ${pendingOrder.orderId}`);
+logs.push(`${EXECUTION_LOGS.FILL_EXECUTED} ${pendingOrder.orderId}`);
+pendingOrder.confirmationStatus="PASSED";
+pendingOrder.blockedReason=null;
+filled=true;
+diagnostics.filledCount++;
+recentEvents[recentEvents.length-1]={...recentEvents.at(-1),outcome:"FILLED"};
+continue;
+}
+pendingOrder.confirmationStatus="BLOCKED";
+pendingOrder.blockedReason=confirmation.blockers[0]||"KLINE";
+diagnostics.fillBlockedByConfirmationCount++;
+logs.push(`${EXECUTION_LOGS.FILL_BLOCKED_BY_CONFIRMATION} ${CONFIRMATION_REASON_LABELS[pendingOrder.blockedReason]||pendingOrder.blockedReason}`);
+if(Number.isFinite(invalidation)&&((side==="LONG"&&price<=invalidation)||(side==="SHORT"&&price>=invalidation))){
+invalidationState="STRUCTURE";
+logs.push(`${EXECUTION_LOGS.SETUP_INVALIDATED_STRUCTURE} ${setupId}`);
+pendingOrder=null;
+diagnostics.invalidatedBeforeFillCount++;
+recentEvents[recentEvents.length-1]={...recentEvents.at(-1),outcome:"INVALIDATED_STRUCTURE"};
+break;
+}
+if((side==="LONG"&&(analysis.rsi??50)<42)||(side==="SHORT"&&(analysis.rsi??50)>58)){
+invalidationState="MOMENTUM";
+logs.push(`${EXECUTION_LOGS.SETUP_INVALIDATED_MOMENTUM} ${setupId}`);
+pendingOrder=null;
+diagnostics.invalidatedBeforeFillCount++;
+recentEvents[recentEvents.length-1]={...recentEvents.at(-1),outcome:"INVALIDATED_MOMENTUM"};
+break;
+}
+if(pendingCreatedAt&&i-(startIndex+(recentEvents.length?0:0))>24){
+invalidationState="TIMEOUT";
+logs.push(`${EXECUTION_LOGS.SETUP_INVALIDATED_TIMEOUT} ${setupId}`);
+pendingOrder=null;
+diagnostics.invalidatedBeforeFillCount++;
+recentEvents[recentEvents.length-1]={...recentEvents.at(-1),outcome:"INVALIDATED_TIMEOUT"};
+break;
+}
+}
+let waitingReason="等待價格進入進場區",statusText="尚未掛單";
+if(pendingOrder&&!filled){statusText="已掛單（等待確認）";waitingReason="已掛單，等待確認後成交";}
+if(filled){statusText="已成交";waitingReason="成交完成";}
+if(invalidationState){statusText="已失效撤單";waitingReason="setup 失效，已撤單";}
+return{diagnostics,logs,recentEvents:recentEvents.slice(-5),pendingOrder,statusText,waitingReason,executionMode};
+}
 export default function App(){useEffect(()=>{try{registerSW({immediate:true})}catch{}},[]);const [symbol,setSymbol]=useState("SOLUSDT"),[interval,setInterval]=useState("15m"),[candles,setCandles]=useState([]),[analysis,setAnalysis]=useState(null),[loading,setLoading]=useState(false),[updated,setUpdated]=useState(""),[error,setError]=useState(""),[sidebarCollapsed,setSidebarCollapsed]=useState(false);
 const loadData=async()=>{setLoading(true);setError("");try{const rows=await fetchK(symbol,interval,200);const higher=await Promise.all((HIGHER_INTERVAL_MAP[interval]||[]).map(async tf=>({interval:tf,candles:await fetchK(symbol,tf,200)})));setCandles(rows);setAnalysis(analyze(rows,higher));setUpdated(new Date().toLocaleString())}catch(e){setError(e.message||"讀取失敗")}finally{setLoading(false)}};
 useEffect(()=>{loadData()},[symbol,interval]);useEffect(()=>{const t=setInterval(loadData,30000);return()=>clearInterval(t)},[symbol,interval]);
 const chartData=useMemo(()=>{if(!candles.length)return[];const cl=candles.map(c=>c.close),m20=sma(cl,20),m50=sma(cl,50);return candles.slice(-60).map((c,idx,arr)=>{const oi=candles.length-arr.length+idx;return{time:fmtTime(c.openTime,interval),...c,ma20:m20[oi],ma50:m50[oi],bullish:c.close>=c.open}})},[candles,interval]); const d=symbol==="BTCUSDT"?0:2;
 const badge=analysis?.bias==="偏多"?"bull":analysis?.bias==="偏空"?"bear":"flat";
 const blockedReasons=useMemo(()=>{if(!analysis)return[];const raw=[...(analysis.decisionReasons||[]),...(analysis.waitConditions||[])],list=[...new Set(raw.map(reasonAlias).filter(Boolean))];return (analysis.finalDecision==="NO_TRADE"||analysis.finalDecision==="WAIT")?list.slice(0,3):[]},[analysis]);
+const executionState=useMemo(()=>buildExecutionFlow({analysis,candles}),[analysis,candles]);
 const isNearSupport=Boolean(analysis?.levels?.structureSupportZone&&analysis?.price!=null&&analysis.price<=analysis.levels.structureSupportZone.high);
 const isNearResistance=Boolean(analysis?.levels?.structureResistanceZone&&analysis?.price!=null&&analysis.price>=analysis.levels.structureResistanceZone.low);
 const debugLite=[
@@ -201,9 +315,10 @@ return <div className="app">
 </button>
 {!sidebarCollapsed?<><div className="zone"><div className="label">模擬控制</div><div style={{fontWeight:800,fontSize:20}}>{symbol} / {interval}</div><div className="muted" style={{marginTop:6}}>更新：{updated||"-"}</div></div>
 <div className="zone" style={{marginTop:12}}><div className="label">本次交易狀態</div><div className="row" style={{justifyContent:"space-between",alignItems:"center"}}><div style={{fontSize:13,color:"#475569"}}>Final Decision</div><span className={`badge ${analysis?.finalDecision==="BUY"?"bull":analysis?.finalDecision==="SELL"?"bear":"flat"}`}>{analysis?.finalDecision||"讀取中"}</span></div><div style={{fontSize:24,fontWeight:800,marginTop:6}}>{analysis?.entryAdvice||"-"}</div></div>
+<div className="zone" style={{marginTop:12}}><div className="label">Pending Orders</div><div style={{fontWeight:800,fontSize:18}}>{executionState.statusText}</div><div className="muted" style={{marginTop:6}}>waiting reason：{executionState.waitingReason}</div>{executionState.pendingOrder?<div style={{fontSize:13,color:"#334155",marginTop:8,lineHeight:1.6}}>已掛單：{executionState.pendingOrder.orderId}<br/>等待確認：{executionState.pendingOrder.confirmationStatus}<br/>阻擋原因：{executionState.pendingOrder.blockedReason?CONFIRMATION_REASON_LABELS[executionState.pendingOrder.blockedReason]||executionState.pendingOrder.blockedReason:"-"}</div>:null}</div>
 <div className="zone" style={{marginTop:12}}><div className="label">決策摘要</div><div style={{fontWeight:700}}>{analysis?.setup||"-"} / {analysis?.setupType||"-"}</div><div className="muted" style={{marginTop:6}}>市場：{analysis?.marketState||"-"} ・ 共振：{analysis?.confluence||"-"} ・ 信心：{analysis?.confidenceLevel||"-"}</div></div>
 <div className="zone" style={{marginTop:12}}><div className="label">策略績效</div><div style={{fontSize:20,fontWeight:800}}>{analysis?.entryScore||"-"} / 10 ・ {analysis?.finalScore||"-"} / 10</div><div className="muted" style={{marginTop:6}}>風險：{analysis?.riskLevel||"-"} ・ RR：{analysis?.tradePlan?.riskReward||"-"}</div></div>
-<details style={{marginTop:12}}><summary className="muted" style={{cursor:"pointer",fontWeight:700}}>Debug（進階）</summary><div className="zone" style={{marginTop:8}}><div className="label">決策 Debug（精簡）</div>{debugLite.map(item=><div key={item.label} style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:14}}><span>{item.label}</span><span style={{fontWeight:700}}>{item.value}</span></div>)}</div><div className="zone" style={{marginTop:8}}><div className="label">進階 debug</div><div style={{fontSize:13,color:"#475569",lineHeight:1.7}}>account：{positionSnapshot?`${fmt(positionSnapshot.value,2)} USDT`:"-"}<br/>pendingOrders：暫無模擬資料<br/>config：symbol={symbol} / interval={interval}<br/>raw：請展開開發者工具查看完整 JSON</div></div></details>
+<details style={{marginTop:12}}><summary className="muted" style={{cursor:"pointer",fontWeight:700}}>Debug（進階）</summary><div className="zone" style={{marginTop:8}}><div className="label">決策 Debug（精簡）</div>{debugLite.map(item=><div key={item.label} style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:14}}><span>{item.label}</span><span style={{fontWeight:700}}>{item.value}</span></div>)}</div><div className="zone" style={{marginTop:8}}><div className="label">Execution 診斷統計</div><div style={{fontSize:13,color:"#475569",lineHeight:1.7}}>totalSetups：{executionState.diagnostics.totalSetups}<br/>zoneReachedCount：{executionState.diagnostics.zoneReachedCount}<br/>pendingCreatedCount：{executionState.diagnostics.pendingCreatedCount}<br/>fillBlockedByConfirmationCount：{executionState.diagnostics.fillBlockedByConfirmationCount}<br/>filledCount：{executionState.diagnostics.filledCount}<br/>invalidatedBeforeFillCount：{executionState.diagnostics.invalidatedBeforeFillCount}</div></div><div className="zone" style={{marginTop:8}}><div className="label">最近 5 次 setup</div>{executionState.recentEvents.length?executionState.recentEvents.map((event,idx)=><div key={`${event.setupId}-${idx}`} style={{fontSize:12,color:"#334155",marginTop:6}}>#{idx+1} {event.setupId}<br/>zone reached：{event.zoneReachedTime?new Date(event.zoneReachedTime).toLocaleString():"-"}<br/>pending created：{event.pendingCreatedTime?new Date(event.pendingCreatedTime).toLocaleString():"-"}<br/>結果：{event.outcome}</div>):<div style={{fontSize:12,color:"#64748b"}}>暫無資料</div>}</div><div className="zone" style={{marginTop:8}}><div className="label">進階 debug</div><div style={{fontSize:13,color:"#475569",lineHeight:1.7}}>account：{positionSnapshot?`${fmt(positionSnapshot.value,2)} USDT`:"-"}<br/>executionMode：{executionState.executionMode}<br/>pendingOrders：{executionState.pendingOrder?executionState.pendingOrder.orderId:"暫無"}<br/>config：symbol={symbol} / interval={interval}<br/>raw：請展開開發者工具查看完整 JSON</div></div><div className="zone" style={{marginTop:8}}><div className="label">Execution Logs</div><div style={{fontSize:12,color:"#334155",lineHeight:1.6,maxHeight:160,overflow:"auto"}}>{executionState.logs.length?executionState.logs.map((log,idx)=><div key={`${log}-${idx}`}>{log}</div>):"暫無 log"}</div></div></details>
 </>:null}
 </div></div>
 </div>
