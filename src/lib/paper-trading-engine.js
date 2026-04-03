@@ -1948,7 +1948,7 @@ function maybeFillPendingOrders(state, {
   selectedSymbolAtThatMoment = null,
   marketDataBySymbol = null,
 }) {
-  console.debug("[EXECUTION_LOOP_START]", {
+  console.log("[EXECUTION_LOOP_START]", {
     functionName: "maybeFillPendingOrders",
     totalPendingOrders: (state?.pendingOrders || []).filter((order) => order?.status === "PENDING").length,
     symbol,
@@ -1980,7 +1980,7 @@ function maybeFillPendingOrders(state, {
       nextPendingOrders.push(order);
       continue;
     }
-    console.debug("[PENDING_FOUND]", {
+    console.log("[PENDING_FOUND]", {
       pendingId: order.id,
       symbol: order.symbol,
       timeframe: order.timeframe,
@@ -2154,7 +2154,7 @@ function maybeFillPendingOrders(state, {
       candleLow: orderCandleLow,
       candleTime,
     });
-    console.debug("[PENDING_FILL_RECHECK]", {
+    console.log("[PENDING_FILL_RECHECK]", {
       pendingId: order.id,
       entryMode: order.entryMode || null,
       symbol: order.symbol,
@@ -3149,7 +3149,7 @@ export function simulateDecisionExecution({
 
   const createPendingOrder = ({ baseState, order }) => {
     const beforeCount = (baseState?.pendingOrders || []).length;
-    console.info("[PENDING_CREATED]", {
+    console.log("[PENDING_CREATED]", {
       pendingId: order?.id || null,
       entryZone: {
         low: normalizeNumber(order?.entryLow ?? order?.entryZoneLow ?? order?.placementSnapshot?.entryLow),
@@ -3343,7 +3343,7 @@ export function simulateDecisionExecution({
 
   const pendingCreation = createPendingOrder({ baseState: stateWithSetupLock, order: pendingOrder });
   if (pendingCreation.created) {
-    console.info("[PENDING_CREATED]", {
+    console.log("[PENDING_CREATED]", {
       orderId: pendingOrder.id,
       symbol: pendingOrder.symbol,
       side: pendingOrder.side,
