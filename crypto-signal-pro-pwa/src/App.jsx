@@ -167,6 +167,7 @@ const EXECUTION_LOGS={
 SETUP_CREATED:"[SETUP_CREATED]",
 ZONE_REACHED_CREATE_PENDING:"[ZONE_REACHED_CREATE_PENDING]",
 PENDING_CREATED_WAITING_CONFIRMATION:"[PENDING_CREATED_WAITING_CONFIRMATION]",
+PENDING_FILL_RECHECK:"[PENDING_FILL_RECHECK]",
 FILL_BLOCKED_BY_CONFIRMATION:"[FILL_BLOCKED_BY_CONFIRMATION]",
 CONFIRMATION_PASSED:"[CONFIRMATION_PASSED]",
 FILL_EXECUTED:"[FILL_EXECUTED]",
@@ -231,21 +232,27 @@ logs.push(`${EXECUTION_LOGS.PENDING_CREATED_WAITING_CONFIRMATION} ${pendingOrder
 if(!pendingOrder||filled)continue;
 const confirmation=evaluatePullbackConfirmation({side:pendingOrder.side==="LONG"?"LONG":"SHORT",candle,analysis});
 if(confirmation.mismatch)logs.push(`${EXECUTION_LOGS.PULLBACK_CONFIRMATION_DIRECTION_MISMATCH} ${setupId}`);
+const pendingBlockedReason=confirmation.blockers[0]||"KLINE";
+const pendingConfirmationStatus=confirmation.passed?"PASSED":"TEMP_BLOCK";
+logs.push(`${EXECUTION_LOGS.PENDING_FILL_RECHECK} pendingId=${pendingOrder.orderId} confirmationStatus=${pendingConfirmationStatus} blockedReason=${confirmation.passed?"-":pendingBlockedReason} fillTriggered=${confirmation.passed?"YES":"NO"}`);
 if(confirmation.passed){
 logs.push(`${EXECUTION_LOGS.CONFIRMATION_PASSED} ${pendingOrder.orderId}`);
 logs.push(`${EXECUTION_LOGS.FILL_EXECUTED} ${pendingOrder.orderId}`);
 pendingOrder.confirmationStatus="PASSED";
 pendingOrder.blockedReason=null;
+pendingOrder.blockType=null;
 filled=true;
 diagnostics.filledCount++;
 recentEvents[recentEvents.length-1]={...recentEvents.at(-1),outcome:"FILLED"};
 continue;
 }
-pendingOrder.confirmationStatus="BLOCKED";
-pendingOrder.blockedReason=confirmation.blockers[0]||"KLINE";
+pendingOrder.confirmationStatus="TEMP_BLOCK";
+pendingOrder.blockedReason=pendingBlockedReason;
+pendingOrder.blockType="TEMP_BLOCK";
 diagnostics.fillBlockedByConfirmationCount++;
 logs.push(`${EXECUTION_LOGS.FILL_BLOCKED_BY_CONFIRMATION} ${CONFIRMATION_REASON_LABELS[pendingOrder.blockedReason]||pendingOrder.blockedReason}`);
 if(Number.isFinite(invalidation)&&((side==="LONG"&&price<=invalidation)||(side==="SHORT"&&price>=invalidation))){
+logs.push(`[PENDING_BLOCK_TYPE] pendingId=${pendingOrder.orderId} blockType=INVALIDATION reason=STRUCTURE`);
 invalidationState="STRUCTURE";
 logs.push(`${EXECUTION_LOGS.SETUP_INVALIDATED_STRUCTURE} ${setupId}`);
 pendingOrder=null;
@@ -254,6 +261,7 @@ recentEvents[recentEvents.length-1]={...recentEvents.at(-1),outcome:"INVALIDATED
 break;
 }
 if((side==="LONG"&&(analysis.rsi??50)<42)||(side==="SHORT"&&(analysis.rsi??50)>58)){
+logs.push(`[PENDING_BLOCK_TYPE] pendingId=${pendingOrder.orderId} blockType=INVALIDATION reason=MOMENTUM`);
 invalidationState="MOMENTUM";
 logs.push(`${EXECUTION_LOGS.SETUP_INVALIDATED_MOMENTUM} ${setupId}`);
 pendingOrder=null;
@@ -262,6 +270,7 @@ recentEvents[recentEvents.length-1]={...recentEvents.at(-1),outcome:"INVALIDATED
 break;
 }
 if(pendingCreatedAt&&i-(startIndex+(recentEvents.length?0:0))>24){
+logs.push(`[PENDING_BLOCK_TYPE] pendingId=${pendingOrder.orderId} blockType=INVALIDATION reason=TIMEOUT`);
 invalidationState="TIMEOUT";
 logs.push(`${EXECUTION_LOGS.SETUP_INVALIDATED_TIMEOUT} ${setupId}`);
 pendingOrder=null;
