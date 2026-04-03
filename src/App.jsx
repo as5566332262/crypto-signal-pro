@@ -1647,23 +1647,29 @@ function deriveSetupTypeCandidate({
   mtfAlignedRatio,
   mtfDisagreement,
 }) {
-  if (bias === "中性") return "wait";
-  if (marketRegime === "ranging" && breakoutState === "區間內") return "range";
-  if (["向上突破", "向下跌破"].includes(breakoutState)) return "breakout";
-  if (momentumScore <= 4.4 && mtfDisagreement > mtfAlignedRatio) return "wait";
+  if (bias === "中性") return { candidateSetupType: "wait", reason: "bias_neutral" };
+  if (marketRegime === "ranging" && breakoutState === "區間內") {
+    return { candidateSetupType: "range", reason: "ranging_and_inside_range" };
+  }
+  if (["向上突破", "向下跌破"].includes(breakoutState)) {
+    return { candidateSetupType: "breakout", reason: `breakout_state_${breakoutState}` };
+  }
+  if (momentumScore <= 4.4 && mtfDisagreement > mtfAlignedRatio) {
+    return { candidateSetupType: "wait", reason: "weak_momentum_and_mtf_disagreement" };
+  }
   if (
     (bias === "偏多" && (breakoutState === "回踩支撐中" || structure === "上升結構")) ||
     (bias === "偏空" && (breakoutState === "反彈壓力中" || structure === "下降結構"))
   ) {
-    return "pullback";
+    return { candidateSetupType: "pullback", reason: "trend_structure_pullback_match" };
   }
   if (
     (bias === "偏多" && breakoutState === "向下跌破" && momentumScore >= 5.6) ||
     (bias === "偏空" && breakoutState === "向上突破" && momentumScore >= 5.6)
   ) {
-    return "reversal";
+    return { candidateSetupType: "reversal", reason: "counter_breakout_with_strong_momentum" };
   }
-  return "pullback";
+  return { candidateSetupType: "pullback", reason: "default_pullback_fallback" };
 }
 
 function evaluateEntryTiming({
@@ -2738,7 +2744,7 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
   else if (confidenceScorePenalty >= 2 && confidenceLevel === "high") adjustedConfidenceLevel = "medium";
   else if (confidenceScorePenalty >= 2 && confidenceLevel === "medium") adjustedConfidenceLevel = "low";
 
-  const setupTypeCandidate = deriveSetupTypeCandidate({
+  const setupTypeCandidateResult = deriveSetupTypeCandidate({
     bias,
     marketRegime,
     breakoutState,
@@ -2747,7 +2753,16 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
     mtfAlignedRatio,
     mtfDisagreement,
   });
+  const setupTypeCandidate = setupTypeCandidateResult.candidateSetupType;
   const isPullbackSetupCandidate = setupTypeCandidate === "pullback";
+  console.info("[SETUP_CANDIDATE_DEBUG]", {
+    symbol,
+    timeframe: primaryTimeframe,
+    side: bias === "偏多" ? "LONG" : bias === "偏空" ? "SHORT" : "NEUTRAL",
+    candidateSetupType,
+    isPullbackCandidate: isPullbackSetupCandidate,
+    reason: setupTypeCandidateResult.reason,
+  });
 
   const shouldWait =
     bias === "中性" ||
@@ -2764,6 +2779,44 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
         ((marketRegime === "weak trend" || marketRegime === "ranging") &&
           (mtfDisagreement >= 0.42 || isRangeMiddlePosition || momentumUnclear)) ||
         (fakeBreakout.risk === "高" && mtfDisagreement >= 0.35)));
+
+  const noTradeGateChecks = [
+    {
+      rule: "bias_neutral",
+      ruleResult: bias === "中性",
+    },
+    {
+      rule: "entry_score_min_4_8",
+      ruleResult: !isPullbackSetupCandidate && entryScoreAdjusted < 4.8,
+    },
+    {
+      rule: "wait_reasons_gte_5",
+      ruleResult: !isPullbackSetupCandidate && waitReasons.length >= 5,
+    },
+    {
+      rule: "regime_mtf_structure_momentum_gate",
+      ruleResult:
+        !isPullbackSetupCandidate &&
+        (marketRegime === "weak trend" || marketRegime === "ranging") &&
+        (mtfDisagreement >= 0.42 || isRangeMiddlePosition || momentumUnclear),
+    },
+    {
+      rule: "fake_breakout_high_and_mtf_disagree",
+      ruleResult: !isPullbackSetupCandidate && fakeBreakout.risk === "高" && mtfDisagreement >= 0.35,
+    },
+  ];
+  let noTradeAlreadyTriggered = false;
+  noTradeGateChecks.forEach((gateCheck) => {
+    noTradeAlreadyTriggered = noTradeAlreadyTriggered || gateCheck.ruleResult;
+    console.info("[NO_TRADE_GATE_ORDER_DEBUG]", {
+      symbol,
+      side: bias === "偏多" ? "LONG" : bias === "偏空" ? "SHORT" : "NEUTRAL",
+      candidateSetupType,
+      ruleEvaluated: gateCheck.rule,
+      ruleResult: gateCheck.ruleResult,
+      returnedNoTrade: noTradeAlreadyTriggered,
+    });
+  });
 
   const directionalDecision = shouldNoTrade ? "NO_TRADE" : shouldWait ? "WAIT" : bias === "偏多" ? "BUY" : "SELL";
   const directionalDecisionGateChecks = [
