@@ -3013,6 +3013,8 @@ export default function CryptoSignalWebApp() {
   const lastAppliedPaperTickKeyRef = useRef({});
   const hasLoggedResumeAfterRestoreRef = useRef({});
   const executionLocksRef = useRef({});
+  const executionLoopTimersRef = useRef({});
+  const runSimulationStepRef = useRef(() => {});
   const [marketSnapshots, setMarketSnapshots] = useState({});
   const updateSimulationStateForSymbol = (symbolKey, updater) => {
     if (!symbolKey) return;
@@ -4002,6 +4004,45 @@ const simulationAgentState = {
     executionLocksRef.current[paperSymbol] = false;
     updateSimulationStateForSymbol(paperSymbol, { executionLock: false });
   };
+
+  useEffect(() => {
+    runSimulationStepRef.current = runSimulationStep;
+  }, [runSimulationStep]);
+
+  const startExecutionLoop = (symbolKey) => {
+    if (!symbolKey) return;
+    if (executionLoopTimersRef.current?.[symbolKey]) return;
+
+    console.debug("[EXECUTION_LOOP_START]", {
+      symbol: symbolKey,
+      source: "App.startExecutionLoop",
+    });
+
+    runSimulationStepRef.current({ mode: "agent_loop", executionSource: "simulation_agent_restore_bootstrap" });
+    executionLoopTimersRef.current[symbolKey] = window.setInterval(() => {
+      runSimulationStepRef.current({ mode: "agent_loop", executionSource: "simulation_agent_execution_loop" });
+    }, 5000);
+  };
+
+  const stopExecutionLoop = (symbolKey) => {
+    if (!symbolKey) return;
+    const timerId = executionLoopTimersRef.current?.[symbolKey];
+    if (!timerId) return;
+    window.clearInterval(timerId);
+    delete executionLoopTimersRef.current[symbolKey];
+  };
+
+  useEffect(() => {
+    if (simulationLifecycle === "running") {
+      startExecutionLoop(paperSymbol);
+    } else {
+      stopExecutionLoop(paperSymbol);
+    }
+
+    return () => {
+      stopExecutionLoop(paperSymbol);
+    };
+  }, [simulationLifecycle, paperSymbol]);
 
   const handleExecuteSimulation = () => runSimulationStep({ mode: "manual_click", executionSource: "simulation_manual" });
 
