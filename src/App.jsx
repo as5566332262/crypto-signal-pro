@@ -1646,30 +1646,117 @@ function deriveSetupTypeCandidate({
   momentumScore,
   mtfAlignedRatio,
   mtfDisagreement,
+  symbol,
+  timeframe,
+  currentPrice,
+  support,
+  resistance,
+  entryPrice,
+  zoneLow,
+  zoneHigh,
 }) {
-  if (bias === "中性") return { candidateSetupType: "wait", reason: "bias_neutral" };
-  if (marketRegime === "ranging" && breakoutState === "區間內") {
-    return { candidateSetupType: "range", reason: "ranging_and_inside_range" };
-  }
-  if (["向上突破", "向下跌破"].includes(breakoutState)) {
-    return { candidateSetupType: "breakout", reason: `breakout_state_${breakoutState}` };
-  }
-  if (momentumScore <= 4.4 && mtfDisagreement > mtfAlignedRatio) {
-    return { candidateSetupType: "wait", reason: "weak_momentum_and_mtf_disagreement" };
-  }
-  if (
-    (bias === "偏多" && (breakoutState === "回踩支撐中" || structure === "上升結構")) ||
-    (bias === "偏空" && (breakoutState === "反彈壓力中" || structure === "下降結構"))
+  const side = bias === "偏多" ? "LONG" : bias === "偏空" ? "SHORT" : "NEUTRAL";
+  const inEntryZone =
+    zoneLow != null &&
+    zoneHigh != null &&
+    currentPrice != null &&
+    currentPrice >= Math.min(zoneLow, zoneHigh) &&
+    currentPrice <= Math.max(zoneLow, zoneHigh);
+  const distanceToSupport = support != null && currentPrice != null ? Math.abs(currentPrice - support) : null;
+  const distanceToResistance =
+    resistance != null && currentPrice != null ? Math.abs(resistance - currentPrice) : null;
+  const nearResistanceForShort =
+    side === "SHORT" &&
+    distanceToSupport != null &&
+    distanceToResistance != null &&
+    distanceToResistance <= distanceToSupport;
+  const nearSupportForLong =
+    side === "LONG" &&
+    distanceToSupport != null &&
+    distanceToResistance != null &&
+    distanceToSupport <= distanceToResistance;
+  const rangeState =
+    marketRegime === "ranging"
+      ? breakoutState === "區間內"
+        ? "inside_range"
+        : "range_break_or_edge"
+      : "not_ranging";
+  const pullbackSignals = {
+    inEntryZone,
+    nearSupportForLong,
+    nearResistanceForShort,
+    longStructureAligned: bias === "偏多" && structure === "上升結構",
+    shortStructureAligned: bias === "偏空" && structure === "下降結構",
+    longRetestState: breakoutState === "回踩支撐中",
+    shortRetestState: breakoutState === "反彈壓力中",
+    shortBreakdownRetestCandidate:
+      bias === "偏空" &&
+      breakoutState === "向下跌破" &&
+      ((inEntryZone && nearResistanceForShort) || (inEntryZone && structure === "下降結構")),
+    longBreakoutRetestCandidate:
+      bias === "偏多" &&
+      breakoutState === "向上突破" &&
+      ((inEntryZone && nearSupportForLong) || (inEntryZone && structure === "上升結構")),
+  };
+
+  let candidateSetupType = "pullback";
+  let reason = "default_pullback_fallback";
+
+  if (bias === "中性") {
+    candidateSetupType = "wait";
+    reason = "bias_neutral";
+  } else if (marketRegime === "ranging" && breakoutState === "區間內") {
+    candidateSetupType = "range";
+    reason = "ranging_and_inside_range";
+  } else if (momentumScore <= 4.4 && mtfDisagreement > mtfAlignedRatio) {
+    candidateSetupType = "wait";
+    reason = "weak_momentum_and_mtf_disagreement";
+  } else if (
+    pullbackSignals.longRetestState ||
+    pullbackSignals.shortRetestState ||
+    pullbackSignals.longStructureAligned ||
+    pullbackSignals.shortStructureAligned ||
+    pullbackSignals.shortBreakdownRetestCandidate ||
+    pullbackSignals.longBreakoutRetestCandidate
   ) {
-    return { candidateSetupType: "pullback", reason: "trend_structure_pullback_match" };
-  }
-  if (
+    candidateSetupType = "pullback";
+    reason = pullbackSignals.shortBreakdownRetestCandidate
+      ? "short_breakdown_retest_pullback"
+      : pullbackSignals.longBreakoutRetestCandidate
+      ? "long_breakout_retest_pullback"
+      : "trend_structure_pullback_match";
+  } else if (
     (bias === "偏多" && breakoutState === "向下跌破" && momentumScore >= 5.6) ||
     (bias === "偏空" && breakoutState === "向上突破" && momentumScore >= 5.6)
   ) {
-    return { candidateSetupType: "reversal", reason: "counter_breakout_with_strong_momentum" };
+    candidateSetupType = "reversal";
+    reason = "counter_breakout_with_strong_momentum";
+  } else if (["向上突破", "向下跌破"].includes(breakoutState)) {
+    candidateSetupType = "breakout";
+    reason = `breakout_state_${breakoutState}`;
   }
-  return { candidateSetupType: "pullback", reason: "default_pullback_fallback" };
+
+  console.info("[SETUP_CANDIDATE_CLASSIFY_DEBUG]", {
+    symbol: symbol ?? null,
+    timeframe: timeframe ?? null,
+    side,
+    marketRegime,
+    currentPrice: currentPrice ?? null,
+    support: support ?? null,
+    resistance: resistance ?? null,
+    entryPrice: entryPrice ?? null,
+    zoneLow: zoneLow ?? null,
+    zoneHigh: zoneHigh ?? null,
+    distanceToSupport,
+    distanceToResistance,
+    breakoutState,
+    rangeState,
+    pullbackSignals,
+    candidateSetupType,
+    reason,
+  });
+
+  return { candidateSetupType, reason };
 }
 
 function evaluateEntryTiming({
@@ -2752,6 +2839,14 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
     momentumScore: dimensionScores.momentum,
     mtfAlignedRatio,
     mtfDisagreement,
+    symbol,
+    timeframe: primaryTimeframe,
+    currentPrice: price,
+    support: levels?.nearestSupport ?? null,
+    resistance: levels?.nearestResistance ?? null,
+    entryPrice: tradePlan?.entryMid ?? null,
+    zoneLow: tradePlan?.entryLow ?? null,
+    zoneHigh: tradePlan?.entryHigh ?? null,
   });
   const setupTypeCandidate = setupTypeCandidateResult.candidateSetupType;
   const isPullbackSetupCandidate = setupTypeCandidate === "pullback";
