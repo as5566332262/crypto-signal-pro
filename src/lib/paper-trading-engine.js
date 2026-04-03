@@ -1948,6 +1948,12 @@ function maybeFillPendingOrders(state, {
   selectedSymbolAtThatMoment = null,
   marketDataBySymbol = null,
 }) {
+  console.debug("[EXECUTION_LOOP_START]", {
+    functionName: "maybeFillPendingOrders",
+    totalPendingOrders: (state?.pendingOrders || []).filter((order) => order?.status === "PENDING").length,
+    symbol,
+    triggeredBy,
+  });
   const normalizedCandleTime = normalizeBarTime(candleTime);
   const eventId = resolvePendingFillEventId({ triggeredBy, symbol, candleTime, timestamp });
   const perEventFilledOrderIds = new Set();
@@ -1974,6 +1980,13 @@ function maybeFillPendingOrders(state, {
       nextPendingOrders.push(order);
       continue;
     }
+    console.debug("[PENDING_FOUND]", {
+      pendingId: order.id,
+      symbol: order.symbol,
+      timeframe: order.timeframe,
+      side: order.side,
+      entryMode: order.entryMode || null,
+    });
     const checkedFunctionName = "maybeFillPendingOrders";
     const scopedMarket = (marketDataBySymbol && order.symbol)
       ? marketDataBySymbol[order.symbol]
@@ -2140,6 +2153,17 @@ function maybeFillPendingOrders(state, {
       candleHigh: orderCandleHigh,
       candleLow: orderCandleLow,
       candleTime,
+    });
+    console.debug("[PENDING_FILL_RECHECK]", {
+      pendingId: order.id,
+      entryMode: order.entryMode || null,
+      symbol: order.symbol,
+      side: order.side,
+      tickPrice: orderTickPrice,
+      candleHigh: orderCandleHigh,
+      candleLow: orderCandleLow,
+      fillCandidate: Boolean(fillEvaluation?.shouldFill),
+      fillReason: fillEvaluation?.reason || "UNKNOWN",
     });
     const alreadyProcessedInEvent = Array.isArray(nextState.orderFillEventLocks?.[order.id]) &&
       nextState.orderFillEventLocks[order.id].includes(eventId);
@@ -3125,6 +3149,14 @@ export function simulateDecisionExecution({
 
   const createPendingOrder = ({ baseState, order }) => {
     const beforeCount = (baseState?.pendingOrders || []).length;
+    console.info("[PENDING_CREATED]", {
+      pendingId: order?.id || null,
+      entryZone: {
+        low: normalizeNumber(order?.entryLow ?? order?.entryZoneLow ?? order?.placementSnapshot?.entryLow),
+        high: normalizeNumber(order?.entryHigh ?? order?.entryZoneHigh ?? order?.placementSnapshot?.entryHigh),
+      },
+      price: normalizeNumber(order?.entryPrice ?? order?.triggerPrice),
+    });
     const nextState = recalculateAccountState({
       ...baseState,
       pendingOrders: [order, ...(baseState?.pendingOrders || [])],
