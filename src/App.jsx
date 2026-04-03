@@ -2831,7 +2831,7 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
   else if (confidenceScorePenalty >= 2 && confidenceLevel === "high") adjustedConfidenceLevel = "medium";
   else if (confidenceScorePenalty >= 2 && confidenceLevel === "medium") adjustedConfidenceLevel = "low";
 
-  const setupTypeCandidateResult = deriveSetupTypeCandidate({
+  const { candidateSetupType, reason: setupTypeCandidateReason } = deriveSetupTypeCandidate({
     bias,
     marketRegime,
     breakoutState,
@@ -2848,15 +2848,14 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
     zoneLow: tradePlan?.entryLow ?? null,
     zoneHigh: tradePlan?.entryHigh ?? null,
   });
-  const setupTypeCandidate = setupTypeCandidateResult.candidateSetupType;
-  const isPullbackSetupCandidate = setupTypeCandidate === "pullback";
+  const isPullbackSetupCandidate = candidateSetupType === "pullback";
   console.info("[SETUP_CANDIDATE_DEBUG]", {
     symbol,
     timeframe: primaryTimeframe,
     side: bias === "偏多" ? "LONG" : bias === "偏空" ? "SHORT" : "NEUTRAL",
     candidateSetupType,
     isPullbackCandidate: isPullbackSetupCandidate,
-    reason: setupTypeCandidateResult.reason,
+    reason: setupTypeCandidateReason,
   });
 
   const shouldWait =
