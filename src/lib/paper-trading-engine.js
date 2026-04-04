@@ -179,6 +179,24 @@ function lockPullbackSetupType(decision, context = {}) {
   assignExecutionPlanSetupType(decision, "pullback", context);
 }
 
+function resolveExecutionPlanEntryRange(decision) {
+  const rawRange = decision?.executionPlan?.entryRange;
+  if (!rawRange) return { low: undefined, high: undefined };
+  if (Array.isArray(rawRange)) {
+    return {
+      low: normalizeNumber(rawRange[0]),
+      high: normalizeNumber(rawRange[1]),
+    };
+  }
+  if (typeof rawRange === "object") {
+    return {
+      low: normalizeNumber(rawRange?.low),
+      high: normalizeNumber(rawRange?.high),
+    };
+  }
+  return { low: undefined, high: undefined };
+}
+
 function buildLockedSetupFromDecision({
   decision,
   signalContext,
@@ -188,11 +206,18 @@ function buildLockedSetupFromDecision({
   executionMode,
 }) {
   const setupId = buildDecisionContextKey(decision, symbol, timeframe);
-  const entryLow = normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow);
-  const entryHigh = normalizeNumber(decision?.executionPlan?.entryHigh ?? decision?.entryHigh);
+  const entryRange = resolveExecutionPlanEntryRange(decision);
+  const entryLow = normalizeNumber(entryRange.low ?? decision?.executionPlan?.entryLow ?? decision?.entryLow);
+  const entryHigh = normalizeNumber(entryRange.high ?? decision?.executionPlan?.entryHigh ?? decision?.entryHigh);
   const zoneLow = Number.isFinite(entryLow) && Number.isFinite(entryHigh) ? Math.min(entryLow, entryHigh) : undefined;
   const zoneHigh = Number.isFinite(entryLow) && Number.isFinite(entryHigh) ? Math.max(entryLow, entryHigh) : undefined;
-  const stopPrice = normalizeNumber(decision?.executionPlan?.stopLoss ?? decision?.stopLoss ?? decision?.invalidationPrice);
+  const stopPrice = normalizeNumber(
+    decision?.executionPlan?.stop ??
+    decision?.executionPlan?.stopLoss ??
+    decision?.stop ??
+    decision?.stopLoss ??
+    decision?.invalidationPrice
+  );
   const createdAt = nowIso();
   return {
     setupId,
@@ -207,7 +232,7 @@ function buildLockedSetupFromDecision({
     support: normalizeNumber(signalContext?.structure?.supportLow ?? decision?.levels?.structureSupportZone?.low),
     resistance: normalizeNumber(signalContext?.structure?.resistanceHigh ?? decision?.levels?.structureResistanceZone?.high),
     stopPrice,
-    tp1: normalizeNumber(decision?.executionPlan?.takeProfit1 ?? decision?.takeProfit1),
+    tp1: normalizeNumber(decision?.executionPlan?.takeProfit ?? decision?.executionPlan?.takeProfit1 ?? decision?.takeProfit ?? decision?.takeProfit1),
     tp2: normalizeNumber(decision?.executionPlan?.takeProfit2 ?? decision?.takeProfit2),
     setupCreatedAt: createdAt,
     setupCreatedCandleTime: normalizeBarTime(signalContext?.candleTime),
@@ -816,6 +841,9 @@ function resolveStrategyType(decision = {}) {
 
 function resolveEntrySourceFunction(decision, side, mode) {
   if (mode === "pullback") {
+    const entryRange = resolveExecutionPlanEntryRange(decision);
+    if (side === "LONG" && Number.isFinite(entryRange.low)) return "executionPlan.entryRange.low";
+    if (side === "SHORT" && Number.isFinite(entryRange.high)) return "executionPlan.entryRange.high";
     const entryMid = normalizeNumber(decision?.executionPlan?.entryMid ?? decision?.entryMid);
     if (Number.isFinite(entryMid)) return "executionPlan.entryMid";
     const entryLow = normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow);
@@ -835,6 +863,15 @@ function resolvePlannedEntryPrice(decision, side) {
   const sourceFunction = resolveEntrySourceFunction(decision, side, mode);
   const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
   if (mode === "pullback") {
+    const entryRange = resolveExecutionPlanEntryRange(decision);
+    if (side === "LONG" && Number.isFinite(entryRange.low)) return { entryPrice: entryRange.low, mode, sourceFunction };
+    if (side === "SHORT" && Number.isFinite(entryRange.high)) return { entryPrice: entryRange.high, mode, sourceFunction };
+    console.warn("[PENDING_PRICE_SOURCE_FALLBACK]", {
+      symbol: decision?.symbol ?? null,
+      side,
+      reason: "executionPlan.entryRange_missing",
+      fallbackOrder: ["executionPlan.entryMid", "executionPlan.entryLow/high", "executionPlan.triggerPrice"],
+    });
     const entryMid = normalizeNumber(decision?.executionPlan?.entryMid ?? decision?.entryMid);
     const entryLow = normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow);
     const entryHigh = normalizeNumber(decision?.executionPlan?.entryHigh ?? decision?.entryHigh);
@@ -2977,8 +3014,18 @@ export function simulateDecisionExecution({
     lockedSetup?.status === "ACTIVE"
       ? (lockedSetup.executionMode === "BREAKOUT"
         ? lockedSetup.triggerPrice
-        : (lockedSetup.entryZoneLow + lockedSetup.entryZoneHigh) / 2)
+        : (side === "LONG" ? lockedSetup.entryZoneLow : lockedSetup.entryZoneHigh))
       : (bypassSetupGate ? fallbackEntryPrice : (reentryAttempt?.adjustedEntryPrice ?? plannedEntry.entryPrice))
+  );
+  const entryRangeForDebug = resolveExecutionPlanEntryRange(decision);
+  console.info(
+    "[PENDING_PRICE_SOURCE]\n" +
+    `symbol=${symbol}\n` +
+    `entryPrice=${Number.isFinite(tentativeEntryPrice) ? tentativeEntryPrice : "NaN"}\n` +
+    `source=${plannedEntry.sourceFunction || "unknown"}\n` +
+    `currentPrice=${Number.isFinite(normalizeNumber(currentPrice)) ? normalizeNumber(currentPrice) : "NaN"}\n` +
+    `entryRangeLow=${Number.isFinite(entryRangeForDebug.low) ? entryRangeForDebug.low : "NaN"}\n` +
+    `entryRangeHigh=${Number.isFinite(entryRangeForDebug.high) ? entryRangeForDebug.high : "NaN"}`
   );
   if (!Number.isFinite(tentativeEntryPrice)) {
     return {
@@ -3300,6 +3347,7 @@ export function simulateDecisionExecution({
       : undefined;
   const invalidationPrice =
     normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice) ??
+    normalizeNumber(decision.executionPlan?.stop ?? decision.stop) ??
     normalizeNumber(decision.executionPlan?.stopLoss ?? decision.stopLoss) ??
     fallbackInvalidation;
   const contextKey = buildDecisionContextKey(decision, symbol, timeframe);
@@ -3307,8 +3355,8 @@ export function simulateDecisionExecution({
   const normalizedLevels = normalizeDirectionalLevels({
     side,
     referencePrice: triggerPrice,
-    stopLoss: decision.executionPlan?.stopLoss ?? decision.stopLoss,
-    takeProfit1: decision.executionPlan?.takeProfit1 ?? decision.takeProfit1,
+    stopLoss: decision.executionPlan?.stop ?? decision.stop ?? decision.executionPlan?.stopLoss ?? decision.stopLoss,
+    takeProfit1: decision.executionPlan?.takeProfit ?? decision.takeProfit ?? decision.executionPlan?.takeProfit1 ?? decision.takeProfit1,
     takeProfit2: decision.executionPlan?.takeProfit2 ?? decision.takeProfit2,
     takeProfit3: decision.executionPlan?.takeProfit3 ?? decision.takeProfit3,
   });
@@ -3418,9 +3466,7 @@ export function simulateDecisionExecution({
     timeframe,
     side,
     orderType: executionOrderType === "MARKET" ? "MARKET" : "LIMIT",
-    entryPrice: finalLockedSetup?.status === "ACTIVE" && finalLockedSetup.executionMode === "PULLBACK"
-      ? normalizeNumber((finalLockedSetup.entryZoneLow + finalLockedSetup.entryZoneHigh) / 2)
-      : triggerPrice,
+    entryPrice: triggerPrice,
     entryZoneLow: normalizeNumber(finalLockedSetup?.entryZoneLow),
     entryZoneHigh: normalizeNumber(finalLockedSetup?.entryZoneHigh),
     triggerPrice: finalLockedSetup?.status === "ACTIVE" && finalLockedSetup.executionMode === "BREAKOUT"
