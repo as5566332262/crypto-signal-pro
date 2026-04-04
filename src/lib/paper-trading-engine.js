@@ -883,9 +883,13 @@ function evaluateConditionalPendingEligibility({
   currentPrice,
   entryPrice,
   rangeBoundary = {},
+  setupContext = {},
 }) {
+  const candidateSetupType = String(setupContext?.candidateSetupType || "").toLowerCase();
+  const executionMode = String(setupContext?.executionMode || "").toUpperCase();
+  const isPullbackLongSetup = side === "LONG" && (candidateSetupType === "pullback" || executionMode === "PULLBACK");
   const strategyType = resolveStrategyType(decision);
-  const allowedStrategy = strategyType === "range" || strategyType === "pullback";
+  const allowedStrategy = isPullbackLongSetup ? true : (strategyType === "range" || strategyType === "pullback");
   const canEvaluatePrice = Number.isFinite(currentPrice) && Number.isFinite(entryPrice);
   const zoneLow = normalizeNumber(rangeBoundary?.zoneLow);
   const zoneHigh = normalizeNumber(rangeBoundary?.zoneHigh);
@@ -908,18 +912,21 @@ function evaluateConditionalPendingEligibility({
   const unmetConditions = [];
   if (!allowedStrategy) unmetConditions.push("strategy_not_allowed");
   if (!hasEntryZone) unmetConditions.push("entry_zone_missing");
-  if (longEntryAboveCurrent) unmetConditions.push("long_entry_above_current");
-  if (nearUpperZone) unmetConditions.push("long_entry_near_resistance");
+  if (!isPullbackLongSetup && longEntryAboveCurrent) unmetConditions.push("long_entry_above_current");
+  if (!isPullbackLongSetup && nearUpperZone) unmetConditions.push("long_entry_near_resistance");
   const primaryBlockedReason = unmetConditions[0] || null;
   const reasons = [];
   if (allowedStrategy) reasons.push("strategyType 為 range/pullback");
   if (hasEntryZone) reasons.push("已識別有效 entry zone（支撐區）");
-  if (side !== "LONG" || !longEntryAboveCurrent) reasons.push("LONG entry 未高於 currentPrice");
-  if (side !== "LONG" || !nearUpperZone) reasons.push("未靠近 zoneHigh/resistance");
-  const eligible = allowedStrategy && hasEntryZone && !longEntryAboveCurrent && !nearUpperZone;
+  if (side !== "LONG" || !longEntryAboveCurrent || isPullbackLongSetup) reasons.push("LONG entry 未高於 currentPrice");
+  if (side !== "LONG" || !nearUpperZone || isPullbackLongSetup) reasons.push("未靠近 zoneHigh/resistance");
+  const eligible = isPullbackLongSetup
+    ? hasEntryZone
+    : (allowedStrategy && hasEntryZone && !longEntryAboveCurrent && !nearUpperZone);
 
   return {
     eligible,
+    candidateSetupType,
     strategyType,
     allowedStrategy,
     hasEntryZone,
@@ -1804,6 +1811,31 @@ function evaluatePendingOrderFill(order, {
   return { shouldFill: false, reason: "TRIGGER_NOT_REACHED", triggerSource: null };
 }
 
+function evaluatePullbackFillConfirmation(order, { candleOpen, candleClose, rsi }) {
+  const executionMode = String(order?.executionMode || "").toUpperCase();
+  if (executionMode !== "PULLBACK") {
+    return { confirmationStatus: "NOT_APPLICABLE", blockedReason: null, bullishCheck: null, rsiValue: normalizeNumber(rsi), rsiGate: null, isConfirmed: true };
+  }
+  const side = String(order?.side || "").toUpperCase();
+  const open = normalizeNumber(candleOpen);
+  const close = normalizeNumber(candleClose);
+  const rsiValue = normalizeNumber(rsi);
+  const bullishCheck = side === "LONG"
+    ? (Number.isFinite(open) && Number.isFinite(close) ? close >= open : true)
+    : (Number.isFinite(open) && Number.isFinite(close) ? close <= open : true);
+  const rsiThreshold = side === "LONG" ? 55 : 45;
+  const rsiGate = !Number.isFinite(rsiValue) || (side === "LONG" ? rsiValue >= rsiThreshold : rsiValue <= rsiThreshold);
+  const blockedReason = !bullishCheck ? "KLINE_CONFIRMATION_PENDING" : (!rsiGate ? "RSI_CONFIRMATION_PENDING" : null);
+  return {
+    confirmationStatus: blockedReason ? "BLOCKED" : "CONFIRMED",
+    blockedReason,
+    bullishCheck,
+    rsiValue,
+    rsiGate,
+    isConfirmed: !blockedReason,
+  };
+}
+
 function isAllowedPendingFillTrigger(triggeredBy) {
   const trigger = String(triggeredBy || "").toUpperCase();
   return trigger === "MARKET_TICK" || trigger === "MARKET_CANDLE";
@@ -2164,6 +2196,11 @@ function maybeFillPendingOrders(state, {
       candleLow: orderCandleLow,
       candleTime,
     });
+    const fillConfirmation = evaluatePullbackFillConfirmation(order, {
+      candleOpen: orderCandleOpen,
+      candleClose: orderCandleClose,
+      rsi,
+    });
     console.log("[PENDING_FILL_RECHECK]", {
       pendingId: order.id,
       entryMode: order.entryMode || null,
@@ -2181,6 +2218,7 @@ function maybeFillPendingOrders(state, {
     const blockedByEventLock = alreadyProcessedInEvent || perEventFilledOrderIds.has(order.id);
     const blockedByOrderFillGuard = alreadyFilledByOrderId;
     const shouldFill = fillEvaluation.shouldFill &&
+      fillConfirmation.isConfirmed &&
       !blockedByEventLock &&
       !blockedByOrderFillGuard &&
       !blockByUnexpectedTrigger &&
@@ -2189,6 +2227,8 @@ function maybeFillPendingOrders(state, {
       ? "BLOCKED_BY_EVENT_LOCK"
       : blockedByOrderFillGuard
         ? "BLOCKED_BY_ORDER_FILLED"
+        : !fillConfirmation.isConfirmed
+          ? (fillConfirmation.blockedReason || "BLOCKED_BY_FILL_CONFIRMATION")
         : blockByUnexpectedTrigger
           ? "BLOCKED_UNSUPPORTED_TRIGGER_SOURCE"
           : blockByRestorePreload
@@ -2247,6 +2287,18 @@ function maybeFillPendingOrders(state, {
       eventId,
       functionName: checkedFunctionName,
     });
+    console.info(
+      "[PULLBACK_FILL_CONFIRMATION_DEBUG]\n" +
+      `symbol=${order.symbol}\n` +
+      `side=${order.side}\n` +
+      `pendingId=${order.id}\n` +
+      `bullishCheck=${fillConfirmation.bullishCheck}\n` +
+      `rsiValue=${fillConfirmation.rsiValue}\n` +
+      `rsiGate=${fillConfirmation.rsiGate}\n` +
+      `confirmationStatus=${fillConfirmation.confirmationStatus}\n` +
+      `blockedReason=${fillConfirmation.blockedReason}\n` +
+      `fillTriggered=${shouldFill}`
+    );
     if (!shouldFill) {
       if (resolvedFillReason === "TRIGGER_NOT_REACHED") {
         console.debug("[FILL_REJECTED_TRIGGER_NOT_REACHED]", {
@@ -2838,7 +2890,36 @@ export function simulateDecisionExecution({
     currentPrice: normalizeNumber(currentPrice),
     entryPrice: tentativeEntryPrice,
     rangeBoundary,
+    setupContext: {
+      candidateSetupType: plannedEntry.mode,
+      executionMode: plannedEntry.mode === "breakout" ? "BREAKOUT" : "PULLBACK",
+    },
   });
+  const setupGateRsiValue = normalizeNumber(signalContext?.rsi ?? decision?.rsi);
+  const setupGateRsiGate = !Number.isFinite(setupGateRsiValue) || (side === "SHORT" ? setupGateRsiValue <= 45 : setupGateRsiValue >= 55);
+  const setupGateBullishCheck = side === "LONG"
+    ? (Number.isFinite(normalizeNumber(signalContext?.candleOpen)) && Number.isFinite(normalizeNumber(signalContext?.candleClose))
+      ? normalizeNumber(signalContext?.candleClose) >= normalizeNumber(signalContext?.candleOpen)
+      : null)
+    : (Number.isFinite(normalizeNumber(signalContext?.candleOpen)) && Number.isFinite(normalizeNumber(signalContext?.candleClose))
+      ? normalizeNumber(signalContext?.candleClose) <= normalizeNumber(signalContext?.candleOpen)
+      : null);
+  const setupTypeForDebug = decision?.setupType ?? decision?.executionPlan?.setupType ?? null;
+  const setupGateReason = conditionalPendingEligibility.primaryBlockedReason || "eligible";
+  console.info(
+    "[PULLBACK_SETUP_GATE_DEBUG]\n" +
+    `symbol=${symbol}\n` +
+    `timeframe=${timeframe}\n` +
+    `side=${side}\n` +
+    `hasEntryZone=${conditionalPendingEligibility.hasEntryZone}\n` +
+    `candidateSetupType=${plannedEntry.mode}\n` +
+    `setupType=${setupTypeForDebug}\n` +
+    `allowedStrategy=${conditionalPendingEligibility.allowedStrategy}\n` +
+    `bullishCheck=${setupGateBullishCheck}\n` +
+    `rsiValue=${setupGateRsiValue}\n` +
+    `rsiGate=${setupGateRsiGate}\n` +
+    `reason=${setupGateReason}`
+  );
 
   if (!conditionalPendingEligibility.eligible) {
     const blockedByStrategy =
