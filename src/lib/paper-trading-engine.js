@@ -3359,6 +3359,25 @@ export function simulateDecisionExecution({
     pendingOrderExecutionMode ??
     finalLockedSetupExecutionMode ??
     null;
+  const rawExecutionMode = debugExecutionMode;
+  const rawCandidateSetupType = plannedEntry?.mode ?? null;
+  const rawSetupType = decision?.setupType ?? null;
+  const rawExecutionPlanSetupType = decision?.executionPlan?.setupType ?? null;
+  const modeNormalized = String(rawExecutionMode ?? "").toLowerCase();
+  const setupNormalized = String(rawExecutionPlanSetupType ?? rawSetupType ?? rawCandidateSetupType ?? "").toLowerCase();
+  const normalizeExecutionSemantic = (value) => {
+    const normalized = String(value ?? "").toLowerCase();
+    if (!normalized) return "";
+    if (normalized.includes("pullback")) return "pullback";
+    if (normalized.includes("breakout")) return "breakout";
+    return normalized;
+  };
+  const normalizedExecutionMode = normalizeExecutionSemantic(modeNormalized);
+  const normalizedSetupType = normalizeExecutionSemantic(setupNormalized);
+  const isModeMatched = (
+    pendingOrderExecutionMode === finalLockedSetupExecutionMode ||
+    (normalizedExecutionMode && normalizedExecutionMode === normalizedSetupType)
+  );
   const logSetupInactiveDebug = ({ setupActive, orderActive, inactiveReason, finalBlockedReason }) => {
     console.info(
       "[SETUP_INACTIVE_DEBUG]\n" +
@@ -3371,6 +3390,21 @@ export function simulateDecisionExecution({
       `setupActive=${setupActive}\n` +
       `orderActive=${orderActive}\n` +
       `inactiveReason=${inactiveReason || "none"}\n` +
+      `finalBlockedReason=${finalBlockedReason || "none"}`
+    );
+  };
+  const logExecutionModeMatchDebug = ({ finalBlockedReason }) => {
+    console.info(
+      "[EXECUTION_MODE_MATCH_DEBUG]\n" +
+      `symbol=${armingDebugPayload.symbol}\n` +
+      `side=${armingDebugPayload.side}\n` +
+      `rawExecutionMode=${rawExecutionMode}\n` +
+      `rawCandidateSetupType=${rawCandidateSetupType}\n` +
+      `rawSetupType=${rawSetupType}\n` +
+      `rawExecutionPlanSetupType=${rawExecutionPlanSetupType}\n` +
+      `normalizedExecutionMode=${normalizedExecutionMode}\n` +
+      `normalizedSetupType=${normalizedSetupType}\n` +
+      `isModeMatched=${isModeMatched}\n` +
       `finalBlockedReason=${finalBlockedReason || "none"}`
     );
   };
@@ -3620,7 +3654,8 @@ export function simulateDecisionExecution({
     };
     }
   }
-  if (pendingOrderExecutionMode !== finalLockedSetupExecutionMode) {
+  if (!isModeMatched) {
+    logExecutionModeMatchDebug({ finalBlockedReason: "EXECUTION_MODE_MISMATCH" });
     logSetupInactiveDebug({
       setupActive: true,
       orderActive: true,
@@ -3654,6 +3689,7 @@ export function simulateDecisionExecution({
       },
     };
   }
+  logExecutionModeMatchDebug({ finalBlockedReason: null });
 
   logPendingArmingDebug({ shouldCreatePending: true, blockedReason: null });
   logPendingFinalGateDebug({
