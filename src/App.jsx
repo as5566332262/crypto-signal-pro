@@ -2993,16 +2993,17 @@ function analyzeMarket(candlesByInterval, primaryTimeframe, symbol = "MARKET") {
     passedConditions: directionalDecisionGateChecks.filter((item) => item.passed).map((item) => item.rule),
     firstBlockedRule: firstFailedDirectionalDecisionCheck?.rule ?? null,
   });
-  const setupType = deriveSetupType({
-    bias,
-    marketRegime,
-    breakoutState,
-    structure: structureInfo.structure,
-    momentumScore: dimensionScores.momentum,
-    mtfAlignedRatio,
-    mtfDisagreement,
-    directionalDecision,
-  });
+  const setupType = candidateSetupType;
+  if (candidateSetupType === "pullback" && setupType !== "pullback") {
+    console.warn("[SETUP_TYPE_OVERWRITE_DEBUG]", {
+      symbol,
+      side: bias === "偏多" ? "LONG" : bias === "偏空" ? "SHORT" : "NEUTRAL",
+      previousSetupType: candidateSetupType,
+      nextSetupType: setupType,
+      sourceFunction: "analyzeMarket",
+      reason: "candidate_pullback_must_remain_pullback",
+    });
+  }
   const entryTiming = evaluateEntryTiming({
     directionalDecision,
     setupType,

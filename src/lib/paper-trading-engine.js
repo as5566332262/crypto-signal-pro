@@ -92,6 +92,72 @@ function buildActiveSetupKey(symbol, timeframe) {
   return [symbol || "-", timeframe || "-"].join("|");
 }
 
+function normalizeSetupTypeValue(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function logSetupTypeOverwriteDebug({
+  symbol,
+  side,
+  previousSetupType,
+  nextSetupType,
+  sourceFunction,
+  reason,
+}) {
+  const prev = normalizeSetupTypeValue(previousSetupType);
+  const next = normalizeSetupTypeValue(nextSetupType);
+  if (prev === "pullback" && next === "no-trade") {
+    console.warn(
+      "[SETUP_TYPE_OVERWRITE_DEBUG]\n" +
+      `symbol=${symbol ?? "-"}\n` +
+      `side=${side ?? "-"}\n` +
+      `previousSetupType=${previousSetupType ?? null}\n` +
+      `nextSetupType=${nextSetupType ?? null}\n` +
+      `sourceFunction=${sourceFunction ?? "unknown"}\n` +
+      `reason=${reason ?? "pullback_to_no-trade_attempt"}`
+    );
+  }
+}
+
+function assignDecisionSetupType(decision, nextSetupType, context = {}) {
+  const previousSetupType = decision?.setupType ?? null;
+  const isPullbackLocked = normalizeSetupTypeValue(decision?.__lockedSetupType) === "pullback";
+  logSetupTypeOverwriteDebug({
+    ...context,
+    previousSetupType,
+    nextSetupType,
+  });
+  if (isPullbackLocked && normalizeSetupTypeValue(previousSetupType) === "pullback" && normalizeSetupTypeValue(nextSetupType) === "no-trade") {
+    return previousSetupType;
+  }
+  decision.setupType = nextSetupType;
+  return decision.setupType;
+}
+
+function assignExecutionPlanSetupType(decision, nextSetupType, context = {}) {
+  const previousSetupType = decision?.executionPlan?.setupType ?? null;
+  const isPullbackLocked = normalizeSetupTypeValue(decision?.__lockedSetupType) === "pullback";
+  logSetupTypeOverwriteDebug({
+    ...context,
+    previousSetupType,
+    nextSetupType,
+  });
+  if (isPullbackLocked && normalizeSetupTypeValue(previousSetupType) === "pullback" && normalizeSetupTypeValue(nextSetupType) === "no-trade") {
+    return previousSetupType;
+  }
+  decision.executionPlan = {
+    ...(decision.executionPlan || {}),
+    setupType: nextSetupType,
+  };
+  return decision.executionPlan.setupType;
+}
+
+function lockPullbackSetupType(decision, context = {}) {
+  decision.__lockedSetupType = "pullback";
+  assignDecisionSetupType(decision, "pullback", context);
+  assignExecutionPlanSetupType(decision, "pullback", context);
+}
+
 function buildLockedSetupFromDecision({
   decision,
   signalContext,
@@ -2926,11 +2992,12 @@ export function simulateDecisionExecution({
     plannedEntry.mode === "pullback" &&
     conditionalPendingEligibility.allowedStrategy;
   if (shouldPromotePullbackSetup) {
-    decision.setupType = "pullback";
-    decision.executionPlan = {
-      ...(decision.executionPlan || {}),
-      setupType: "pullback",
-    };
+    lockPullbackSetupType(decision, {
+      symbol,
+      side,
+      sourceFunction: "createPendingOrderFromDecision.shouldPromotePullbackSetup",
+      reason: "has_entry_zone_pullback_candidate_and_allowed_strategy",
+    });
     if (executionIntent === "WATCH_ONLY") {
       executionIntent = "PLACE_PENDING";
     }
