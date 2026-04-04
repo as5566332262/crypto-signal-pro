@@ -3341,6 +3341,28 @@ export function simulateDecisionExecution({
       `blockedReason=${blockedReason || "none"}`
     );
   };
+  const pendingFinalWaitingReasons = shouldBypassSetupDraftWaitingGuard
+    ? draftWaitingReasons.filter((reason) => (
+      reason !== "blockedByKlineConfirmation" &&
+      reason !== "waitingForPullback"
+    ))
+    : draftWaitingReasons;
+  const logPendingFinalGateDebug = ({ finalShouldCreatePending, finalBlockedReason, nextAction }) => {
+    console.info(
+      "[PENDING_FINAL_GATE_DEBUG]\n" +
+      `symbol=${armingDebugPayload.symbol}\n` +
+      `side=${armingDebugPayload.side}\n` +
+      `hasEntryZone=${armingDebugPayload.hasEntryZone}\n` +
+      `candidateSetupType=${armingDebugPayload.candidateSetupType}\n` +
+      `setupType=${armingDebugPayload.setupType}\n` +
+      `executionPlanSetupType=${armingDebugPayload.executionPlanSetupType}\n` +
+      `allowedStrategy=${armingDebugPayload.allowedStrategy}\n` +
+      `waitingReasons=${pendingFinalWaitingReasons.length ? pendingFinalWaitingReasons.join(",") : "none"}\n` +
+      `finalShouldCreatePending=${finalShouldCreatePending}\n` +
+      `finalBlockedReason=${finalBlockedReason || "none"}\n` +
+      `nextAction=${nextAction}`
+    );
+  };
 
   const createPendingOrder = ({ baseState, order }) => {
     const beforeCount = (baseState?.pendingOrders || []).length;
@@ -3492,6 +3514,9 @@ export function simulateDecisionExecution({
     };
     }
   }
+  if (shouldBypassSetupDraftWaitingGuard) {
+    pendingOrder.waitingReasons = pendingFinalWaitingReasons;
+  }
 
   if (executionIntent === "EXECUTE_NOW" && executionOrderType !== "MARKET") {
     console.warn("[EXECUTION_BLOCKED]", {
@@ -3513,6 +3538,11 @@ export function simulateDecisionExecution({
     candleTime: signalContext?.candleTime,
   })) {
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "REENTRY_GUARD_BLOCKED" });
+    logPendingFinalGateDebug({
+      finalShouldCreatePending: false,
+      finalBlockedReason: "REENTRY_GUARD_BLOCKED",
+      nextAction: "RETURN_WATCH_AND_ARM",
+    });
     return {
       state,
       result: "REENTRY_GUARD_BLOCKED",
@@ -3529,6 +3559,11 @@ export function simulateDecisionExecution({
 
   if (!finalLockedSetup || finalLockedSetup.status !== "ACTIVE") {
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "SETUP_INACTIVE_ORDER_BLOCKED" });
+    logPendingFinalGateDebug({
+      finalShouldCreatePending: false,
+      finalBlockedReason: "SETUP_INACTIVE_ORDER_BLOCKED",
+      nextAction: "RETURN_WATCH_AND_ARM",
+    });
     console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", { symbol, timeframe, side, executionMode: pendingOrder.executionMode });
     return {
       state: stateWithSetupLock,
@@ -3545,6 +3580,11 @@ export function simulateDecisionExecution({
   }
   if (pendingOrder.executionMode !== finalLockedSetup.executionMode) {
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "EXECUTION_MODE_MISMATCH" });
+    logPendingFinalGateDebug({
+      finalShouldCreatePending: false,
+      finalBlockedReason: "EXECUTION_MODE_MISMATCH",
+      nextAction: "RETURN_WATCH_AND_ARM",
+    });
     console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", {
       symbol,
       timeframe,
@@ -3568,6 +3608,11 @@ export function simulateDecisionExecution({
   }
 
   logPendingArmingDebug({ shouldCreatePending: true, blockedReason: null });
+  logPendingFinalGateDebug({
+    finalShouldCreatePending: true,
+    finalBlockedReason: null,
+    nextAction: "CREATE_PENDING_ORDER",
+  });
   const pendingCreation = createPendingOrder({ baseState: stateWithSetupLock, order: pendingOrder });
   if (pendingCreation.created) {
     console.log("[PENDING_CREATED]", {
