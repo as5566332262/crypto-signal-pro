@@ -3421,6 +3421,8 @@ export function simulateDecisionExecution({
     entryPrice: finalLockedSetup?.status === "ACTIVE" && finalLockedSetup.executionMode === "PULLBACK"
       ? normalizeNumber((finalLockedSetup.entryZoneLow + finalLockedSetup.entryZoneHigh) / 2)
       : triggerPrice,
+    entryZoneLow: normalizeNumber(finalLockedSetup?.entryZoneLow),
+    entryZoneHigh: normalizeNumber(finalLockedSetup?.entryZoneHigh),
     triggerPrice: finalLockedSetup?.status === "ACTIVE" && finalLockedSetup.executionMode === "BREAKOUT"
       ? finalLockedSetup.triggerPrice
       : triggerPrice,
@@ -3646,8 +3648,51 @@ export function simulateDecisionExecution({
     );
   };
 
+  const normalizePendingKeyPrice = (value) => {
+    const normalized = normalizeNumber(value);
+    if (!Number.isFinite(normalized)) return null;
+    return Number(normalized.toFixed(8));
+  };
+
+  const buildPendingUniquenessKey = (order) => {
+    const symbolKey = String(order?.symbol || "").toUpperCase();
+    const sideKey = String(order?.side || "").toUpperCase();
+    const setupId = order?.setupId ? String(order.setupId) : null;
+    const entryZoneLow = normalizePendingKeyPrice(order?.entryZoneLow ?? order?.entryLow ?? order?.placementSnapshot?.entryLow);
+    const entryZoneHigh = normalizePendingKeyPrice(order?.entryZoneHigh ?? order?.entryHigh ?? order?.placementSnapshot?.entryHigh);
+    const zoneHash = Number.isFinite(entryZoneLow) && Number.isFinite(entryZoneHigh)
+      ? `${Math.min(entryZoneLow, entryZoneHigh)}:${Math.max(entryZoneLow, entryZoneHigh)}`
+      : null;
+    const setupKey = setupId || zoneHash;
+    if (!symbolKey || !sideKey || !setupKey) return null;
+    return `${symbolKey}|${sideKey}|${setupKey}`;
+  };
+
   const createPendingOrder = ({ baseState, order }) => {
     const beforeCount = (baseState?.pendingOrders || []).length;
+    const pendingKey = buildPendingUniquenessKey(order);
+    const existingPending = (baseState?.pendingOrders || []).find((candidate) => {
+      if (!isFormalPendingOrder(candidate)) return false;
+      return buildPendingUniquenessKey(candidate) === pendingKey;
+    });
+    if (pendingKey && existingPending) {
+      console.warn(
+        "[PENDING_DUPLICATE_BLOCKED]\n" +
+        `symbol=${order?.symbol || ""}\n` +
+        `side=${order?.side || ""}\n` +
+        `setupId=${order?.setupId || "entryZoneHash"}\n` +
+        `existingPendingId=${existingPending?.id || ""}\n` +
+        "reason=duplicate_pending_prevented"
+      );
+      return {
+        nextState: baseState,
+        beforeCount,
+        afterCount: beforeCount,
+        created: false,
+        blockedDuplicate: true,
+        duplicatePendingId: existingPending?.id || null,
+      };
+    }
     console.log("[PENDING_CREATED]", {
       pendingId: order?.id || null,
       entryZone: {
