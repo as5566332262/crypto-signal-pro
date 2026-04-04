@@ -859,6 +859,74 @@ function resolvePlannedEntryPrice(decision, side) {
   return { entryPrice: normalizeNumber(executionEntry), mode, sourceFunction };
 }
 
+function buildExecutionPlanSnapshot(decision, symbol, timeframe, selectedSize) {
+  const executionPlan = decision?.executionPlan || {};
+  const side = resolveSideFromDecision(decision);
+  const setupIdRaw = executionPlan?.setupId ?? decision?.setupId ?? decision?.signalId ?? decision?.id;
+  const setupId = setupIdRaw != null ? String(setupIdRaw) : null;
+  const entryZoneLow = normalizeNumber(executionPlan?.entryLow ?? executionPlan?.entryZoneLow);
+  const entryZoneHigh = normalizeNumber(executionPlan?.entryHigh ?? executionPlan?.entryZoneHigh);
+  const stopLoss = normalizeNumber(
+    executionPlan?.stopLoss ??
+    executionPlan?.stop ??
+    executionPlan?.invalidationPrice
+  );
+  const takeProfits = [
+    normalizeNumber(executionPlan?.takeProfit1 ?? executionPlan?.takeProfit ?? executionPlan?.tp),
+    normalizeNumber(executionPlan?.takeProfit2),
+    normalizeNumber(executionPlan?.takeProfit3),
+  ].filter((value) => Number.isFinite(value));
+
+  const normalizedLow = Number.isFinite(entryZoneLow) && Number.isFinite(entryZoneHigh)
+    ? Math.min(entryZoneLow, entryZoneHigh)
+    : entryZoneLow;
+  const normalizedHigh = Number.isFinite(entryZoneLow) && Number.isFinite(entryZoneHigh)
+    ? Math.max(entryZoneLow, entryZoneHigh)
+    : entryZoneHigh;
+  const size = asSafeNumber(selectedSize, DEFAULT_POSITION_SIZE);
+  const complete = Boolean(
+    symbol &&
+    side &&
+    setupId &&
+    Number.isFinite(normalizedLow) &&
+    Number.isFinite(normalizedHigh) &&
+    Number.isFinite(stopLoss) &&
+    takeProfits.length > 0 &&
+    size > 0
+  );
+
+  return {
+    symbol,
+    timeframe,
+    side,
+    setupId,
+    entryZoneLow: normalizedLow,
+    entryZoneHigh: normalizedHigh,
+    stopLoss,
+    takeProfits,
+    selectedSize: size,
+    complete,
+  };
+}
+
+function createPendingOrderFromExecutionPlan(planSnapshot, selectedSize) {
+  if (!planSnapshot?.complete) return null;
+  const side = planSnapshot.side;
+  const finalEntry = side === "SHORT"
+    ? normalizeNumber(planSnapshot.entryZoneHigh)
+    : normalizeNumber(planSnapshot.entryZoneLow);
+  const size = Math.max(0, asSafeNumber(selectedSize, planSnapshot.selectedSize));
+  if (!Number.isFinite(finalEntry) || size <= 0) return null;
+  return {
+    entryPrice: finalEntry,
+    stopLoss: normalizeNumber(planSnapshot.stopLoss),
+    takeProfit1: normalizeNumber(planSnapshot.takeProfits?.[0]),
+    takeProfit2: normalizeNumber(planSnapshot.takeProfits?.[1]),
+    takeProfit3: normalizeNumber(planSnapshot.takeProfits?.[2]),
+    quantity: size,
+  };
+}
+
 function validateExecutionPlanConsistency({ side, entryPrice, normalizedLevels, executionMode, sourceFunction }) {
   if (!Number.isFinite(entryPrice) || !normalizedLevels) return { valid: true };
   const takeProfit1 = normalizeNumber(normalizedLevels.takeProfit1);
@@ -2767,16 +2835,6 @@ export function simulateDecisionExecution({
 }) {
   const basePerformanceDebug = buildPerformanceDebugState();
   const executionPlan = decision?.executionPlan ?? {};
-  const planEntry = executionPlan?.entry;
-  const hasPlanEntry = (
-    (planEntry != null && typeof planEntry === "object" &&
-      (Number.isFinite(normalizeNumber(planEntry?.low)) || Number.isFinite(normalizeNumber(planEntry?.high)))) ||
-    Number.isFinite(normalizeNumber(planEntry))
-  );
-  const hasPlanStop = Number.isFinite(normalizeNumber(executionPlan?.stop ?? executionPlan?.stopLoss));
-  const hasPlanTp = [executionPlan?.tp, executionPlan?.takeProfit, executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3]
-    .some((value) => Number.isFinite(normalizeNumber(value)));
-  const shouldForceCreatePendingFromPlan = hasPlanEntry && hasPlanStop && hasPlanTp;
   const decisionBarTime = normalizeBarTime(signalContext?.candleTime);
   if (!state) {
     return { state, result: "NO_DECISION", ...basePerformanceDebug };
@@ -2798,6 +2856,97 @@ export function simulateDecisionExecution({
         },
       }
       : { state, result: "NO_DECISION", ...basePerformanceDebug };
+  }
+  const planSnapshot = buildExecutionPlanSnapshot(decision, symbol, timeframe, quantity);
+  const planLockedPending = createPendingOrderFromExecutionPlan(planSnapshot, quantity);
+  const shouldForceCreatePendingFromPlan = Boolean(planSnapshot.complete && planLockedPending);
+  if (shouldForceCreatePendingFromPlan) {
+    const existingPending = (state?.pendingOrders || []).find((candidate) => (
+      isFormalPendingOrder(candidate) &&
+      String(candidate?.symbol || "").toUpperCase() === String(symbol || "").toUpperCase() &&
+      String(candidate?.side || "").toUpperCase() === String(planSnapshot.side || "").toUpperCase() &&
+      String(candidate?.setupId || "") === String(planSnapshot.setupId || "")
+    ));
+    if (existingPending) {
+      console.warn(
+        "[PENDING_DUPLICATE_BLOCKED]\n" +
+        `symbol=${symbol || ""}\n` +
+        `side=${planSnapshot.side || ""}\n` +
+        `setupId=${planSnapshot.setupId || ""}\n` +
+        `existingPendingId=${existingPending?.id || ""}\n` +
+        "reason=duplicate_pending_prevented"
+      );
+      return {
+        state,
+        result: "DUPLICATE_SETUP",
+        pendingOrder: existingPending,
+        pendingCreation: { created: false, blockedDuplicate: true, duplicatePendingId: existingPending?.id || null },
+        ...basePerformanceDebug,
+      };
+    }
+    const now = nowIso();
+    const pendingOrder = {
+      id: createId("order"),
+      symbol,
+      timeframe,
+      side: planSnapshot.side,
+      orderType: "LIMIT",
+      entryPrice: planLockedPending.entryPrice,
+      triggerPrice: planLockedPending.entryPrice,
+      entryZoneLow: planSnapshot.entryZoneLow,
+      entryZoneHigh: planSnapshot.entryZoneHigh,
+      stopLoss: planLockedPending.stopLoss,
+      invalidationPrice: planLockedPending.stopLoss,
+      takeProfit1: planLockedPending.takeProfit1,
+      takeProfit2: planLockedPending.takeProfit2,
+      takeProfit3: planLockedPending.takeProfit3,
+      quantity: planLockedPending.quantity,
+      setupId: planSnapshot.setupId,
+      createdAt: now,
+      status: "PENDING",
+      lifecycleType: "PENDING_ORDER",
+      executionPlanValidated: true,
+      waitingReasons: [],
+      waitReason: "created_from_decision_center_plan",
+      entryMode: "pullback",
+      executionMode: "PLAN_LOCKED",
+      decisionSnapshot: decision,
+    };
+    console.info(
+      "[PENDING_PLAN_LOCKED]\n" +
+      `symbol=${planSnapshot.symbol || ""}\n` +
+      `side=${planSnapshot.side || ""}\n` +
+      `setupId=${planSnapshot.setupId || ""}\n` +
+      `entryZoneLow=${planSnapshot.entryZoneLow}\n` +
+      `entryZoneHigh=${planSnapshot.entryZoneHigh}\n` +
+      `finalEntry=${planLockedPending.entryPrice}\n` +
+      `stopLoss=${planLockedPending.stopLoss}\n` +
+      `takeProfits=${planSnapshot.takeProfits.join(" / ")}\n` +
+      `size=${planLockedPending.quantity}\n` +
+      "reason=created_from_decision_center_plan"
+    );
+    const nextState = recalculateAccountState({
+      ...state,
+      pendingOrders: [pendingOrder, ...(state?.pendingOrders || [])],
+    }, {
+      selectedSymbol: symbol,
+      affectedSymbol: symbol,
+      eventType: "PLACE_ORDER",
+      sourceFunction: "simulateDecisionExecution.createPendingOrderFromExecutionPlan",
+    });
+    return {
+      state: nextState,
+      result: "PLACED_PENDING",
+      pendingOrder,
+      pendingCreation: { created: true, beforeCount: (state?.pendingOrders || []).length, afterCount: (nextState?.pendingOrders || []).length },
+      executionIntent: "PLACE_PENDING",
+      ...basePerformanceDebug,
+      eligibilityInfo: {
+        eligibility: "READY_TO_PLACE_PENDING",
+        reasonCode: "PENDING_PLAN_LOCKED",
+        reason: "完整 execution plan 已鎖定，直接建立 pending order",
+      },
+    };
   }
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
   let executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
@@ -3571,10 +3720,12 @@ export function simulateDecisionExecution({
       "[PENDING_PLAN_LOCKED]\n" +
       `symbol=${order?.symbol || ""}\n` +
       `side=${order?.side || ""}\n` +
+      `setupId=${order?.setupId || ""}\n` +
       `entryZoneLow=${normalizeNumber(order?.entryZoneLow) ?? ""}\n` +
       `entryZoneHigh=${normalizeNumber(order?.entryZoneHigh) ?? ""}\n` +
-      `stop=${normalizeNumber(order?.stopLoss) ?? ""}\n` +
-      `tp=${[
+      `finalEntry=${normalizeNumber(order?.entryPrice ?? order?.triggerPrice) ?? ""}\n` +
+      `stopLoss=${normalizeNumber(order?.stopLoss) ?? ""}\n` +
+      `takeProfits=${[
         normalizeNumber(order?.takeProfit1),
         normalizeNumber(order?.takeProfit2),
         normalizeNumber(order?.takeProfit3),
