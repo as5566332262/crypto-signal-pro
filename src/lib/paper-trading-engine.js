@@ -1133,7 +1133,7 @@ function resolveExecutionOrderType(decision) {
 export function getSimulationEligibility(decision, currentPrice, signalContext = {}, options = {}) {
   const bypassSetupGate = shouldBypassSetupGate(options);
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
-  const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
+  let executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
   if (!decision) {
     return {
       eligibility: bypassSetupGate ? "WATCH_ONLY" : "BLOCKED",
@@ -2921,6 +2921,21 @@ export function simulateDecisionExecution({
     `reason=${setupGateReason}`
   );
 
+  const shouldPromotePullbackSetup =
+    conditionalPendingEligibility.hasEntryZone &&
+    plannedEntry.mode === "pullback" &&
+    conditionalPendingEligibility.allowedStrategy;
+  if (shouldPromotePullbackSetup) {
+    decision.setupType = "pullback";
+    decision.executionPlan = {
+      ...(decision.executionPlan || {}),
+      setupType: "pullback",
+    };
+    if (executionIntent === "WATCH_ONLY") {
+      executionIntent = "PLACE_PENDING";
+    }
+  }
+
   if (!conditionalPendingEligibility.eligible) {
     const blockedByStrategy =
       !conditionalPendingEligibility.allowedStrategy &&
@@ -3291,6 +3306,29 @@ export function simulateDecisionExecution({
     }
   }
   const draftSetup = isDraftLikeWaitingOrder(pendingOrder);
+  const armingDebugPayload = {
+    symbol,
+    side,
+    hasEntryZone: conditionalPendingEligibility.hasEntryZone,
+    candidateSetupType: plannedEntry.mode,
+    setupType: decision?.setupType ?? null,
+    executionPlanSetupType: decision?.executionPlan?.setupType ?? null,
+    allowedStrategy: conditionalPendingEligibility.allowedStrategy,
+  };
+  const logPendingArmingDebug = ({ shouldCreatePending, blockedReason }) => {
+    console.info(
+      "[PENDING_ARMING_DEBUG]\n" +
+      `symbol=${armingDebugPayload.symbol}\n` +
+      `side=${armingDebugPayload.side}\n` +
+      `hasEntryZone=${armingDebugPayload.hasEntryZone}\n` +
+      `candidateSetupType=${armingDebugPayload.candidateSetupType}\n` +
+      `setupType=${armingDebugPayload.setupType}\n` +
+      `executionPlanSetupType=${armingDebugPayload.executionPlanSetupType}\n` +
+      `allowedStrategy=${armingDebugPayload.allowedStrategy}\n` +
+      `shouldCreatePending=${shouldCreatePending}\n` +
+      `blockedReason=${blockedReason || "none"}`
+    );
+  };
 
   const createPendingOrder = ({ baseState, order }) => {
     const beforeCount = (baseState?.pendingOrders || []).length;
@@ -3321,6 +3359,7 @@ export function simulateDecisionExecution({
   };
 
   if (executionIntent === "WATCH_ONLY") {
+    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "EXECUTION_INTENT_WATCH_ONLY" });
     return {
       state,
       result: "WATCH_ONLY",
@@ -3336,6 +3375,7 @@ export function simulateDecisionExecution({
   }
 
   if (executionIntent === "WATCH_AND_ARM") {
+    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "EXECUTION_INTENT_WATCH_AND_ARM" });
     return {
       state: stateWithSetupLock,
       result: "WATCH_AND_ARM",
@@ -3351,6 +3391,7 @@ export function simulateDecisionExecution({
   }
 
   if (breakoutGuard.applies && !breakoutGuard.confirmed) {
+    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "WAIT_BREAKOUT_CONFIRMATION" });
     if (breakoutGuard.fakeBreakout) {
       console.warn(side === "LONG" ? "[BREAKOUT_FAKE_BLOCKED]" : "[BREAKDOWN_FAKE_BLOCKED]", {
         symbol,
@@ -3379,6 +3420,7 @@ export function simulateDecisionExecution({
   }
 
   if (draftSetup) {
+    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "SETUP_DRAFT_WAITING" });
     const nextState = {
       ...state,
       setupDrafts: [{
@@ -3434,6 +3476,7 @@ export function simulateDecisionExecution({
     atr: atrValue,
     candleTime: signalContext?.candleTime,
   })) {
+    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "REENTRY_GUARD_BLOCKED" });
     return {
       state,
       result: "REENTRY_GUARD_BLOCKED",
@@ -3449,6 +3492,7 @@ export function simulateDecisionExecution({
   }
 
   if (!finalLockedSetup || finalLockedSetup.status !== "ACTIVE") {
+    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "SETUP_INACTIVE_ORDER_BLOCKED" });
     console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", { symbol, timeframe, side, executionMode: pendingOrder.executionMode });
     return {
       state: stateWithSetupLock,
@@ -3464,6 +3508,7 @@ export function simulateDecisionExecution({
     };
   }
   if (pendingOrder.executionMode !== finalLockedSetup.executionMode) {
+    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "EXECUTION_MODE_MISMATCH" });
     console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", {
       symbol,
       timeframe,
@@ -3486,6 +3531,7 @@ export function simulateDecisionExecution({
     };
   }
 
+  logPendingArmingDebug({ shouldCreatePending: true, blockedReason: null });
   const pendingCreation = createPendingOrder({ baseState: stateWithSetupLock, order: pendingOrder });
   if (pendingCreation.created) {
     console.log("[PENDING_CREATED]", {
