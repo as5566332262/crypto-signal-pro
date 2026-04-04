@@ -3306,6 +3306,18 @@ export function simulateDecisionExecution({
     }
   }
   const draftSetup = isDraftLikeWaitingOrder(pendingOrder);
+  const setupTypeNormalized = String(decision?.setupType || "").toLowerCase();
+  const executionPlanSetupTypeNormalized = String(decision?.executionPlan?.setupType || "").toLowerCase();
+  const candidateSetupTypeNormalized = String(plannedEntry.mode || "").toLowerCase();
+  const draftWaitingReasons = Array.isArray(pendingOrder?.waitingReasons) ? pendingOrder.waitingReasons : [];
+  const draftReason = draftWaitingReasons.find((reason) => DRAFT_WAITING_REASON_KEYS.has(reason)) || null;
+  const shouldBypassSetupDraftWaitingGuard = (
+    conditionalPendingEligibility.hasEntryZone &&
+    conditionalPendingEligibility.allowedStrategy &&
+    candidateSetupTypeNormalized === "pullback" &&
+    setupTypeNormalized === "pullback" &&
+    executionPlanSetupTypeNormalized === "pullback"
+  );
   const armingDebugPayload = {
     symbol,
     side,
@@ -3420,6 +3432,29 @@ export function simulateDecisionExecution({
   }
 
   if (draftSetup) {
+    const blockedReason = shouldBypassSetupDraftWaitingGuard ? null : "SETUP_DRAFT_WAITING";
+    console.info(
+      "[SETUP_DRAFT_DEBUG]\n" +
+      `symbol=${symbol}\n` +
+      `side=${side}\n` +
+      `executionMode=${resolvedExecutionMode}\n` +
+      `candidateSetupType=${plannedEntry.mode}\n` +
+      `setupType=${decision?.setupType ?? null}\n` +
+      `executionPlanSetupType=${decision?.executionPlan?.setupType ?? null}\n` +
+      `draftStatus=${draftSetup ? "WAITING_DRAFT" : "NONE"}\n` +
+      `draftReady=${shouldBypassSetupDraftWaitingGuard}\n` +
+      `draftReason=${draftReason || "none"}\n` +
+      `blockedReason=${blockedReason || "none"}`
+    );
+    if (shouldBypassSetupDraftWaitingGuard) {
+      console.info("[SETUP_DRAFT_GUARD_BYPASSED]", {
+        symbol,
+        timeframe,
+        side,
+        reason: "PULLBACK_READY_TO_ARM",
+        waitingReasons: pendingOrder.waitingReasons,
+      });
+    } else {
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "SETUP_DRAFT_WAITING" });
     const nextState = {
       ...state,
@@ -3455,6 +3490,7 @@ export function simulateDecisionExecution({
         reasonCode: "SETUP_DRAFT_WAITING",
       },
     };
+    }
   }
 
   if (executionIntent === "EXECUTE_NOW" && executionOrderType !== "MARKET") {
