@@ -106,7 +106,7 @@ function logSetupTypeOverwriteDebug({
 }) {
   const prev = normalizeSetupTypeValue(previousSetupType);
   const next = normalizeSetupTypeValue(nextSetupType);
-  if (prev === "pullback" && next === "no-trade") {
+  if (prev && next && prev !== next) {
     console.warn(
       "[SETUP_TYPE_OVERWRITE_DEBUG]\n" +
       `symbol=${symbol ?? "-"}\n` +
@@ -114,7 +114,28 @@ function logSetupTypeOverwriteDebug({
       `previousSetupType=${previousSetupType ?? null}\n` +
       `nextSetupType=${nextSetupType ?? null}\n` +
       `sourceFunction=${sourceFunction ?? "unknown"}\n` +
-      `reason=${reason ?? "pullback_to_no-trade_attempt"}`
+      `reason=${reason ?? "setup_type_changed"}`
+    );
+  }
+}
+
+function logExecutionIntentOverwriteDebug({
+  symbol,
+  side,
+  previousIntent,
+  nextIntent,
+  sourceFunction,
+  reason,
+}) {
+  if (previousIntent && nextIntent && previousIntent !== nextIntent) {
+    console.warn(
+      "[EXECUTION_INTENT_OVERWRITE_DEBUG]\n" +
+      `symbol=${symbol ?? "-"}\n` +
+      `side=${side ?? "-"}\n` +
+      `previousIntent=${previousIntent}\n` +
+      `nextIntent=${nextIntent}\n` +
+      `sourceFunction=${sourceFunction ?? "unknown"}\n` +
+      `reason=${reason ?? "execution_intent_changed"}`
     );
   }
 }
@@ -2991,6 +3012,31 @@ export function simulateDecisionExecution({
     conditionalPendingEligibility.hasEntryZone &&
     plannedEntry.mode === "pullback" &&
     conditionalPendingEligibility.allowedStrategy;
+  const logPreArmReturnDebug = ({ returnReason, nextAction = "RETURN", sourceFunction = "simulateDecisionExecution" }) => {
+    console.warn(
+      "[PRE_ARM_RETURN_DEBUG]\n" +
+      `symbol=${symbol ?? "-"}\n` +
+      `side=${side ?? "-"}\n` +
+      `setupType=${decision?.setupType ?? null}\n` +
+      `executionPlanSetupType=${decision?.executionPlan?.setupType ?? null}\n` +
+      `executionIntent=${executionIntent ?? null}\n` +
+      `nextAction=${nextAction}\n` +
+      `returnReason=${returnReason ?? "unknown"}\n` +
+      `sourceFunction=${sourceFunction}`
+    );
+  };
+  const updateExecutionIntent = ({ nextIntent, sourceFunction, reason }) => {
+    const previousIntent = executionIntent;
+    executionIntent = nextIntent;
+    logExecutionIntentOverwriteDebug({
+      symbol,
+      side,
+      previousIntent,
+      nextIntent,
+      sourceFunction,
+      reason,
+    });
+  };
   if (shouldPromotePullbackSetup) {
     lockPullbackSetupType(decision, {
       symbol,
@@ -2998,8 +3044,25 @@ export function simulateDecisionExecution({
       sourceFunction: "createPendingOrderFromDecision.shouldPromotePullbackSetup",
       reason: "has_entry_zone_pullback_candidate_and_allowed_strategy",
     });
+    console.info(
+      "[POST_SETUP_ELIGIBLE]\n" +
+      `symbol=${symbol}\n` +
+      `side=${side}\n` +
+      `hasEntryZone=${conditionalPendingEligibility.hasEntryZone}\n` +
+      `candidateSetupType=${plannedEntry.mode}\n` +
+      `setupType=${decision?.setupType ?? null}\n` +
+      `executionPlanSetupType=${decision?.executionPlan?.setupType ?? null}\n` +
+      `allowedStrategy=${conditionalPendingEligibility.allowedStrategy}\n` +
+      `executionIntent=${executionIntent}\n` +
+      "nextAction=PENDING_ARMING_EVALUATION\n" +
+      "sourceFunction=simulateDecisionExecution"
+    );
     if (executionIntent === "WATCH_ONLY") {
-      executionIntent = "PLACE_PENDING";
+      updateExecutionIntent({
+        nextIntent: "PLACE_PENDING",
+        sourceFunction: "simulateDecisionExecution.shouldPromotePullbackSetup",
+        reason: "setup_eligible_promote_pending_arming",
+      });
     }
   }
 
@@ -3055,6 +3118,11 @@ export function simulateDecisionExecution({
         entryPrice: tentativeEntryPrice,
       },
     });
+    logPreArmReturnDebug({
+      returnReason: blockedByStrategy ? "PRE_ARM_DISABLED_FOR_BREAKOUT_OR_MOMENTUM" : "PRE_ARM_CONDITION_NOT_MET",
+      nextAction: "RETURN_WATCH_AND_ARM",
+      sourceFunction: "simulateDecisionExecution.conditionalPendingEligibility",
+    });
     return {
       state,
       result: blockedByStrategy ? "PREPEND_BLOCKED_STRATEGY_TYPE" : "PREPEND_BLOCKED_CONDITIONS",
@@ -3095,6 +3163,11 @@ export function simulateDecisionExecution({
       reason: invalidRangeLongReason,
     });
     state = incrementWaitingReason(state, "pendingTooFarFromPrice", { symbol, timeframe, side });
+    logPreArmReturnDebug({
+      returnReason: "ENTRY_BLOCKED_INVALID_RANGE_LONG",
+      nextAction: "RETURN_WATCH_ONLY",
+      sourceFunction: "simulateDecisionExecution.invalidRangeLongGuard",
+    });
     return {
       state,
       result: "ENTRY_BLOCKED_INVALID_RANGE_LONG",
@@ -3134,6 +3207,11 @@ export function simulateDecisionExecution({
   );
   if (constrainedEntry.isRejected) {
     if (bypassSetupGate) {
+      logPreArmReturnDebug({
+        returnReason: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
+        nextAction: "RETURN_WATCH_AND_ARM",
+        sourceFunction: "simulateDecisionExecution.applyEntryDistanceConstraint",
+      });
       return {
         state,
         result: "WATCH_AND_ARM",
@@ -3147,6 +3225,11 @@ export function simulateDecisionExecution({
         },
       };
     }
+    logPreArmReturnDebug({
+      returnReason: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
+      nextAction: "RETURN_BLOCKED",
+      sourceFunction: "simulateDecisionExecution.applyEntryDistanceConstraint",
+    });
     return {
       state,
       result: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
@@ -3205,6 +3288,11 @@ export function simulateDecisionExecution({
       takeProfit2: planConsistency.takeProfit2,
       executionMode: decision?.executionPlan?.executionMode ?? null,
     });
+    logPreArmReturnDebug({
+      returnReason: "INVALID_EXECUTION_PLAN_BLOCKED",
+      nextAction: "RETURN_WATCH_ONLY",
+      sourceFunction: "simulateDecisionExecution.validateExecutionPlanConsistency",
+    });
     return {
       state,
       result: "INVALID_EXECUTION_PLAN_BLOCKED",
@@ -3226,6 +3314,11 @@ export function simulateDecisionExecution({
 
   if (isDuplicateContext(state, symbol, timeframe, contextKey)) {
     if (bypassSetupGate) {
+      logPreArmReturnDebug({
+        returnReason: "DUPLICATE_SETUP",
+        nextAction: "RETURN_WATCH_AND_ARM",
+        sourceFunction: "simulateDecisionExecution.isDuplicateContext",
+      });
       return {
         state,
         result: "WATCH_AND_ARM",
@@ -3239,6 +3332,11 @@ export function simulateDecisionExecution({
         },
       };
     }
+    logPreArmReturnDebug({
+      returnReason: "DUPLICATE_SETUP",
+      nextAction: "RETURN_DUPLICATE_SETUP",
+      sourceFunction: "simulateDecisionExecution.isDuplicateContext",
+    });
     return { state, result: "DUPLICATE_SETUP", ...performanceDebugPayload };
   }
 
@@ -3521,6 +3619,11 @@ export function simulateDecisionExecution({
   };
 
   if (executionIntent === "WATCH_ONLY") {
+    logPreArmReturnDebug({
+      returnReason: "EXECUTION_INTENT_WATCH_ONLY",
+      nextAction: "RETURN_WATCH_ONLY",
+      sourceFunction: "simulateDecisionExecution.executionIntentGate",
+    });
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "EXECUTION_INTENT_WATCH_ONLY" });
     return {
       state,
@@ -3537,6 +3640,11 @@ export function simulateDecisionExecution({
   }
 
   if (executionIntent === "WATCH_AND_ARM") {
+    logPreArmReturnDebug({
+      returnReason: "EXECUTION_INTENT_WATCH_AND_ARM",
+      nextAction: "RETURN_WATCH_AND_ARM",
+      sourceFunction: "simulateDecisionExecution.executionIntentGate",
+    });
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "EXECUTION_INTENT_WATCH_AND_ARM" });
     return {
       state: stateWithSetupLock,
@@ -3553,6 +3661,11 @@ export function simulateDecisionExecution({
   }
 
   if (breakoutGuard.applies && !breakoutGuard.confirmed) {
+    logPreArmReturnDebug({
+      returnReason: "WAIT_BREAKOUT_CONFIRMATION",
+      nextAction: "RETURN_WATCH_AND_ARM",
+      sourceFunction: "simulateDecisionExecution.breakoutGuard",
+    });
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "WAIT_BREAKOUT_CONFIRMATION" });
     if (breakoutGuard.fakeBreakout) {
       console.warn(side === "LONG" ? "[BREAKOUT_FAKE_BLOCKED]" : "[BREAKDOWN_FAKE_BLOCKED]", {
@@ -3605,6 +3718,11 @@ export function simulateDecisionExecution({
         waitingReasons: pendingOrder.waitingReasons,
       });
     } else {
+    logPreArmReturnDebug({
+      returnReason: "SETUP_DRAFT_WAITING",
+      nextAction: "RETURN_WATCH_AND_ARM",
+      sourceFunction: "simulateDecisionExecution.setupDraftGuard",
+    });
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "SETUP_DRAFT_WAITING" });
     const nextState = {
       ...state,
@@ -3665,6 +3783,11 @@ export function simulateDecisionExecution({
     atr: atrValue,
     candleTime: signalContext?.candleTime,
   })) {
+    logPreArmReturnDebug({
+      returnReason: "REENTRY_GUARD_BLOCKED",
+      nextAction: "RETURN_WATCH_AND_ARM",
+      sourceFunction: "simulateDecisionExecution.reentryGuard",
+    });
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "REENTRY_GUARD_BLOCKED" });
     logPendingFinalGateDebug({
       finalShouldCreatePending: false,
@@ -3701,6 +3824,11 @@ export function simulateDecisionExecution({
         finalBlockedReason: "SETUP_INACTIVE_ORDER_BLOCKED",
       });
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "SETUP_INACTIVE_ORDER_BLOCKED" });
+    logPreArmReturnDebug({
+      returnReason: "SETUP_INACTIVE_ORDER_BLOCKED",
+      nextAction: "RETURN_WATCH_AND_ARM",
+      sourceFunction: "simulateDecisionExecution.setupInactiveGuard",
+    });
     logPendingFinalGateDebug({
       finalShouldCreatePending: false,
       finalBlockedReason: "SETUP_INACTIVE_ORDER_BLOCKED",
@@ -3730,6 +3858,11 @@ export function simulateDecisionExecution({
       finalBlockedReason: "EXECUTION_MODE_MISMATCH",
     });
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "EXECUTION_MODE_MISMATCH" });
+    logPreArmReturnDebug({
+      returnReason: "EXECUTION_MODE_MISMATCH",
+      nextAction: "RETURN_WATCH_AND_ARM",
+      sourceFunction: "simulateDecisionExecution.executionModeMatchGuard",
+    });
     logPendingFinalGateDebug({
       finalShouldCreatePending: false,
       finalBlockedReason: "EXECUTION_MODE_MISMATCH",
