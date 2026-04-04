@@ -1032,7 +1032,15 @@ function evaluateConditionalPendingEligibility({
   };
 }
 
-function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr, marketRegime }) {
+function applyEntryDistanceConstraint({
+  side,
+  entryPrice,
+  currentPrice,
+  atr,
+  marketRegime,
+  executionMode,
+  constraintLayer = "pending",
+}) {
   if (!Number.isFinite(entryPrice) || !Number.isFinite(currentPrice)) {
     return { entryPrice, wasAdjusted: false, distance: undefined, isRejected: false };
   }
@@ -1053,14 +1061,26 @@ function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr, mar
   const normalizedRegime = String(marketRegime || "").toUpperCase();
   const isRangeRegime = normalizedRegime === "RANGE" || normalizedRegime === "RANGING";
   const isTrendRegime = normalizedRegime === "TREND" || normalizedRegime === "TRENDING";
+  const isPullbackMode = String(executionMode || "").toUpperCase() === "PULLBACK";
   if (!Number.isFinite(atrValue) || atrValue <= 0) {
-    return { entryPrice, wasAdjusted: false, distance, isRejected: false };
+    return { entryPrice, wasAdjusted: false, distance, isRejected: false, isTooFarInRange: false, affectsFillOnly: false };
   }
   const distanceThresholdAtr = isTrendRegime ? 0.6 : 0.5;
   if (distance <= atrValue * distanceThresholdAtr) {
-    return { entryPrice, wasAdjusted: false, distance, isRejected: false };
+    return { entryPrice, wasAdjusted: false, distance, isRejected: false, isTooFarInRange: false, affectsFillOnly: false };
   }
   if (isRangeRegime) {
+    if (isPullbackMode && constraintLayer === "pending") {
+      return {
+        entryPrice,
+        wasAdjusted: false,
+        distance,
+        isRejected: false,
+        rejectionReason: "ENTRY_TOO_FAR_IN_RANGE",
+        isTooFarInRange: true,
+        affectsFillOnly: true,
+      };
+    }
     return { entryPrice, wasAdjusted: false, distance, isRejected: true, rejectionReason: "ENTRY_TOO_FAR_IN_RANGE" };
   }
   const direction = side === "SHORT" ? -1 : 1;
@@ -1075,6 +1095,8 @@ function applyEntryDistanceConstraint({ side, entryPrice, currentPrice, atr, mar
     wasAdjusted: adjustedEntry !== entryPrice,
     distance,
     isRejected: false,
+    isTooFarInRange: false,
+    affectsFillOnly: false,
   };
 }
 
@@ -1860,6 +1882,29 @@ function evaluatePendingOrderFill(order, {
   const hasHigh = Number.isFinite(candleHigh);
   if (order.side !== "LONG" && order.side !== "SHORT") {
     return { shouldFill: false, reason: "INVALID_ORDER_SIDE", triggerSource: null };
+  }
+  const fillDistanceConstraint = applyEntryDistanceConstraint({
+    side: order.side,
+    entryPrice,
+    currentPrice: tickPrice,
+    atr: order?.placementSnapshot?.atr,
+    marketRegime: order?.decisionSnapshot?.marketRegimeLabel ||
+      order?.decisionSnapshot?.regime ||
+      order?.placementSnapshot?.marketRegime,
+    executionMode: order?.executionMode,
+    constraintLayer: "fill",
+  });
+  if (String(order?.executionMode || "").toUpperCase() === "PULLBACK") {
+    console.log(
+      "[ENTRY_DISTANCE_CHECK]\n" +
+      `symbol=${order?.symbol || "UNKNOWN"}\n` +
+      `distance=${Number.isFinite(fillDistanceConstraint?.distance) ? fillDistanceConstraint.distance : "NA"}\n` +
+      `isTooFar=${Boolean(fillDistanceConstraint?.isTooFarInRange)}\n` +
+      "affectsFillOnly=true"
+    );
+  }
+  if (fillDistanceConstraint?.isRejected && String(fillDistanceConstraint?.rejectionReason || "").includes("TOO_FAR")) {
+    return { shouldFill: false, reason: "ENTRY_TOO_FAR_IN_RANGE", triggerSource: null };
   }
   const normalizedCandleTime = normalizeBarTime(candleTime);
   const createdCandleTime = normalizeBarTime(order?.createdCandleTime ?? order?.placementSnapshot?.createdCandleTime);
@@ -3194,7 +3239,18 @@ export function simulateDecisionExecution({
     currentPrice: normalizeNumber(currentPrice),
     atr: decision?.executionPlan?.atr ?? decision?.atr,
     marketRegime: decision?.marketRegimeLabel || decision?.regime || signalContext?.marketRegime,
+    executionMode: plannedEntry.mode === "breakout" ? "BREAKOUT" : "PULLBACK",
+    constraintLayer: "pending",
   });
+  if (String(plannedEntry.mode || "").toUpperCase() === "PULLBACK") {
+    console.log(
+      "[ENTRY_DISTANCE_CHECK]\n" +
+      `symbol=${symbol || "UNKNOWN"}\n` +
+      `distance=${Number.isFinite(constrainedEntry?.distance) ? constrainedEntry.distance : "NA"}\n` +
+      `isTooFar=${Boolean(constrainedEntry?.isTooFarInRange)}\n` +
+      "affectsFillOnly=true"
+    );
+  }
   if (constrainedEntry.isRejected && String(constrainedEntry.rejectionReason || "").includes("TOO_FAR")) {
     state = incrementWaitingReason(state, "pendingTooFarFromPrice", { symbol, timeframe, side });
   }
