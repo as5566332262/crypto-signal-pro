@@ -3351,12 +3351,20 @@ export function simulateDecisionExecution({
     shouldBypassSetupDraftWaitingGuard &&
     pendingFinalWaitingReasons.length === 0
   );
+  const pendingOrderExecutionMode = pendingOrder?.executionMode ?? null;
+  const finalLockedSetupExecutionMode = finalLockedSetup?.executionMode ?? null;
+  const debugExecutionMode =
+    decision?.executionMode ??
+    decision?.executionPlan?.executionMode ??
+    pendingOrderExecutionMode ??
+    finalLockedSetupExecutionMode ??
+    null;
   const logSetupInactiveDebug = ({ setupActive, orderActive, inactiveReason, finalBlockedReason }) => {
     console.info(
       "[SETUP_INACTIVE_DEBUG]\n" +
       `symbol=${armingDebugPayload.symbol}\n` +
       `side=${armingDebugPayload.side}\n` +
-      `executionMode=${pendingOrder.executionMode}\n` +
+      `executionMode=${debugExecutionMode}\n` +
       `candidateSetupType=${armingDebugPayload.candidateSetupType}\n` +
       `setupType=${armingDebugPayload.setupType}\n` +
       `executionPlanSetupType=${armingDebugPayload.executionPlanSetupType}\n` +
@@ -3597,7 +3605,7 @@ export function simulateDecisionExecution({
       finalBlockedReason: "SETUP_INACTIVE_ORDER_BLOCKED",
       nextAction: "RETURN_WATCH_AND_ARM",
     });
-    console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", { symbol, timeframe, side, executionMode: pendingOrder.executionMode });
+    console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", { symbol, timeframe, side, executionMode: pendingOrderExecutionMode });
     return {
       state: stateWithSetupLock,
       result: "SETUP_INACTIVE_ORDER_BLOCKED",
@@ -3612,7 +3620,7 @@ export function simulateDecisionExecution({
     };
     }
   }
-  if (pendingOrder.executionMode !== finalLockedSetup.executionMode) {
+  if (pendingOrderExecutionMode !== finalLockedSetupExecutionMode) {
     logSetupInactiveDebug({
       setupActive: true,
       orderActive: true,
@@ -3630,8 +3638,8 @@ export function simulateDecisionExecution({
       timeframe,
       side,
       reason: "EXECUTION_MODE_MISMATCH",
-      orderMode: pendingOrder.executionMode,
-      setupMode: finalLockedSetup.executionMode,
+      orderMode: pendingOrderExecutionMode,
+      setupMode: finalLockedSetupExecutionMode,
     });
     return {
       state: stateWithSetupLock,
