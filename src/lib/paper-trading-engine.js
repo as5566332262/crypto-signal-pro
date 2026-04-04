@@ -2964,20 +2964,46 @@ export function simulateDecisionExecution({
     currentPrice,
     candleTime: signalContext?.candleTime,
   });
-  const resolvePendingEntryFromExecutionPlan = (plan, pendingSide) => {
+  const parseExecutionPlanEntryZone = (plan) => {
     const rawEntry = plan?.entry;
     if (rawEntry != null && typeof rawEntry === "object") {
-      const low = normalizeNumber(rawEntry?.low);
-      const high = normalizeNumber(rawEntry?.high);
-      if (pendingSide === "LONG" && Number.isFinite(low)) return low;
-      if (pendingSide === "SHORT" && Number.isFinite(high)) return high;
-      return undefined;
+      const low = normalizeNumber(rawEntry?.low ?? rawEntry?.min);
+      const high = normalizeNumber(rawEntry?.high ?? rawEntry?.max);
+      if (Number.isFinite(low) || Number.isFinite(high)) {
+        return {
+          low: Number.isFinite(low) ? low : high,
+          high: Number.isFinite(high) ? high : low,
+          hasEntry: true,
+        };
+      }
     }
-    return normalizeNumber(rawEntry);
+    if (typeof rawEntry === "string") {
+      const matches = rawEntry.match(/-?\d+(?:\.\d+)?/g) || [];
+      if (matches.length >= 2) {
+        const first = normalizeNumber(matches[0]);
+        const second = normalizeNumber(matches[1]);
+        if (Number.isFinite(first) && Number.isFinite(second)) {
+          return {
+            low: Math.min(first, second),
+            high: Math.max(first, second),
+            hasEntry: true,
+          };
+        }
+      }
+    }
+    const numericEntry = normalizeNumber(rawEntry);
+    if (Number.isFinite(numericEntry)) {
+      return { low: numericEntry, high: numericEntry, hasEntry: true };
+    }
+    return { low: undefined, high: undefined, hasEntry: false };
   };
-  const tentativeEntryPrice = resolvePendingEntryFromExecutionPlan(executionPlan, side);
-  const entryRangeForDebug = normalizeNumber(executionPlan?.entry?.low) != null || normalizeNumber(executionPlan?.entry?.high) != null
-    ? { low: normalizeNumber(executionPlan?.entry?.low), high: normalizeNumber(executionPlan?.entry?.high) }
+  const executionPlanEntryZone = parseExecutionPlanEntryZone(executionPlan);
+  const hasExecutionPlanEntry = executionPlanEntryZone.hasEntry;
+  const tentativeEntryPrice = side === "SHORT"
+    ? normalizeNumber(executionPlanEntryZone.high)
+    : normalizeNumber(executionPlanEntryZone.low);
+  const entryRangeForDebug = hasExecutionPlanEntry
+    ? { low: normalizeNumber(executionPlanEntryZone.low), high: normalizeNumber(executionPlanEntryZone.high) }
     : resolveExecutionPlanEntryRange(decision);
   console.info("[PENDING_PRICE_SOURCE_DEBUG]", {
     symbol,
@@ -2995,7 +3021,19 @@ export function simulateDecisionExecution({
     `entryRangeLow=${Number.isFinite(entryRangeForDebug.low) ? entryRangeForDebug.low : "NaN"}\n` +
     `entryRangeHigh=${Number.isFinite(entryRangeForDebug.high) ? entryRangeForDebug.high : "NaN"}`
   );
-  if (!Number.isFinite(tentativeEntryPrice)) {
+  const pendingCreationRuleBlockedReason = hasExecutionPlanEntry ? null : "MISSING_EXECUTION_PLAN_ENTRY";
+  console.info(
+    "[PENDING_CREATION_RULE_DEBUG]\n" +
+    `symbol=${symbol}\n` +
+    `currentPrice=${Number.isFinite(normalizeNumber(currentPrice)) ? normalizeNumber(currentPrice) : "NaN"}\n` +
+    `entryZoneLow=${Number.isFinite(normalizeNumber(executionPlanEntryZone.low)) ? normalizeNumber(executionPlanEntryZone.low) : "NaN"}\n` +
+    `entryZoneHigh=${Number.isFinite(normalizeNumber(executionPlanEntryZone.high)) ? normalizeNumber(executionPlanEntryZone.high) : "NaN"}\n` +
+    `hasExecutionPlanEntry=${hasExecutionPlanEntry}\n` +
+    "requiresZoneHitBeforePending=false\n" +
+    `shouldCreatePending=${hasExecutionPlanEntry}\n` +
+    `blockedReason=${pendingCreationRuleBlockedReason || "none"}`
+  );
+  if (!hasExecutionPlanEntry || !Number.isFinite(tentativeEntryPrice)) {
     return {
       state,
       result: "MISSING_ENTRY_PRICE",
@@ -3010,7 +3048,7 @@ export function simulateDecisionExecution({
         ...effectiveEligibility,
         eligibility: "WATCH_ONLY",
         reasonCode: "MISSING_ENTRY_PRICE",
-        reason: "executionPlan.entry 缺失，禁止建立 pending order",
+        reason: "executionPlan.entry 缺失或無法解析，禁止建立 pending order",
       },
     };
   }
@@ -3067,7 +3105,7 @@ export function simulateDecisionExecution({
   );
 
   const shouldPromotePullbackSetup =
-    conditionalPendingEligibility.hasEntryZone &&
+    hasExecutionPlanEntry &&
     plannedEntry.mode === "pullback" &&
     conditionalPendingEligibility.allowedStrategy;
   const logPreArmReturnDebug = ({ returnReason, nextAction = "RETURN", sourceFunction = "simulateDecisionExecution" }) => {
@@ -3377,7 +3415,7 @@ export function simulateDecisionExecution({
   const draftWaitingReasons = Array.isArray(pendingOrder?.waitingReasons) ? pendingOrder.waitingReasons : [];
   const draftReason = draftWaitingReasons.find((reason) => DRAFT_WAITING_REASON_KEYS.has(reason)) || null;
   const shouldBypassSetupDraftWaitingGuard = (
-    conditionalPendingEligibility.hasEntryZone &&
+    hasExecutionPlanEntry &&
     conditionalPendingEligibility.allowedStrategy &&
     candidateSetupTypeNormalized === "pullback" &&
     setupTypeNormalized === "pullback" &&
@@ -3386,7 +3424,7 @@ export function simulateDecisionExecution({
   const armingDebugPayload = {
     symbol,
     side,
-    hasEntryZone: conditionalPendingEligibility.hasEntryZone,
+    hasEntryZone: hasExecutionPlanEntry,
     candidateSetupType: plannedEntry.mode,
     setupType: decision?.setupType ?? null,
     executionPlanSetupType: decision?.executionPlan?.setupType ?? null,
