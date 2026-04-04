@@ -2819,6 +2819,7 @@ export function simulateDecisionExecution({
   triggeredBy = "DECISION_ENGINE",
 }) {
   const basePerformanceDebug = buildPerformanceDebugState();
+  const executionPlan = decision?.executionPlan ?? {};
   const decisionBarTime = normalizeBarTime(signalContext?.candleTime);
   if (!state) {
     return { state, result: "NO_DECISION", ...basePerformanceDebug };
@@ -3006,18 +3007,28 @@ export function simulateDecisionExecution({
     currentPrice,
     candleTime: signalContext?.candleTime,
   });
-  const fallbackEntryPrice = normalizeNumber(currentPrice) ??
-    reentryAttempt?.adjustedEntryPrice ??
-    plannedEntry.entryPrice ??
-    normalizeNumber(decision?.price);
-  const tentativeEntryPrice = normalizeNumber(
-    lockedSetup?.status === "ACTIVE"
-      ? (lockedSetup.executionMode === "BREAKOUT"
-        ? lockedSetup.triggerPrice
-        : (side === "LONG" ? lockedSetup.entryZoneLow : lockedSetup.entryZoneHigh))
-      : (bypassSetupGate ? fallbackEntryPrice : (reentryAttempt?.adjustedEntryPrice ?? plannedEntry.entryPrice))
-  );
-  const entryRangeForDebug = resolveExecutionPlanEntryRange(decision);
+  const resolvePendingEntryFromExecutionPlan = (plan, pendingSide) => {
+    const rawEntry = plan?.entry;
+    if (rawEntry != null && typeof rawEntry === "object") {
+      const low = normalizeNumber(rawEntry?.low);
+      const high = normalizeNumber(rawEntry?.high);
+      if (pendingSide === "LONG" && Number.isFinite(low)) return low;
+      if (pendingSide === "SHORT" && Number.isFinite(high)) return high;
+      return undefined;
+    }
+    return normalizeNumber(rawEntry);
+  };
+  const tentativeEntryPrice = resolvePendingEntryFromExecutionPlan(executionPlan, side);
+  const entryRangeForDebug = normalizeNumber(executionPlan?.entry?.low) != null || normalizeNumber(executionPlan?.entry?.high) != null
+    ? { low: normalizeNumber(executionPlan?.entry?.low), high: normalizeNumber(executionPlan?.entry?.high) }
+    : resolveExecutionPlanEntryRange(decision);
+  console.info("[PENDING_PRICE_SOURCE_DEBUG]", {
+    symbol,
+    side,
+    executionPlanEntry: executionPlan?.entry ?? null,
+    finalEntryUsed: tentativeEntryPrice,
+    currentPrice: normalizeNumber(currentPrice),
+  });
   console.info(
     "[PENDING_PRICE_SOURCE]\n" +
     `symbol=${symbol}\n` +
@@ -3042,9 +3053,7 @@ export function simulateDecisionExecution({
         ...effectiveEligibility,
         eligibility: "WATCH_ONLY",
         reasonCode: "MISSING_ENTRY_PRICE",
-        reason: plannedEntry.mode === "pullback"
-          ? "pullback 缺少 targetEntryZone，禁止 fallback 到 breakout triggerPrice"
-          : "breakout 缺少 triggerPrice",
+        reason: "executionPlan.entry 缺失，禁止建立 pending order",
       },
     };
   }
@@ -3301,13 +3310,7 @@ export function simulateDecisionExecution({
   if (constrainedEntry.isRejected && String(constrainedEntry.rejectionReason || "").includes("TOO_FAR")) {
     state = incrementWaitingReason(state, "pendingTooFarFromPrice", { symbol, timeframe, side });
   }
-  const triggerPrice = normalizeNumber(
-    lockedSetup?.status === "ACTIVE"
-      ? (lockedSetup.executionMode === "BREAKOUT"
-        ? lockedSetup.triggerPrice
-        : constrainedEntry.entryPrice)
-      : (constrainedEntry.entryPrice ?? fallbackEntryPrice)
-  );
+  const triggerPrice = constrainedEntry.entryPrice;
   if (constrainedEntry.isRejected) {
     if (bypassSetupGate) {
       logPreArmReturnDebug({
@@ -3340,25 +3343,27 @@ export function simulateDecisionExecution({
       eligibilityInfo: effectiveEligibility,
     };
   }
-  const atrValue = normalizeNumber(decision.executionPlan?.atr ?? decision?.atr);
+  const atrValue = normalizeNumber(executionPlan?.atr ?? decision?.atr);
   const fallbackInvalidation =
     Number.isFinite(triggerPrice) && Number.isFinite(atrValue) && atrValue > 0
       ? (side === "LONG" ? triggerPrice - atrValue * 1.5 : triggerPrice + atrValue * 1.5)
       : undefined;
   const invalidationPrice =
-    normalizeNumber(decision.executionPlan?.invalidationPrice ?? decision.invalidationPrice) ??
-    normalizeNumber(decision.executionPlan?.stop ?? decision.stop) ??
-    normalizeNumber(decision.executionPlan?.stopLoss ?? decision.stopLoss) ??
+    normalizeNumber(executionPlan?.invalidationPrice ?? decision.invalidationPrice) ??
+    normalizeNumber(executionPlan?.stop ?? decision.stop) ??
+    normalizeNumber(executionPlan?.stopLoss ?? decision.stopLoss) ??
     fallbackInvalidation;
+  const executionPlanStop = normalizeNumber(executionPlan?.stop);
+  const executionPlanTp = normalizeNumber(executionPlan?.tp);
   const contextKey = buildDecisionContextKey(decision, symbol, timeframe);
   const decisionRevision = buildDecisionRevision(decision, timeframe);
   const normalizedLevels = normalizeDirectionalLevels({
     side,
     referencePrice: triggerPrice,
-    stopLoss: decision.executionPlan?.stop ?? decision.stop ?? decision.executionPlan?.stopLoss ?? decision.stopLoss,
-    takeProfit1: decision.executionPlan?.takeProfit ?? decision.takeProfit ?? decision.executionPlan?.takeProfit1 ?? decision.takeProfit1,
-    takeProfit2: decision.executionPlan?.takeProfit2 ?? decision.takeProfit2,
-    takeProfit3: decision.executionPlan?.takeProfit3 ?? decision.takeProfit3,
+    stopLoss: executionPlanStop,
+    takeProfit1: executionPlanTp,
+    takeProfit2: undefined,
+    takeProfit3: undefined,
   });
   const planConsistency = validateExecutionPlanConsistency({
     side,
@@ -3714,7 +3719,13 @@ export function simulateDecisionExecution({
     return `${symbolKey}|${sideKey}|${setupKey}`;
   };
 
-  const createPendingOrder = ({ baseState, order }) => {
+  const createPendingOrder = ({ baseState, order, executionPlan: pendingExecutionPlan }) => {
+    if (!pendingExecutionPlan) {
+      console.warn("[PENDING_EXECUTION_PLAN_MISSING]", {
+        symbol: order?.symbol ?? null,
+        side: order?.side ?? null,
+      });
+    }
     const beforeCount = (baseState?.pendingOrders || []).length;
     const pendingKey = buildPendingUniquenessKey(order);
     const existingPending = (baseState?.pendingOrders || []).find((candidate) => {
@@ -4044,7 +4055,7 @@ export function simulateDecisionExecution({
     finalBlockedReason: null,
     nextAction: "CREATE_PENDING_ORDER",
   });
-  const pendingCreation = createPendingOrder({ baseState: stateWithSetupLock, order: pendingOrder });
+  const pendingCreation = createPendingOrder({ baseState: stateWithSetupLock, order: pendingOrder, executionPlan });
   if (pendingCreation.created) {
     console.log("[PENDING_CREATED]", {
       orderId: pendingOrder.id,
