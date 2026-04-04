@@ -2858,96 +2858,95 @@ export function simulateDecisionExecution({
       : { state, result: "NO_DECISION", ...basePerformanceDebug };
   }
   const planSnapshot = buildExecutionPlanSnapshot(decision, symbol, timeframe, quantity);
-  const planLockedPending = createPendingOrderFromExecutionPlan(planSnapshot, quantity);
-  const shouldForceCreatePendingFromPlan = Boolean(planSnapshot.complete && planLockedPending);
-  if (shouldForceCreatePendingFromPlan) {
-    const existingPending = (state?.pendingOrders || []).find((candidate) => (
+  const selectedSize = Math.max(0, asSafeNumber(quantity, DEFAULT_POSITION_SIZE));
+  const hasPlanEntryZone = executionPlan?.entryZoneLow != null && executionPlan?.entryZoneHigh != null;
+  const hasActivePending = (targetSymbol, targetSide, targetSetupId) => (
+    (state?.pendingOrders || []).find((candidate) => (
       isFormalPendingOrder(candidate) &&
-      String(candidate?.symbol || "").toUpperCase() === String(symbol || "").toUpperCase() &&
-      String(candidate?.side || "").toUpperCase() === String(planSnapshot.side || "").toUpperCase() &&
-      String(candidate?.setupId || "") === String(planSnapshot.setupId || "")
-    ));
-    if (existingPending) {
-      console.warn(
-        "[PENDING_DUPLICATE_BLOCKED]\n" +
-        `symbol=${symbol || ""}\n` +
-        `side=${planSnapshot.side || ""}\n` +
-        `setupId=${planSnapshot.setupId || ""}\n` +
-        `existingPendingId=${existingPending?.id || ""}\n` +
-        "reason=duplicate_pending_prevented"
-      );
-      return {
-        state,
-        result: "DUPLICATE_SETUP",
-        pendingOrder: existingPending,
-        pendingCreation: { created: false, blockedDuplicate: true, duplicatePendingId: existingPending?.id || null },
-        ...basePerformanceDebug,
-      };
+      String(candidate?.symbol || "").toUpperCase() === String(targetSymbol || "").toUpperCase() &&
+      String(candidate?.side || "").toUpperCase() === String(targetSide || "").toUpperCase() &&
+      String(candidate?.setupId || "") === String(targetSetupId || "")
+    ))
+  );
+
+  // 🔴 強制優先：決策中心 plan → 直接掛單
+  if (hasPlanEntryZone) {
+    const existingPending = hasActivePending(symbol, planSnapshot.side, planSnapshot.setupId);
+    if (!existingPending) {
+      const planLockedPending = createPendingOrderFromExecutionPlan(planSnapshot, selectedSize);
+      if (planLockedPending) {
+        const now = nowIso();
+        const pendingOrder = {
+          id: createId("order"),
+          symbol,
+          timeframe,
+          side: planSnapshot.side,
+          orderType: "LIMIT",
+          entryPrice: planLockedPending.entryPrice,
+          triggerPrice: planLockedPending.entryPrice,
+          entryZoneLow: planSnapshot.entryZoneLow,
+          entryZoneHigh: planSnapshot.entryZoneHigh,
+          stopLoss: planLockedPending.stopLoss,
+          invalidationPrice: planLockedPending.stopLoss,
+          takeProfit1: planLockedPending.takeProfit1,
+          takeProfit2: planLockedPending.takeProfit2,
+          takeProfit3: planLockedPending.takeProfit3,
+          quantity: planLockedPending.quantity,
+          setupId: planSnapshot.setupId,
+          createdAt: now,
+          status: "PENDING",
+          lifecycleType: "PENDING_ORDER",
+          executionPlanValidated: true,
+          waitingReasons: [],
+          waitReason: "created_from_decision_center_plan",
+          entryMode: "pullback",
+          executionMode: "PLAN_LOCKED",
+          decisionSnapshot: decision,
+        };
+        const nextState = recalculateAccountState({
+          ...state,
+          pendingOrders: [pendingOrder, ...(state?.pendingOrders || [])],
+        }, {
+          selectedSymbol: symbol,
+          affectedSymbol: symbol,
+          eventType: "PLACE_ORDER",
+          sourceFunction: "simulateDecisionExecution.createPendingOrderFromExecutionPlan",
+        });
+        console.log("[FORCE_PENDING_FROM_PLAN]", {
+          symbol,
+          side: planSnapshot.side,
+          entryZoneLow: executionPlan.entryZoneLow,
+          entryZoneHigh: executionPlan.entryZoneHigh,
+          decisionType: decision?.decisionType,
+        });
+        return {
+          state: nextState,
+          result: "PLACED_PENDING",
+          pendingOrder,
+          pendingCreation: { created: true, beforeCount: (state?.pendingOrders || []).length, afterCount: (nextState?.pendingOrders || []).length },
+          executionIntent: "PLACE_PENDING",
+          nextAction: "PENDING_CREATED_FROM_PLAN",
+          ...basePerformanceDebug,
+          eligibilityInfo: {
+            eligibility: "READY_TO_PLACE_PENDING",
+            reasonCode: "PENDING_PLAN_LOCKED",
+            reason: "完整 execution plan 已鎖定，直接建立 pending order",
+          },
+        };
+      }
     }
-    const now = nowIso();
-    const pendingOrder = {
-      id: createId("order"),
-      symbol,
-      timeframe,
-      side: planSnapshot.side,
-      orderType: "LIMIT",
-      entryPrice: planLockedPending.entryPrice,
-      triggerPrice: planLockedPending.entryPrice,
-      entryZoneLow: planSnapshot.entryZoneLow,
-      entryZoneHigh: planSnapshot.entryZoneHigh,
-      stopLoss: planLockedPending.stopLoss,
-      invalidationPrice: planLockedPending.stopLoss,
-      takeProfit1: planLockedPending.takeProfit1,
-      takeProfit2: planLockedPending.takeProfit2,
-      takeProfit3: planLockedPending.takeProfit3,
-      quantity: planLockedPending.quantity,
-      setupId: planSnapshot.setupId,
-      createdAt: now,
-      status: "PENDING",
-      lifecycleType: "PENDING_ORDER",
-      executionPlanValidated: true,
-      waitingReasons: [],
-      waitReason: "created_from_decision_center_plan",
-      entryMode: "pullback",
-      executionMode: "PLAN_LOCKED",
-      decisionSnapshot: decision,
-    };
-    console.info(
-      "[PENDING_PLAN_LOCKED]\n" +
-      `symbol=${planSnapshot.symbol || ""}\n` +
-      `side=${planSnapshot.side || ""}\n` +
-      `setupId=${planSnapshot.setupId || ""}\n` +
-      `entryZoneLow=${planSnapshot.entryZoneLow}\n` +
-      `entryZoneHigh=${planSnapshot.entryZoneHigh}\n` +
-      `finalEntry=${planLockedPending.entryPrice}\n` +
-      `stopLoss=${planLockedPending.stopLoss}\n` +
-      `takeProfits=${planSnapshot.takeProfits.join(" / ")}\n` +
-      `size=${planLockedPending.quantity}\n` +
-      "reason=created_from_decision_center_plan"
-    );
-    const nextState = recalculateAccountState({
-      ...state,
-      pendingOrders: [pendingOrder, ...(state?.pendingOrders || [])],
-    }, {
-      selectedSymbol: symbol,
-      affectedSymbol: symbol,
-      eventType: "PLACE_ORDER",
-      sourceFunction: "simulateDecisionExecution.createPendingOrderFromExecutionPlan",
-    });
+
     return {
-      state: nextState,
-      result: "PLACED_PENDING",
-      pendingOrder,
-      pendingCreation: { created: true, beforeCount: (state?.pendingOrders || []).length, afterCount: (nextState?.pendingOrders || []).length },
+      state,
+      result: existingPending ? "DUPLICATE_SETUP" : "WATCH_ONLY",
+      pendingOrder: existingPending || null,
       executionIntent: "PLACE_PENDING",
+      nextAction: "PENDING_CREATED_FROM_PLAN",
       ...basePerformanceDebug,
-      eligibilityInfo: {
-        eligibility: "READY_TO_PLACE_PENDING",
-        reasonCode: "PENDING_PLAN_LOCKED",
-        reason: "完整 execution plan 已鎖定，直接建立 pending order",
-      },
     };
   }
+  const planLockedPending = createPendingOrderFromExecutionPlan(planSnapshot, quantity);
+  const shouldForceCreatePendingFromPlan = Boolean(planSnapshot.complete && planLockedPending);
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
   let executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
   console.debug("[paper-engine:simulateDecisionExecution:before-validator]", {
