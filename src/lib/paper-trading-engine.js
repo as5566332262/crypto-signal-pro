@@ -3347,6 +3347,25 @@ export function simulateDecisionExecution({
       reason !== "waitingForPullback"
     ))
     : draftWaitingReasons;
+  const shouldBypassSetupInactiveOrderGuard = (
+    shouldBypassSetupDraftWaitingGuard &&
+    pendingFinalWaitingReasons.length === 0
+  );
+  const logSetupInactiveDebug = ({ setupActive, orderActive, inactiveReason, finalBlockedReason }) => {
+    console.info(
+      "[SETUP_INACTIVE_DEBUG]\n" +
+      `symbol=${armingDebugPayload.symbol}\n` +
+      `side=${armingDebugPayload.side}\n` +
+      `executionMode=${pendingOrder.executionMode}\n` +
+      `candidateSetupType=${armingDebugPayload.candidateSetupType}\n` +
+      `setupType=${armingDebugPayload.setupType}\n` +
+      `executionPlanSetupType=${armingDebugPayload.executionPlanSetupType}\n` +
+      `setupActive=${setupActive}\n` +
+      `orderActive=${orderActive}\n` +
+      `inactiveReason=${inactiveReason || "none"}\n` +
+      `finalBlockedReason=${finalBlockedReason || "none"}`
+    );
+  };
   const logPendingFinalGateDebug = ({ finalShouldCreatePending, finalBlockedReason, nextAction }) => {
     console.info(
       "[PENDING_FINAL_GATE_DEBUG]\n" +
@@ -3558,6 +3577,20 @@ export function simulateDecisionExecution({
   }
 
   if (!finalLockedSetup || finalLockedSetup.status !== "ACTIVE") {
+    if (shouldBypassSetupInactiveOrderGuard) {
+      logSetupInactiveDebug({
+        setupActive: false,
+        orderActive: true,
+        inactiveReason: "SETUP_INACTIVE_BYPASSED_FOR_PULLBACK",
+        finalBlockedReason: null,
+      });
+    } else {
+      logSetupInactiveDebug({
+        setupActive: false,
+        orderActive: true,
+        inactiveReason: "SETUP_INACTIVE",
+        finalBlockedReason: "SETUP_INACTIVE_ORDER_BLOCKED",
+      });
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "SETUP_INACTIVE_ORDER_BLOCKED" });
     logPendingFinalGateDebug({
       finalShouldCreatePending: false,
@@ -3577,8 +3610,15 @@ export function simulateDecisionExecution({
         reason: "setup 已失效，阻止建立 pending order",
       },
     };
+    }
   }
   if (pendingOrder.executionMode !== finalLockedSetup.executionMode) {
+    logSetupInactiveDebug({
+      setupActive: true,
+      orderActive: true,
+      inactiveReason: "EXECUTION_MODE_MISMATCH",
+      finalBlockedReason: "EXECUTION_MODE_MISMATCH",
+    });
     logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "EXECUTION_MODE_MISMATCH" });
     logPendingFinalGateDebug({
       finalShouldCreatePending: false,
