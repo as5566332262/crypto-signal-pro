@@ -840,47 +840,23 @@ function resolveStrategyType(decision = {}) {
 }
 
 function resolveEntrySourceFunction(decision, side, mode) {
-  if (mode === "pullback") {
-    const entryRange = resolveExecutionPlanEntryRange(decision);
-    if (side === "LONG" && Number.isFinite(entryRange.low)) return "executionPlan.entryRange.low";
-    if (side === "SHORT" && Number.isFinite(entryRange.high)) return "executionPlan.entryRange.high";
-    const entryMid = normalizeNumber(decision?.executionPlan?.entryMid ?? decision?.entryMid);
-    if (Number.isFinite(entryMid)) return "executionPlan.entryMid";
-    const entryLow = normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow);
-    const entryHigh = normalizeNumber(decision?.executionPlan?.entryHigh ?? decision?.entryHigh);
-    if (side === "LONG" && Number.isFinite(entryLow)) return "executionPlan.entryLow";
-    if (side === "SHORT" && Number.isFinite(entryHigh)) return "executionPlan.entryHigh";
-  }
-  if (mode === "breakout") {
-    const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
-    if (Number.isFinite(triggerPrice)) return "executionPlan.triggerPrice";
-  }
+  const executionEntry = decision?.executionPlan?.entry;
+  if (executionEntry != null) return "executionPlan.entry";
   return "unknown";
 }
 
 function resolvePlannedEntryPrice(decision, side) {
   const mode = resolveEntryMode(decision);
   const sourceFunction = resolveEntrySourceFunction(decision, side, mode);
-  const triggerPrice = normalizeNumber(decision?.executionPlan?.triggerPrice ?? decision?.triggerPrice);
-  if (mode === "pullback") {
-    const entryRange = resolveExecutionPlanEntryRange(decision);
-    if (side === "LONG" && Number.isFinite(entryRange.low)) return { entryPrice: entryRange.low, mode, sourceFunction };
-    if (side === "SHORT" && Number.isFinite(entryRange.high)) return { entryPrice: entryRange.high, mode, sourceFunction };
-    console.warn("[PENDING_PRICE_SOURCE_FALLBACK]", {
-      symbol: decision?.symbol ?? null,
-      side,
-      reason: "executionPlan.entryRange_missing",
-      fallbackOrder: ["executionPlan.entryMid", "executionPlan.entryLow/high", "executionPlan.triggerPrice"],
-    });
-    const entryMid = normalizeNumber(decision?.executionPlan?.entryMid ?? decision?.entryMid);
-    const entryLow = normalizeNumber(decision?.executionPlan?.entryLow ?? decision?.entryLow);
-    const entryHigh = normalizeNumber(decision?.executionPlan?.entryHigh ?? decision?.entryHigh);
-    if (Number.isFinite(entryMid)) return { entryPrice: entryMid, mode, sourceFunction };
-    if (side === "LONG" && Number.isFinite(entryLow)) return { entryPrice: entryLow, mode, sourceFunction };
-    if (side === "SHORT" && Number.isFinite(entryHigh)) return { entryPrice: entryHigh, mode, sourceFunction };
+  const executionEntry = decision?.executionPlan?.entry;
+  if (executionEntry != null && typeof executionEntry === "object") {
+    const low = normalizeNumber(executionEntry?.low);
+    const high = normalizeNumber(executionEntry?.high);
+    if (side === "LONG" && Number.isFinite(low)) return { entryPrice: low, mode, sourceFunction };
+    if (side === "SHORT" && Number.isFinite(high)) return { entryPrice: high, mode, sourceFunction };
     return { entryPrice: undefined, mode, sourceFunction };
   }
-  return { entryPrice: triggerPrice, mode, sourceFunction };
+  return { entryPrice: normalizeNumber(executionEntry), mode, sourceFunction };
 }
 
 function validateExecutionPlanConsistency({ side, entryPrice, normalizedLevels, executionMode, sourceFunction }) {
@@ -1651,6 +1627,21 @@ function cancelPendingOrder(order, reason, timestamp = nowIso(), metadata = {}) 
   };
 }
 
+function isAllowedAutomaticPendingCancelReason(reason) {
+  return reason === "STRUCTURE_INVALIDATED";
+}
+
+function logPendingCancelBlocked(order, cancelReason) {
+  console.warn(
+    "[PENDING_CANCEL_BLOCKED]\n" +
+    `symbol=${order?.symbol || ""}\n` +
+    `side=${order?.side || ""}\n` +
+    `pendingId=${order?.id || ""}\n` +
+    `cancelReason=${cancelReason || "UNKNOWN"}\n` +
+    "allowed=false"
+  );
+}
+
 function deriveAccountMetrics(state) {
   const closedTrades = Array.isArray(state?.closedTrades) ? state.closedTrades : [];
   const openPositions = Array.isArray(state?.openPositions) ? state.openPositions : [];
@@ -2234,8 +2225,8 @@ function maybeFillPendingOrders(state, {
         symbol: order.symbol,
         timeframe: order.timeframe,
       });
-      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "SETUP_INACTIVE", timestamp, { triggeredBy }));
-      nextPendingOrders.push({ ...order, status: "CANCELLED" });
+      logPendingCancelBlocked(order, "SETUP_INACTIVE");
+      nextPendingOrders.push(observedOrder);
       continue;
     }
 
@@ -2270,29 +2261,9 @@ function maybeFillPendingOrders(state, {
       const refreshedEntry = Number.isFinite(orderTickPrice)
         ? (order.side === "SHORT" ? orderTickPrice * 1.001 : orderTickPrice * 0.999)
         : orderEntryPrice;
-      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "PENDING_TIMEOUT_REEVALUATED", timestamp, {
-        triggeredBy,
-        waitedBars: nextWaitBars,
-        distancePct,
-      }));
-      nextState = registerReentryCandidate(nextState, {
-        order,
-        cancelReason: "PENDING_TIMEOUT_REEVALUATED",
-        candleTime,
-        timestamp,
-        markPrice: orderTickPrice,
-      });
-      nextState = appendOrderLifecycleEvent(nextState, {
-        symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PENDING_TIMEOUT_REEVALUATED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed,
-        currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: orderEntryPrice, checkedFunctionName,
-      });
-      nextState = appendPendingCancelTrace(nextState, {
-        timestamp, orderId: order.id, orderSymbol: order.symbol, selectedSymbolAtThatMoment, marketSymbolUsed, reason: "PENDING_TIMEOUT_REEVALUATED", triggeredBy,
-        currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: orderEntryPrice, checkedFunctionName,
-      });
+      logPendingCancelBlocked(order, "PENDING_TIMEOUT_REEVALUATED");
       nextPendingOrders.push({
-        ...order,
-        status: "CANCELLED",
+        ...observedOrder,
         canceledByPriceDrift: false,
         refreshSuggestion: refreshedEntry,
       });
@@ -2303,16 +2274,8 @@ function maybeFillPendingOrders(state, {
         nextPendingOrders.push(observedOrder);
         continue;
       }
-      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "EXPIRED", timestamp, { triggeredBy }));
-      nextState = appendOrderLifecycleEvent(nextState, {
-        symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "EXPIRED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed,
-        currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: orderEntryPrice, checkedFunctionName,
-      });
-      nextState = appendPendingCancelTrace(nextState, {
-        timestamp, orderId: order.id, orderSymbol: order.symbol, selectedSymbolAtThatMoment, marketSymbolUsed, reason: "EXPIRED", triggeredBy,
-        currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: orderEntryPrice, checkedFunctionName,
-      });
-      nextPendingOrders.push({ ...order, status: "CANCELLED" });
+      logPendingCancelBlocked(order, "EXPIRED");
+      nextPendingOrders.push(observedOrder);
       continue;
     }
     if (!cancellationBlockedByTrigger && !cancellationBlockedBySymbolMismatch && isOrderPriceDrifted(order, orderTickPrice)) {
@@ -2320,24 +2283,8 @@ function maybeFillPendingOrders(state, {
         symbol: order.symbol,
         orderId: order.id,
       });
-      nextState.cancelledOrders.unshift(cancelPendingOrder(order, "PRICE_DRIFTED", timestamp, { triggeredBy }));
-      nextState = registerReentryCandidate(nextState, {
-        order,
-        cancelReason: "PRICE_DRIFTED",
-        candleTime,
-        timestamp,
-        markPrice: orderTickPrice,
-      });
-      nextState = registerReentryGuard(nextState, order, "PRICE_DRIFTED", timestamp, order?.decisionSnapshot, candleTime);
-      nextState = appendOrderLifecycleEvent(nextState, {
-        symbol: order.symbol, orderId: order.id, eventType: "CANCELED", reason: "PRICE_DRIFTED", triggeredBy, timestamp, selectedSymbolAtThatMoment, marketSymbolUsed,
-        currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: orderEntryPrice, checkedFunctionName,
-      });
-      nextState = appendPendingCancelTrace(nextState, {
-        timestamp, orderId: order.id, orderSymbol: order.symbol, selectedSymbolAtThatMoment, marketSymbolUsed, reason: "PRICE_DRIFTED", triggeredBy,
-        currentTickPrice: orderTickPrice, candleHigh: orderCandleHigh, candleLow: orderCandleLow, entryPrice: orderEntryPrice, checkedFunctionName,
-      });
-      nextPendingOrders.push({ ...order, status: "CANCELLED", canceledByPriceDrift: true });
+      logPendingCancelBlocked(order, "PRICE_DRIFTED");
+      nextPendingOrders.push({ ...observedOrder, canceledByPriceDrift: true });
       continue;
     }
     if (isPreEntryInvalidated(order, orderTickPrice)) {
@@ -2820,6 +2767,16 @@ export function simulateDecisionExecution({
 }) {
   const basePerformanceDebug = buildPerformanceDebugState();
   const executionPlan = decision?.executionPlan ?? {};
+  const planEntry = executionPlan?.entry;
+  const hasPlanEntry = (
+    (planEntry != null && typeof planEntry === "object" &&
+      (Number.isFinite(normalizeNumber(planEntry?.low)) || Number.isFinite(normalizeNumber(planEntry?.high)))) ||
+    Number.isFinite(normalizeNumber(planEntry))
+  );
+  const hasPlanStop = Number.isFinite(normalizeNumber(executionPlan?.stop ?? executionPlan?.stopLoss));
+  const hasPlanTp = [executionPlan?.tp, executionPlan?.takeProfit, executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3]
+    .some((value) => Number.isFinite(normalizeNumber(value)));
+  const shouldForceCreatePendingFromPlan = hasPlanEntry && hasPlanStop && hasPlanTp;
   const decisionBarTime = normalizeBarTime(signalContext?.candleTime);
   if (!state) {
     return { state, result: "NO_DECISION", ...basePerformanceDebug };
@@ -2886,7 +2843,7 @@ export function simulateDecisionExecution({
     state = incrementWaitingReason(state, "blockedByKlineConfirmation", { symbol, timeframe });
   }
 
-  if (effectiveEligibility.eligibility === "BLOCKED" && !bypassSetupGate) {
+  if (effectiveEligibility.eligibility === "BLOCKED" && !bypassSetupGate && !shouldForceCreatePendingFromPlan) {
     return { state, result: effectiveEligibility.reasonCode, eligibilityInfo: effectiveEligibility, ...basePerformanceDebug };
   }
 
@@ -2932,7 +2889,7 @@ export function simulateDecisionExecution({
     blockedByPerformanceFilter,
   });
 
-  if (blockedByPerformanceFilter && !bypassSetupGate) {
+  if (blockedByPerformanceFilter && !bypassSetupGate && !shouldForceCreatePendingFromPlan) {
     let nextStateWithDiag = state;
     nextStateWithDiag = incrementWaitingReason(nextStateWithDiag, "blockedByPerformanceFilter", { symbol, timeframe });
     return {
@@ -2955,7 +2912,7 @@ export function simulateDecisionExecution({
     };
   }
   const cooldownState = getCooldownStateForSide(state, side, symbol);
-  if (cooldownState.cooldownActive) {
+  if (cooldownState.cooldownActive && !shouldForceCreatePendingFromPlan) {
     const nextStateWithDiag = incrementWaitingReason(state, "blockedByCooldown", { symbol, timeframe, side });
     return {
       state: nextStateWithDiag,
@@ -3167,182 +3124,17 @@ export function simulateDecisionExecution({
     }
   }
 
-  if (!conditionalPendingEligibility.eligible) {
-    const blockedByStrategy =
-      !conditionalPendingEligibility.allowedStrategy &&
-      ["breakout", "momentum"].includes(conditionalPendingEligibility.strategyType);
-    const blockedReason = conditionalPendingEligibility.primaryBlockedReason ||
-      (blockedByStrategy ? "strategy_not_allowed" : "condition_not_met");
-    const strategyTypeRaw = decision?.strategyType ?? null;
-    const setupType = decision?.setupType ?? null;
-    const executionPlanSetupType = decision?.executionPlan?.setupType ?? null;
-    const marketRegime = decision?.marketRegimeLabel ?? decision?.regime ?? signalContext?.marketRegime ?? "unknown";
-    const debugCurrentPrice = normalizeNumber(currentPrice);
-    const debugZoneLow = normalizeNumber(rangeBoundary?.zoneLow);
-    const debugZoneHigh = normalizeNumber(rangeBoundary?.zoneHigh);
-    console.warn(
-      "[STRATEGY_GATE_DEBUG]\n" +
-      `symbol=${symbol}\n` +
-      `timeframe=${timeframe}\n` +
-      `side=${side}\n` +
-      `marketRegime=${marketRegime}\n` +
-      `setupType=${setupType}\n` +
-      `executionPlanSetupType=${executionPlanSetupType}\n` +
-      `strategyTypeRaw=${strategyTypeRaw}\n` +
-      `resolvedStrategyType=${conditionalPendingEligibility.strategyType}\n` +
-      `allowedStrategy=${conditionalPendingEligibility.allowedStrategy}\n` +
-      `hasEntryZone=${conditionalPendingEligibility.hasEntryZone}\n` +
-      `currentPrice=${debugCurrentPrice}\n` +
-      `zoneLow=${debugZoneLow}\n` +
-      `zoneHigh=${debugZoneHigh}\n` +
-      `reason=${blockedReason}`
-    );
-    console.warn("[ENTRY_BLOCKED]", {
-      symbol,
-      timeframe,
-      side,
-      reason: blockedReason,
-      strategyType: conditionalPendingEligibility.strategyType,
-      unmetConditions: conditionalPendingEligibility.unmetConditions,
-      conditions: {
-        allowedStrategy: conditionalPendingEligibility.allowedStrategy,
-        hasEntryZone: conditionalPendingEligibility.hasEntryZone,
-        longEntryAboveCurrent: conditionalPendingEligibility.longEntryAboveCurrent,
-        nearUpperZone: conditionalPendingEligibility.nearUpperZone,
-      },
-      boundaries: {
-        lowerBoundary: conditionalPendingEligibility.lowerBoundary,
-        upperBoundary: conditionalPendingEligibility.upperBoundary,
-      },
-      prices: {
-        currentPrice: normalizeNumber(currentPrice),
-        entryPrice: tentativeEntryPrice,
-      },
-    });
-    logPreArmReturnDebug({
-      returnReason: blockedByStrategy ? "PRE_ARM_DISABLED_FOR_BREAKOUT_OR_MOMENTUM" : "PRE_ARM_CONDITION_NOT_MET",
-      nextAction: "RETURN_WATCH_AND_ARM",
-      sourceFunction: "simulateDecisionExecution.conditionalPendingEligibility",
-    });
-    return {
-      state,
-      result: blockedByStrategy ? "PREPEND_BLOCKED_STRATEGY_TYPE" : "PREPEND_BLOCKED_CONDITIONS",
-      executionIntent: "WATCH_AND_ARM",
-      confirmationResult,
-      ...performanceDebugPayload,
-      eligibilityInfo: {
-        ...effectiveEligibility,
-        eligibility: "WATCH_ONLY",
-        reasonCode: blockedByStrategy ? "PRE_ARM_DISABLED_FOR_BREAKOUT_OR_MOMENTUM" : "PRE_ARM_CONDITION_NOT_MET",
-        reason: blockedByStrategy
-          ? "breakout/momentum 先不預掛，維持確認後再掛"
-          : "條件式預掛未通過（需 range/pullback + 有效支撐區 + LONG 不高掛且不靠近阻力）",
-        blockedReason,
-        unmetConditions: conditionalPendingEligibility.unmetConditions,
-        executionIntent: "WATCH_AND_ARM",
-        conditionalPendingEligibility,
-      },
-    };
-  }
+  executionIntent = "PLACE_PENDING";
 
-  const invalidRangeLongReason = shouldBlockInvalidRangeLongEntry({
-    side,
-    decision,
-    signalContext,
-    currentPrice: normalizeNumber(currentPrice),
+  const constrainedEntry = {
     entryPrice: tentativeEntryPrice,
-    support: rangeBoundary.support,
-    resistance: rangeBoundary.resistance,
-    zoneLow: rangeBoundary.zoneLow,
-    zoneHigh: rangeBoundary.zoneHigh,
-  });
-  if (invalidRangeLongReason) {
-    console.warn("[ENTRY_BLOCKED_INVALID_RANGE_LONG]", {
-      symbol,
-      currentPrice: normalizeNumber(currentPrice),
-      entryPrice: tentativeEntryPrice,
-      reason: invalidRangeLongReason,
-    });
-    state = incrementWaitingReason(state, "pendingTooFarFromPrice", { symbol, timeframe, side });
-    logPreArmReturnDebug({
-      returnReason: "ENTRY_BLOCKED_INVALID_RANGE_LONG",
-      nextAction: "RETURN_WATCH_ONLY",
-      sourceFunction: "simulateDecisionExecution.invalidRangeLongGuard",
-    });
-    return {
-      state,
-      result: "ENTRY_BLOCKED_INVALID_RANGE_LONG",
-      executionIntent: "WATCH_ONLY",
-      confirmationResult: {
-        ...confirmationResult,
-        canExecute: false,
-        decisionType: "NO_TRADE",
-      },
-      ...performanceDebugPayload,
-      eligibilityInfo: {
-        ...effectiveEligibility,
-        eligibility: "WATCH_ONLY",
-        reasonCode: "ENTRY_BLOCKED_INVALID_RANGE_LONG",
-        reason: `range LONG entry blocked: ${invalidRangeLongReason}`,
-        executionIntent: "WATCH_ONLY",
-      },
-    };
-  }
-
-  const constrainedEntry = applyEntryDistanceConstraint({
-    side,
-    entryPrice: tentativeEntryPrice,
-    currentPrice: normalizeNumber(currentPrice),
-    atr: decision?.executionPlan?.atr ?? decision?.atr,
-    marketRegime: decision?.marketRegimeLabel || decision?.regime || signalContext?.marketRegime,
-    executionMode: plannedEntry.mode === "breakout" ? "BREAKOUT" : "PULLBACK",
-    constraintLayer: "pending",
-  });
-  if (String(plannedEntry.mode || "").toUpperCase() === "PULLBACK") {
-    console.log(
-      "[ENTRY_DISTANCE_CHECK]\n" +
-      `symbol=${symbol || "UNKNOWN"}\n` +
-      `distance=${Number.isFinite(constrainedEntry?.distance) ? constrainedEntry.distance : "NA"}\n` +
-      `isTooFar=${Boolean(constrainedEntry?.isTooFarInRange)}\n` +
-      "affectsFillOnly=true"
-    );
-  }
-  if (constrainedEntry.isRejected && String(constrainedEntry.rejectionReason || "").includes("TOO_FAR")) {
-    state = incrementWaitingReason(state, "pendingTooFarFromPrice", { symbol, timeframe, side });
-  }
-  const triggerPrice = constrainedEntry.entryPrice;
-  if (constrainedEntry.isRejected) {
-    if (bypassSetupGate) {
-      logPreArmReturnDebug({
-        returnReason: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
-        nextAction: "RETURN_WATCH_AND_ARM",
-        sourceFunction: "simulateDecisionExecution.applyEntryDistanceConstraint",
-      });
-      return {
-        state,
-        result: "WATCH_AND_ARM",
-        ...performanceDebugPayload,
-        executionIntent: "WATCH_AND_ARM",
-        confirmationResult,
-        eligibilityInfo: {
-          ...effectiveEligibility,
-          reasonCode: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
-          reason: "掛單距離不合理，已轉為等待確認模式",
-        },
-      };
-    }
-    logPreArmReturnDebug({
-      returnReason: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
-      nextAction: "RETURN_BLOCKED",
-      sourceFunction: "simulateDecisionExecution.applyEntryDistanceConstraint",
-    });
-    return {
-      state,
-      result: constrainedEntry.rejectionReason || "ENTRY_UNREALISTIC",
-      ...performanceDebugPayload,
-      eligibilityInfo: effectiveEligibility,
-    };
-  }
+    isRejected: false,
+    rejectionReason: null,
+    wasAdjusted: false,
+    distance: null,
+    isTooFarInRange: false,
+  };
+  const triggerPrice = tentativeEntryPrice;
   const atrValue = normalizeNumber(executionPlan?.atr ?? decision?.atr);
   const fallbackInvalidation =
     Number.isFinite(triggerPrice) && Number.isFinite(atrValue) && atrValue > 0
@@ -3353,17 +3145,19 @@ export function simulateDecisionExecution({
     normalizeNumber(executionPlan?.stop ?? decision.stop) ??
     normalizeNumber(executionPlan?.stopLoss ?? decision.stopLoss) ??
     fallbackInvalidation;
-  const executionPlanStop = normalizeNumber(executionPlan?.stop);
-  const executionPlanTp = normalizeNumber(executionPlan?.tp);
+  const executionPlanStop = normalizeNumber(executionPlan?.stop ?? executionPlan?.stopLoss);
+  const executionPlanTp1 = normalizeNumber(executionPlan?.tp ?? executionPlan?.takeProfit ?? executionPlan?.takeProfit1);
+  const executionPlanTp2 = normalizeNumber(executionPlan?.takeProfit2);
+  const executionPlanTp3 = normalizeNumber(executionPlan?.takeProfit3);
   const contextKey = buildDecisionContextKey(decision, symbol, timeframe);
   const decisionRevision = buildDecisionRevision(decision, timeframe);
   const normalizedLevels = normalizeDirectionalLevels({
     side,
     referencePrice: triggerPrice,
     stopLoss: executionPlanStop,
-    takeProfit1: executionPlanTp,
-    takeProfit2: undefined,
-    takeProfit3: undefined,
+    takeProfit1: executionPlanTp1,
+    takeProfit2: executionPlanTp2,
+    takeProfit3: executionPlanTp3,
   });
   const planConsistency = validateExecutionPlanConsistency({
     side,
@@ -3482,10 +3276,7 @@ export function simulateDecisionExecution({
     takeProfit1: normalizedLevels.takeProfit1,
     takeProfit2: normalizedLevels.takeProfit2,
     takeProfit3: normalizedLevels.takeProfit3,
-    quantity: asSafeNumber(
-      asSafeNumber(quantity, DEFAULT_POSITION_SIZE) * getSizingMultiplier(confirmationResult.decisionType),
-      DEFAULT_POSITION_SIZE
-    ),
+    quantity: asSafeNumber(quantity, DEFAULT_POSITION_SIZE),
     createdAt: nowIso(),
     status: "PENDING",
     lifecycleType: "PENDING_ORDER",
@@ -3699,24 +3490,12 @@ export function simulateDecisionExecution({
     );
   };
 
-  const normalizePendingKeyPrice = (value) => {
-    const normalized = normalizeNumber(value);
-    if (!Number.isFinite(normalized)) return null;
-    return Number(normalized.toFixed(8));
-  };
-
   const buildPendingUniquenessKey = (order) => {
     const symbolKey = String(order?.symbol || "").toUpperCase();
     const sideKey = String(order?.side || "").toUpperCase();
     const setupId = order?.setupId ? String(order.setupId) : null;
-    const entryZoneLow = normalizePendingKeyPrice(order?.entryZoneLow ?? order?.entryLow ?? order?.placementSnapshot?.entryLow);
-    const entryZoneHigh = normalizePendingKeyPrice(order?.entryZoneHigh ?? order?.entryHigh ?? order?.placementSnapshot?.entryHigh);
-    const zoneHash = Number.isFinite(entryZoneLow) && Number.isFinite(entryZoneHigh)
-      ? `${Math.min(entryZoneLow, entryZoneHigh)}:${Math.max(entryZoneLow, entryZoneHigh)}`
-      : null;
-    const setupKey = setupId || zoneHash;
-    if (!symbolKey || !sideKey || !setupKey) return null;
-    return `${symbolKey}|${sideKey}|${setupKey}`;
+    if (!symbolKey || !sideKey || !setupId) return null;
+    return `${symbolKey}|${sideKey}|${setupId}`;
   };
 
   const createPendingOrder = ({ baseState, order, executionPlan: pendingExecutionPlan }) => {
@@ -3750,6 +3529,21 @@ export function simulateDecisionExecution({
         duplicatePendingId: existingPending?.id || null,
       };
     }
+    console.info(
+      "[PENDING_PLAN_LOCKED]\n" +
+      `symbol=${order?.symbol || ""}\n` +
+      `side=${order?.side || ""}\n` +
+      `entryZoneLow=${normalizeNumber(order?.entryZoneLow) ?? ""}\n` +
+      `entryZoneHigh=${normalizeNumber(order?.entryZoneHigh) ?? ""}\n` +
+      `stop=${normalizeNumber(order?.stopLoss) ?? ""}\n` +
+      `tp=${[
+        normalizeNumber(order?.takeProfit1),
+        normalizeNumber(order?.takeProfit2),
+        normalizeNumber(order?.takeProfit3),
+      ].filter((value) => Number.isFinite(value)).join(" / ")}\n` +
+      `size=${asSafeNumber(order?.quantity)}\n` +
+      "reason=created_from_decision_center_plan"
+    );
     console.log("[PENDING_CREATED]", {
       pendingId: order?.id || null,
       entryZone: {
@@ -3818,40 +3612,6 @@ export function simulateDecisionExecution({
     };
   }
 
-  if (breakoutGuard.applies && !breakoutGuard.confirmed) {
-    logPreArmReturnDebug({
-      returnReason: "WAIT_BREAKOUT_CONFIRMATION",
-      nextAction: "RETURN_WATCH_AND_ARM",
-      sourceFunction: "simulateDecisionExecution.breakoutGuard",
-    });
-    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "WAIT_BREAKOUT_CONFIRMATION" });
-    if (breakoutGuard.fakeBreakout) {
-      console.warn(side === "LONG" ? "[BREAKOUT_FAKE_BLOCKED]" : "[BREAKDOWN_FAKE_BLOCKED]", {
-        symbol,
-        triggerPrice: pendingOrder.triggerPrice,
-        reason: breakoutGuard.waitingReason,
-      });
-    }
-    console.warn("[BREAKOUT_ORDER_BLOCKED_UNCONFIRMED]", {
-      symbol,
-      triggerPrice: pendingOrder.triggerPrice,
-      sourceFunction: "simulateDecisionExecution.createPendingOrder",
-    });
-    return {
-      state: incrementWaitingReason(stateWithSetupLock, "waitingForBreakout", { symbol, timeframe, side }),
-      result: "WATCH_AND_ARM",
-      executionIntent: "WATCH_AND_ARM",
-      confirmationResult,
-      ...performanceDebugPayload,
-      breakoutGuard,
-      eligibilityInfo: {
-        ...effectiveEligibility,
-        reasonCode: "WAIT_BREAKOUT_CONFIRMATION",
-        reason: breakoutGuard.waitingReason,
-      },
-    };
-  }
-
   if (draftSetup) {
     const blockedReason = shouldBypassSetupDraftWaitingGuard ? null : "SETUP_DRAFT_WAITING";
     console.info(
@@ -3865,62 +3625,17 @@ export function simulateDecisionExecution({
       `draftStatus=${draftSetup ? "WAITING_DRAFT" : "NONE"}\n` +
       `draftReady=${shouldBypassSetupDraftWaitingGuard}\n` +
       `draftReason=${draftReason || "none"}\n` +
-      `blockedReason=${blockedReason || "none"}`
+      "blockedReason=none"
     );
-    if (shouldBypassSetupDraftWaitingGuard) {
-      console.info("[SETUP_DRAFT_GUARD_BYPASSED]", {
-        symbol,
-        timeframe,
-        side,
-        reason: "PULLBACK_READY_TO_ARM",
-        waitingReasons: pendingOrder.waitingReasons,
-      });
-    } else {
-    logPreArmReturnDebug({
-      returnReason: "SETUP_DRAFT_WAITING",
-      nextAction: "RETURN_WATCH_AND_ARM",
-      sourceFunction: "simulateDecisionExecution.setupDraftGuard",
-    });
-    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "SETUP_DRAFT_WAITING" });
-    const nextState = {
-      ...state,
-      setupDrafts: [{
-        ...pendingOrder,
-        lifecycleType: "SETUP_DRAFT",
-        status: "DRAFT",
-      }, ...(state?.setupDrafts || [])].slice(0, 200),
-    };
-    console.debug("[BLOCKED_DRAFT_NOT_PERSISTED]", {
+    console.info("[SETUP_DRAFT_GUARD_BYPASSED]", {
       symbol,
       timeframe,
       side,
-      reasonCode: "SETUP_DRAFT_WAITING",
+      reason: "PENDING_ORDER_MUST_BE_CREATED_FROM_DECISION_CENTER_PLAN",
       waitingReasons: pendingOrder.waitingReasons,
     });
-    return {
-      state: appendBlockedAttempt(nextState, {
-        reasonCode: "SETUP_DRAFT_WAITING",
-        symbol,
-        timeframe,
-        side,
-        details: {
-          waitingReasons: pendingOrder.waitingReasons,
-        },
-      }),
-      result: "WATCH_AND_ARM",
-      executionIntent: "WATCH_AND_ARM",
-      confirmationResult,
-      ...performanceDebugPayload,
-      eligibilityInfo: {
-        ...effectiveEligibility,
-        reasonCode: "SETUP_DRAFT_WAITING",
-      },
-    };
-    }
   }
-  if (shouldBypassSetupDraftWaitingGuard) {
-    pendingOrder.waitingReasons = pendingFinalWaitingReasons;
-  }
+  pendingOrder.waitingReasons = pendingFinalWaitingReasons;
 
   if (executionIntent === "EXECUTE_NOW" && executionOrderType !== "MARKET") {
     console.warn("[EXECUTION_BLOCKED]", {
@@ -3931,122 +3646,12 @@ export function simulateDecisionExecution({
     });
   }
 
-  if (isReentryBlockedByGuard(state, {
-    symbol,
-    timeframe,
-    side,
-    triggerPrice,
-    decisionContextKey: contextKey,
-    decisionRevision,
-    atr: atrValue,
-    candleTime: signalContext?.candleTime,
-  })) {
-    logPreArmReturnDebug({
-      returnReason: "REENTRY_GUARD_BLOCKED",
-      nextAction: "RETURN_WATCH_AND_ARM",
-      sourceFunction: "simulateDecisionExecution.reentryGuard",
-    });
-    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "REENTRY_GUARD_BLOCKED" });
-    logPendingFinalGateDebug({
-      finalShouldCreatePending: false,
-      finalBlockedReason: "REENTRY_GUARD_BLOCKED",
-      nextAction: "RETURN_WATCH_AND_ARM",
-    });
-    return {
-      state,
-      result: "REENTRY_GUARD_BLOCKED",
-      executionIntent: "WATCH_AND_ARM",
-      confirmationResult,
-      ...performanceDebugPayload,
-      eligibilityInfo: {
-        ...effectiveEligibility,
-        reasonCode: "REENTRY_GUARD_BLOCKED",
-        reason: "PRICE_DRIFTED 後尚未有新 candle/decision revision，暫停重建相近訂單",
-      },
-    };
-  }
-
-  if (!finalLockedSetup || finalLockedSetup.status !== "ACTIVE") {
-    if (shouldBypassSetupInactiveOrderGuard) {
-      logSetupInactiveDebug({
-        setupActive: false,
-        orderActive: true,
-        inactiveReason: "SETUP_INACTIVE_BYPASSED_FOR_PULLBACK",
-        finalBlockedReason: null,
-      });
-    } else {
-      logSetupInactiveDebug({
-        setupActive: false,
-        orderActive: true,
-        inactiveReason: "SETUP_INACTIVE",
-        finalBlockedReason: "SETUP_INACTIVE_ORDER_BLOCKED",
-      });
-    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "SETUP_INACTIVE_ORDER_BLOCKED" });
-    logPreArmReturnDebug({
-      returnReason: "SETUP_INACTIVE_ORDER_BLOCKED",
-      nextAction: "RETURN_WATCH_AND_ARM",
-      sourceFunction: "simulateDecisionExecution.setupInactiveGuard",
-    });
-    logPendingFinalGateDebug({
-      finalShouldCreatePending: false,
-      finalBlockedReason: "SETUP_INACTIVE_ORDER_BLOCKED",
-      nextAction: "RETURN_WATCH_AND_ARM",
-    });
-    console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", { symbol, timeframe, side, executionMode: pendingOrderExecutionMode });
-    return {
-      state: stateWithSetupLock,
-      result: "SETUP_INACTIVE_ORDER_BLOCKED",
-      executionIntent: "WATCH_AND_ARM",
-      confirmationResult,
-      ...performanceDebugPayload,
-      eligibilityInfo: {
-        ...effectiveEligibility,
-        reasonCode: "SETUP_INACTIVE_ORDER_BLOCKED",
-        reason: "setup 已失效，阻止建立 pending order",
-      },
-    };
-    }
-  }
-  if (!isModeMatched) {
-    logExecutionModeMatchDebug({ finalBlockedReason: "EXECUTION_MODE_MISMATCH" });
-    logSetupInactiveDebug({
-      setupActive: true,
-      orderActive: true,
-      inactiveReason: "EXECUTION_MODE_MISMATCH",
-      finalBlockedReason: "EXECUTION_MODE_MISMATCH",
-    });
-    logPendingArmingDebug({ shouldCreatePending: false, blockedReason: "EXECUTION_MODE_MISMATCH" });
-    logPreArmReturnDebug({
-      returnReason: "EXECUTION_MODE_MISMATCH",
-      nextAction: "RETURN_WATCH_AND_ARM",
-      sourceFunction: "simulateDecisionExecution.executionModeMatchGuard",
-    });
-    logPendingFinalGateDebug({
-      finalShouldCreatePending: false,
-      finalBlockedReason: "EXECUTION_MODE_MISMATCH",
-      nextAction: "RETURN_WATCH_AND_ARM",
-    });
-    console.warn("[SETUP_INACTIVE_ORDER_BLOCKED]", {
-      symbol,
-      timeframe,
-      side,
-      reason: "EXECUTION_MODE_MISMATCH",
-      orderMode: pendingOrderExecutionMode,
-      setupMode: finalLockedSetupExecutionMode,
-    });
-    return {
-      state: stateWithSetupLock,
-      result: "SETUP_INACTIVE_ORDER_BLOCKED",
-      executionIntent: "WATCH_AND_ARM",
-      confirmationResult,
-      ...performanceDebugPayload,
-      eligibilityInfo: {
-        ...effectiveEligibility,
-        reasonCode: "SETUP_INACTIVE_ORDER_BLOCKED",
-        reason: "executionMode 與 locked setup 不一致",
-      },
-    };
-  }
+  logSetupInactiveDebug({
+    setupActive: Boolean(finalLockedSetup?.status === "ACTIVE"),
+    orderActive: true,
+    inactiveReason: null,
+    finalBlockedReason: null,
+  });
   logExecutionModeMatchDebug({ finalBlockedReason: null });
 
   logPendingArmingDebug({ shouldCreatePending: true, blockedReason: null });
@@ -4261,6 +3866,12 @@ export function reconcilePendingOrdersWithDecision({
       if (!orderSetup || orderSetup.status !== "ACTIVE" || orderSetup.setupId !== order.setupId) {
         cancelReason = orderSetup?.invalidationReason || "SETUP_INACTIVE";
       }
+    }
+
+    if (cancelReason && !isAllowedAutomaticPendingCancelReason(cancelReason)) {
+      logPendingCancelBlocked(order, cancelReason);
+      nextPending.push(order);
+      continue;
     }
 
     if (cancelReason) {
