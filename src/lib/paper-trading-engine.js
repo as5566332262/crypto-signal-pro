@@ -2673,7 +2673,7 @@ export function simulateDecisionExecution({
       : { state, result: "NO_DECISION", ...basePerformanceDebug };
   }
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
-  const executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
+  let executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
   console.debug("[paper-engine:simulateDecisionExecution:before-validator]", {
     symbol,
     timeframe,
