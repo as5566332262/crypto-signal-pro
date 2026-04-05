@@ -940,6 +940,21 @@ function buildExecutionPlanSnapshot(decision, symbol, timeframe, selectedSize) {
   };
 }
 
+function formatPlanFirstFlatLog(tag, payload = {}) {
+  const serializedLines = Object.entries(payload).map(([key, value]) => {
+    if (value === null || value === undefined) return `${key}=`;
+    if (typeof value === "object") {
+      try {
+        return `${key}=${JSON.stringify(value)}`;
+      } catch (error) {
+        return `${key}=[unserializable_object]`;
+      }
+    }
+    return `${key}=${String(value)}`;
+  });
+  console.log([tag, ...serializedLines].join("\n"));
+}
+
 function createPendingOrderFromExecutionPlan(planSnapshot, selectedSize) {
   if (!planSnapshot?.complete) {
     formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_GUARD_BLOCKED]", {
@@ -2906,20 +2921,6 @@ export function simulateDecisionExecution({
   orderMode = "",
   triggeredBy = "DECISION_ENGINE",
 }) {
-  const formatPlanFirstFlatLog = (tag, payload = {}) => {
-    const serializedLines = Object.entries(payload).map(([key, value]) => {
-      if (value === null || value === undefined) return `${key}=`;
-      if (typeof value === "object") {
-        try {
-          return `${key}=${JSON.stringify(value)}`;
-        } catch (error) {
-          return `${key}=[unserializable_object]`;
-        }
-      }
-      return `${key}=${String(value)}`;
-    });
-    console.log([tag, ...serializedLines].join("\n"));
-  };
   const basePerformanceDebug = buildPerformanceDebugState();
   const executionPlan = decision?.executionPlan ?? {};
   const decisionBarTime = normalizeBarTime(signalContext?.candleTime);
