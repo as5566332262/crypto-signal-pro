@@ -956,40 +956,111 @@ function formatPlanFirstFlatLog(tag, payload = {}) {
 }
 
 function createPendingOrderFromExecutionPlan(planSnapshot, selectedSize) {
-  if (!planSnapshot?.complete) {
+  const normalizedTakeProfit1 = normalizeNumber(
+    planSnapshot?.takeProfit1 ??
+    planSnapshot?.tp1 ??
+    planSnapshot?.tp ??
+    planSnapshot?.takeProfits?.[0]
+  );
+  const normalizedTakeProfit2 = normalizeNumber(
+    planSnapshot?.takeProfit2 ??
+    planSnapshot?.tp2 ??
+    planSnapshot?.takeProfits?.[1]
+  );
+  const normalizedStopLoss = normalizeNumber(
+    planSnapshot?.stopLoss ??
+    planSnapshot?.stop
+  );
+  const normalizedEntryLow = normalizeNumber(
+    planSnapshot?.entryLow ??
+    planSnapshot?.entryZoneLow ??
+    planSnapshot?.entryRange?.low ??
+    planSnapshot?.entry?.low
+  );
+  const normalizedEntryHigh = normalizeNumber(
+    planSnapshot?.entryHigh ??
+    planSnapshot?.entryZoneHigh ??
+    planSnapshot?.entryRange?.high ??
+    planSnapshot?.entry?.high
+  );
+  const normalizedSide = String(planSnapshot?.side || "").toUpperCase();
+  const normalizedSetupId = String(planSnapshot?.setupId || "").trim();
+  const normalizedSize = Math.max(0, asSafeNumber(selectedSize, planSnapshot?.selectedSize));
+
+  formatPlanFirstFlatLog("[PLAN_SNAPSHOT_VALIDATE_DEBUG]", {
+    symbol: planSnapshot?.symbol || null,
+    side: normalizedSide || null,
+    entryLow: normalizedEntryLow ?? null,
+    entryHigh: normalizedEntryHigh ?? null,
+    stopLoss: normalizedStopLoss ?? null,
+    takeProfit1: normalizedTakeProfit1 ?? null,
+    takeProfit2: normalizedTakeProfit2 ?? null,
+    selectedSize: normalizedSize,
+    setupId: normalizedSetupId || null,
+  });
+
+  const hasEntryLow = Number.isFinite(normalizedEntryLow);
+  const hasEntryHigh = Number.isFinite(normalizedEntryHigh);
+  const hasStopLoss = Number.isFinite(normalizedStopLoss);
+  const hasTakeProfit1 = Number.isFinite(normalizedTakeProfit1) || Number.isFinite(normalizedTakeProfit2);
+  const hasSelectedSize = Number.isFinite(normalizedSize) && normalizedSize > 0;
+  const hasSide = normalizedSide === "LONG" || normalizedSide === "SHORT";
+  const hasSetupId = normalizedSetupId.length > 0;
+
+  const invalidReasons = [];
+  if (!hasEntryLow) invalidReasons.push("missing_entry_low");
+  if (!hasEntryHigh) invalidReasons.push("missing_entry_high");
+  if (!hasStopLoss) invalidReasons.push("missing_stop_loss");
+  if (!hasTakeProfit1) invalidReasons.push("missing_take_profit");
+  if (!hasSelectedSize) invalidReasons.push("missing_selected_size");
+  if (!hasSide) invalidReasons.push("missing_or_invalid_side");
+  if (!hasSetupId) invalidReasons.push("missing_setup_id");
+
+  formatPlanFirstFlatLog("[PLAN_SNAPSHOT_FIELD_CHECK]", {
+    hasEntryLow,
+    hasEntryHigh,
+    hasStopLoss,
+    hasTakeProfit1,
+    hasSelectedSize,
+    hasSide,
+    hasSetupId,
+    invalidReason: invalidReasons.join("|") || "none",
+  });
+
+  if (invalidReasons.length) {
     formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_GUARD_BLOCKED]", {
       reason: "invalid_plan_snapshot",
       symbol: planSnapshot?.symbol || null,
-      side: planSnapshot?.side || null,
-      entryLow: planSnapshot?.entryLow ?? null,
-      entryHigh: planSnapshot?.entryHigh ?? null,
+      side: normalizedSide || null,
+      entryLow: normalizedEntryLow ?? null,
+      entryHigh: normalizedEntryHigh ?? null,
       sourceFunction: "simulateDecisionExecution.forcePending.createPendingOrderFromExecutionPlan",
     });
     return null;
   }
-  const side = planSnapshot.side;
+  const side = normalizedSide;
   if (side !== "LONG" && side !== "SHORT") {
     formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_GUARD_BLOCKED]", {
       reason: "side_mismatch",
       symbol: planSnapshot?.symbol || null,
       side,
-      entryLow: planSnapshot?.entryLow ?? null,
-      entryHigh: planSnapshot?.entryHigh ?? null,
+      entryLow: normalizedEntryLow ?? null,
+      entryHigh: normalizedEntryHigh ?? null,
       sourceFunction: "simulateDecisionExecution.forcePending.createPendingOrderFromExecutionPlan",
     });
     return null;
   }
   const finalEntry = side === "SHORT"
-    ? normalizeNumber(planSnapshot.entryHigh ?? planSnapshot.entryZoneHigh)
-    : normalizeNumber(planSnapshot.entryLow ?? planSnapshot.entryZoneLow);
-  const size = Math.max(0, asSafeNumber(selectedSize, planSnapshot.selectedSize));
+    ? normalizedEntryHigh
+    : normalizedEntryLow;
+  const size = normalizedSize;
   if (!Number.isFinite(finalEntry)) {
     formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_GUARD_BLOCKED]", {
       reason: "entry_distance_constraint",
       symbol: planSnapshot?.symbol || null,
       side,
-      entryLow: planSnapshot?.entryLow ?? null,
-      entryHigh: planSnapshot?.entryHigh ?? null,
+      entryLow: normalizedEntryLow ?? null,
+      entryHigh: normalizedEntryHigh ?? null,
       sourceFunction: "simulateDecisionExecution.forcePending.createPendingOrderFromExecutionPlan",
     });
     return null;
@@ -999,18 +1070,18 @@ function createPendingOrderFromExecutionPlan(planSnapshot, selectedSize) {
       reason: "size_validation_failed",
       symbol: planSnapshot?.symbol || null,
       side,
-      entryLow: planSnapshot?.entryLow ?? null,
-      entryHigh: planSnapshot?.entryHigh ?? null,
+      entryLow: normalizedEntryLow ?? null,
+      entryHigh: normalizedEntryHigh ?? null,
       sourceFunction: "simulateDecisionExecution.forcePending.createPendingOrderFromExecutionPlan",
     });
     return null;
   }
   return {
     entryPrice: finalEntry,
-    stopLoss: normalizeNumber(planSnapshot.stopLoss),
-    takeProfit1: normalizeNumber(planSnapshot.takeProfits?.[0]),
-    takeProfit2: normalizeNumber(planSnapshot.takeProfits?.[1]),
-    takeProfit3: normalizeNumber(planSnapshot.takeProfits?.[2]),
+    stopLoss: normalizedStopLoss,
+    takeProfit1: normalizedTakeProfit1,
+    takeProfit2: normalizedTakeProfit2,
+    takeProfit3: normalizeNumber(planSnapshot?.takeProfit3 ?? planSnapshot?.tp3 ?? planSnapshot?.takeProfits?.[2]),
     quantity: size,
   };
 }
