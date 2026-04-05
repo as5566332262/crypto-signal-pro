@@ -236,11 +236,11 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
   const executionPlan = analysis?.aiDecisionOutput?.executionPlan || analysis?.executionPlan || {};
   const executionMode = String(executionPlan?.executionMode || "").toUpperCase();
   const side = String(executionPlan?.action || "").toUpperCase();
-  const executionModeLabel = executionMode === "BREAKOUT"
-    ? (side === "LONG" ? "突破做多" : side === "SHORT" ? "突破做空" : "突破")
-    : executionMode === "PULLBACK"
-      ? (side === "LONG" ? "回調做多" : side === "SHORT" ? "回調做空" : "回調")
-      : "-";
+  const executionModeLabel = side === "LONG"
+    ? "做多"
+    : side === "SHORT"
+      ? "做空"
+      : "方向未定";
   const modeReasons = Array.isArray(executionPlan?.modeSelectionReasons) ? executionPlan.modeSelectionReasons : [];
   const entryValue = executionMode === "PULLBACK"
     ? [executionPlan?.entryLow, executionPlan?.entryHigh].every((value) => value != null)
