@@ -872,13 +872,19 @@ function normalizeExecutionPlanEntry(plan) {
     plan?.entry?.high ??
     plan?.entryRange?.high
   );
-  const entryLow = Number.isFinite(rawEntryLow) && Number.isFinite(rawEntryHigh)
+  const resolvedEntryLow = Number.isFinite(rawEntryLow) && Number.isFinite(rawEntryHigh)
     ? Math.min(rawEntryLow, rawEntryHigh)
     : rawEntryLow;
-  const entryHigh = Number.isFinite(rawEntryLow) && Number.isFinite(rawEntryHigh)
+  const resolvedEntryHigh = Number.isFinite(rawEntryLow) && Number.isFinite(rawEntryHigh)
     ? Math.max(rawEntryLow, rawEntryHigh)
     : rawEntryHigh;
-  return { entryLow, entryHigh, rawEntryLow, rawEntryHigh };
+  return {
+    ...(plan || {}),
+    entryLow: resolvedEntryLow,
+    entryHigh: resolvedEntryHigh,
+    rawEntryLow,
+    rawEntryHigh,
+  };
 }
 
 function buildExecutionPlanSnapshot(decision, symbol, timeframe, selectedSize) {
@@ -2898,18 +2904,18 @@ export function simulateDecisionExecution({
   }
   const planSnapshot = buildExecutionPlanSnapshot(decision, symbol, timeframe, quantity);
   const selectedSize = Math.max(0, asSafeNumber(quantity, DEFAULT_POSITION_SIZE));
-  const normalizedExecutionPlanEntry = normalizeExecutionPlanEntry(executionPlan);
-  const hasPlanEntryZone = Number.isFinite(normalizedExecutionPlanEntry.entryLow) && Number.isFinite(normalizedExecutionPlanEntry.entryHigh);
-  const hasEntryLow = Number.isFinite(normalizedExecutionPlanEntry.entryLow);
-  const hasEntryHigh = Number.isFinite(normalizedExecutionPlanEntry.entryHigh);
+  const normalizedPlan = normalizeExecutionPlanEntry(executionPlan);
+  const hasPlanEntryZone = Number.isFinite(normalizedPlan.entryLow) && Number.isFinite(normalizedPlan.entryHigh);
+  const hasEntryLow = Number.isFinite(normalizedPlan.entryLow);
+  const hasEntryHigh = Number.isFinite(normalizedPlan.entryHigh);
   const hasEntryObject = executionPlan?.entry != null;
   const hasEntryRange = executionPlan?.entryRange != null;
   formatPlanFirstFlatLog("[PLAN_FIRST_INPUT_DEBUG]", {
     symbol,
     side: planSnapshot.side,
     executionPlan,
-    rawEntryLow: normalizedExecutionPlanEntry.rawEntryLow,
-    rawEntryHigh: normalizedExecutionPlanEntry.rawEntryHigh,
+    rawEntryLow: normalizedPlan.rawEntryLow,
+    rawEntryHigh: normalizedPlan.rawEntryHigh,
     entry: executionPlan?.entry,
     entryRange: executionPlan?.entryRange,
     selectedSize,
@@ -2983,8 +2989,8 @@ export function simulateDecisionExecution({
             : hasEntryRange
               ? "executionPlan.entryRange"
               : "executionPlan.entryLow/entryHigh",
-          entryLow: normalizedExecutionPlanEntry.entryLow,
-          entryHigh: normalizedExecutionPlanEntry.entryHigh,
+          entryLow: normalizedPlan.entryLow,
+          entryHigh: normalizedPlan.entryHigh,
           finalEntryUsed: planLockedPending.entryPrice,
         });
         return {
