@@ -233,7 +233,30 @@ export function DecisionCard({ analysis, formatNumber }) {
 }
 
 export function TradePlanCard({ analysis, digits, formatNumber }) {
-  const executionPlan = analysis?.aiDecisionOutput?.executionPlan || analysis?.executionPlan || {};
+  const executionPlan = analysis?.aiDecisionOutput?.executionPlan || analysis?.executionPlan || null;
+  const hasEntryRange = Boolean(
+    executionPlan
+    && executionPlan?.entryLow != null
+    && executionPlan?.entryHigh != null
+  );
+  const shouldRenderFullChecklist = Boolean(
+    hasEntryRange
+    && executionPlan?.stopLoss != null
+    && executionPlan?.takeProfit1 != null
+  );
+  if (!hasEntryRange) {
+    return (
+      <Card className="rounded-3xl shadow-sm">
+        <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle>執行計畫</CardTitle></CardHeader>
+        <CardContent className="space-y-2 px-5 pb-5 text-sm sm:px-6">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <span className="font-semibold">Summary：</span>
+            進場（Entry） {formatNumber(executionPlan?.entryLow, digits)} ~ {formatNumber(executionPlan?.entryHigh, digits)} / 止損（Stop） {formatNumber(executionPlan?.stopLoss, digits)} / 止盈（TP） {[executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3].filter((v) => v != null).map((v) => formatNumber(v, digits)).join(" / ") || "-"}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
   const executionMode = String(executionPlan?.executionMode || "").toUpperCase();
   const executionModeLabel = executionMode === "BREAKOUT" ? "Breakout" : executionMode === "PULLBACK" ? "Pullback" : "-";
   const modeReasons = Array.isArray(executionPlan?.modeSelectionReasons) ? executionPlan.modeSelectionReasons : [];
@@ -267,34 +290,38 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
             <span className="font-semibold">Summary：</span>
             {topChecklist[0].label} {topChecklist[0].value || "-"} / {topChecklist[1].label} {topChecklist[1].value || "-"} / {topChecklist[2].label} {topChecklist[2].value || "-"}
           </div>
-          <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">EXECUTION CHECKLIST</div>
-          <div className="mt-3 grid gap-2.5 sm:grid-cols-4">
-            {topChecklist.map((item) => (
-              <div key={item.label} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
-                <div className="text-xs font-semibold text-slate-500">{item.label}</div>
-                <div className="text-sm leading-snug text-slate-900">{item.value || "-"}</div>
+          {shouldRenderFullChecklist ? (
+            <>
+              <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">EXECUTION CHECKLIST</div>
+              <div className="mt-3 grid gap-2.5 sm:grid-cols-4">
+                {topChecklist.map((item) => (
+                  <div key={item.label} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
+                    <div className="text-xs font-semibold text-slate-500">{item.label}</div>
+                    <div className="text-sm leading-snug text-slate-900">{item.value || "-"}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
-            <summary className="cursor-pointer text-xs font-semibold tracking-[0.12em] text-slate-600">展開詳細條件</summary>
-            <div className="mt-3 grid gap-2.5">
-              {executionMode === "BREAKOUT" ? (
-                <>
-                  {listBlock("為何採用 Breakout", modeReasons)}
-                  {listBlock("突破條件（主要）", executionPlan?.breakoutConfirmationRules)}
-                </>
-              ) : (
-                <>
-                  {listBlock("回踩條件（主要）", executionPlan?.retestConfirmationRules)}
-                  {listBlock("動能恢復（主要）", executionPlan?.nextConfirmationRules)}
-                  {listBlock("趨勢確認（輔助）", executionPlan?.breakoutConfirmationRules)}
-                </>
-              )}
-              {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
-              {listBlock("失效條件", executionPlan?.invalidationRules)}
-            </div>
-          </details>
+              <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+                <summary className="cursor-pointer text-xs font-semibold tracking-[0.12em] text-slate-600">展開詳細條件</summary>
+                <div className="mt-3 grid gap-2.5">
+                  {executionMode === "BREAKOUT" ? (
+                    <>
+                      {listBlock("為何採用 Breakout", modeReasons)}
+                      {listBlock("突破條件（主要）", executionPlan?.breakoutConfirmationRules)}
+                    </>
+                  ) : (
+                    <>
+                      {listBlock("回踩條件（主要）", executionPlan?.retestConfirmationRules)}
+                      {listBlock("動能恢復（主要）", executionPlan?.nextConfirmationRules)}
+                      {listBlock("趨勢確認（輔助）", executionPlan?.breakoutConfirmationRules)}
+                    </>
+                  )}
+                  {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
+                  {listBlock("失效條件", executionPlan?.invalidationRules)}
+                </div>
+              </details>
+            </>
+          ) : null}
         </div>
         <div className="rounded-xl border border-slate-200 p-3">
           <div className="text-slate-500">倉位 / 槓桿</div>
