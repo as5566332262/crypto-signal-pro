@@ -808,6 +808,9 @@ function calculateSimulationStats(accountSnapshot, symbol) {
   const scopedPendingFillChecks = symbol
     ? (accountSnapshot.pendingFillChecks || []).filter((item) => item?.symbol === symbol)
     : (accountSnapshot.pendingFillChecks || []);
+  const scopedPendingFillExecutions = symbol
+    ? (accountSnapshot.pendingFillExecutions || []).filter((item) => item?.symbol === symbol)
+    : (accountSnapshot.pendingFillExecutions || []);
   const diagnosticsRecentEvents = (waitingDiagnostics.recentEvents || []);
   const scopedDiagnosticEvents = symbol
     ? diagnosticsRecentEvents.filter((item) => !item?.symbol || item.symbol === symbol)
@@ -1026,6 +1029,117 @@ function calculateSimulationStats(accountSnapshot, symbol) {
   const pendingToFillAvg = avgPlaceToFillBars;
   const fillToCloseAvg = avgFromMs(fillToCloseMinutes);
   const blockedSetupLifetimeAvg = avgFromMs(blockedSetupLifetimes);
+  const isPendingPriceReachedCheck = (item) => {
+    if (!item) return false;
+    if (item.shouldFill) return true;
+    return [
+      "BLOCKED_BY_FILL_CONFIRMATION",
+      "KLINE_CONFIRMATION_PENDING",
+      "RSI_CONFIRMATION_PENDING",
+    ].includes(String(item.fillReason || ""));
+  };
+  const pendingPriceReachedTotal = scopedPendingFillChecks.filter(isPendingPriceReachedCheck).length;
+  const fillConfirmedTotal = scopedPendingFillExecutions.length;
+  const distanceToEntryPctRows = scopedPendingFillChecks
+    .map((item) => {
+      const entry = Number(item?.entryPrice);
+      const tick = Number(item?.tickPrice);
+      if (!Number.isFinite(entry) || !Number.isFinite(tick) || entry === 0) return null;
+      return Math.abs((tick - entry) / entry) * 100;
+    })
+    .filter((value) => Number.isFinite(value));
+  const avgDistanceToEntryPct = avgFromMs(distanceToEntryPctRows);
+  const fillExecutionByOrderId = Object.fromEntries(
+    scopedPendingFillExecutions
+      .filter((row) => row?.orderId)
+      .map((row) => [row.orderId, row])
+  );
+  const fillEfficiencyRows = scopedOpenPositions
+    .concat(scopedClosedTrades)
+    .map((row) => {
+      const orderId = row?.orderId;
+      const execution = orderId ? fillExecutionByOrderId[orderId] : null;
+      const fillPrice = Number(execution?.fillPrice ?? row?.entryPrice);
+      const entryPrice = Number(row?.entryPrice);
+      if (!Number.isFinite(entryPrice) || !Number.isFinite(fillPrice) || entryPrice === 0) return null;
+      const slippagePct = Math.abs((fillPrice - entryPrice) / entryPrice) * 100;
+      return Math.max(0, 100 - slippagePct);
+    })
+    .filter((value) => Number.isFinite(value));
+  const avgFillEfficiencyPct = avgFromMs(fillEfficiencyRows);
+  const missedFillCount = Math.max(0, pendingPriceReachedTotal - fillConfirmedTotal);
+  const blockedReasonRanking = blockedReasonHierarchy
+    .map((row) => ({
+      ...row,
+      total_block_count: Number(row.setup_block_count || 0) + Number(row.pending_block_count || 0) + Number(row.fill_block_count || 0),
+    }))
+    .filter((row) => row.total_block_count > 0)
+    .sort((a, b) => b.total_block_count - a.total_block_count);
+  const totalBlockedSamples = blockedReasonRanking.reduce((sum, row) => sum + row.total_block_count, 0);
+  const blockedReasonTopK = blockedReasonRanking.map((row, index) => ({
+    ...row,
+    rank: index + 1,
+    ratio_pct: totalBlockedSamples ? (row.total_block_count / totalBlockedSamples) * 100 : 0,
+  }));
+  const countByOutcome = (rows) => ({
+    win: rows.filter((trade) => Number(trade?.realizedPnl) > 0).length,
+    loss: rows.filter((trade) => Number(trade?.realizedPnl) < 0).length,
+    breakeven: rows.filter((trade) => Number(trade?.realizedPnl) === 0).length,
+  });
+  const longTrades = scopedClosedTrades.filter((trade) => normalizeSide(trade?.side) === "LONG");
+  const shortTrades = scopedClosedTrades.filter((trade) => normalizeSide(trade?.side) === "SHORT");
+  const noTradeSample = setupBlockedTotal;
+  const buildDecisionOutcomeRow = (decision, sampleCount, outcomes) => ({
+    decision,
+    sampleCount,
+    outcomes,
+    outcomeRatios: Object.fromEntries(
+      Object.entries(outcomes).map(([key, count]) => [key, sampleCount ? (Number(count || 0) / sampleCount) * 100 : 0])
+    ),
+  });
+  const decisionOutcomeDistribution = [
+    buildDecisionOutcomeRow("LONG", longTrades.length, countByOutcome(longTrades)),
+    buildDecisionOutcomeRow("SHORT", shortTrades.length, countByOutcome(shortTrades)),
+    buildDecisionOutcomeRow("NO_TRADE", noTradeSample, { blocked: noTradeSample }),
+  ];
+  const setupTypePerformance = Object.values(scopedClosedTrades.reduce((acc, trade) => {
+    const snapshot = trade?.decisionSnapshot || {};
+    const setupType = normalizeSetupType(
+      snapshot?.setupType ??
+      snapshot?.executionPlan?.setupType ??
+      trade?.pendingType ??
+      trade?.decisionType
+    );
+    if (!acc[setupType]) {
+      acc[setupType] = {
+        setupType,
+        count: 0,
+        wins: 0,
+        pnlSum: 0,
+        rrSum: 0,
+        rrCount: 0,
+      };
+    }
+    const pnl = Number(trade?.realizedPnl || 0);
+    const rrValue = Number(snapshot?.executionPlan?.rr ?? snapshot?.rr);
+    acc[setupType].count += 1;
+    if (pnl > 0) acc[setupType].wins += 1;
+    acc[setupType].pnlSum += pnl;
+    if (Number.isFinite(rrValue)) {
+      acc[setupType].rrSum += rrValue;
+      acc[setupType].rrCount += 1;
+    }
+    return acc;
+  }, {}))
+    .map((row) => ({
+      setupType: row.setupType,
+      count: row.count,
+      winRate: row.count ? (row.wins / row.count) * 100 : 0,
+      avgRR: row.rrCount ? row.rrSum / row.rrCount : 0,
+      avgPnl: row.count ? row.pnlSum / row.count : 0,
+      sampleCount: row.count,
+    }))
+    .sort((a, b) => b.count - a.count);
 
   return {
     totalTrades,
@@ -1055,22 +1169,40 @@ function calculateSimulationStats(accountSnapshot, symbol) {
     reentryPerformanceComparison,
     funnel: {
       signals_total: signalsTotal,
+      setup_created_total: setupCandidateTotal,
       setup_candidate_total: setupCandidateTotal,
       entry_zone_hit_total: entryZoneHitTotal,
       pending_created_total: pendingCreatedTotal,
+      pending_price_reached_total: pendingPriceReachedTotal,
+      fill_confirmed_total: fillConfirmedTotal,
+      position_opened_total: filledTotal,
       pending_blocked_total: pendingBlockedTotal,
       filled_total: filledTotal,
       closed_total: closedTotal,
+      tp_sl_total: closedTotal,
     },
     funnelByDimension,
     blockedReasonHierarchy,
+    blockedReasonTopK,
     setupQualityRecords,
+    decisionOutcomeDistribution,
+    setupTypePerformance,
     timeEfficiency: {
       signal_to_zone_hit_avg: signalToZoneHitAvg,
       zone_hit_to_pending_avg: zoneHitToPendingAvg,
       pending_to_fill_avg: pendingToFillAvg,
       fill_to_close_avg: fillToCloseAvg,
       blocked_setup_lifetime_avg: blockedSetupLifetimeAvg,
+      signal_to_zone_sample_count: signalToPlaceBarsSeries.length,
+      pending_to_fill_sample_count: placeToFillBarsSeries.length,
+      fill_to_close_sample_count: fillToCloseMinutes.length,
+    },
+    orderQuality: {
+      avg_distance_to_entry_pct: avgDistanceToEntryPct,
+      avg_fill_efficiency_pct: avgFillEfficiencyPct,
+      missed_fill_count: missedFillCount,
+      sample_distance_count: distanceToEntryPctRows.length,
+      sample_fill_efficiency_count: fillEfficiencyRows.length,
     },
     cash: accountSummary.cash,
     equity: accountSummary.equity,
