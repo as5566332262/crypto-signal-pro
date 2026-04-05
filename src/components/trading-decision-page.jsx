@@ -237,6 +237,13 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
   const executionMode = String(executionPlan?.executionMode || "").toUpperCase();
   const executionModeLabel = executionMode === "BREAKOUT" ? "Breakout" : executionMode === "PULLBACK" ? "Pullback" : "-";
   const modeReasons = Array.isArray(executionPlan?.modeSelectionReasons) ? executionPlan.modeSelectionReasons : [];
+  const [isExecutionPlanExpanded, setIsExecutionPlanExpanded] = React.useState(false);
+  React.useEffect(() => {
+    if (isExecutionPlanExpanded) {
+      console.info("[EXECUTION_PLAN_DETAIL_RENDERED]");
+    }
+  }, [isExecutionPlanExpanded]);
+
   const entryValue = executionMode === "PULLBACK"
     ? [executionPlan?.entryLow, executionPlan?.entryHigh].every((value) => value != null)
       ? `${formatNumber(executionPlan?.entryLow, digits)} ~ ${formatNumber(executionPlan?.entryHigh, digits)}`
@@ -276,24 +283,44 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
               </div>
             ))}
           </div>
-          <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
-            <summary className="cursor-pointer text-xs font-semibold tracking-[0.12em] text-slate-600">展開詳細條件</summary>
-            <div className="mt-3 grid gap-2.5">
-              {executionMode === "BREAKOUT" ? (
-                <>
-                  {listBlock("為何採用 Breakout", modeReasons)}
-                  {listBlock("突破條件（主要）", executionPlan?.breakoutConfirmationRules)}
-                </>
-              ) : (
-                <>
-                  {listBlock("回踩條件（主要）", executionPlan?.retestConfirmationRules)}
-                  {listBlock("動能恢復（主要）", executionPlan?.nextConfirmationRules)}
-                  {listBlock("趨勢確認（輔助）", executionPlan?.breakoutConfirmationRules)}
-                </>
-              )}
-              {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
-              {listBlock("失效條件", executionPlan?.invalidationRules)}
-            </div>
+          <details
+            className="mt-3 rounded-xl border border-slate-200 bg-white p-3"
+            open={isExecutionPlanExpanded}
+            onToggle={(event) => {
+              setIsExecutionPlanExpanded(event.currentTarget.open);
+            }}
+          >
+            <summary
+              className="flex cursor-pointer list-none items-center justify-between text-xs font-semibold tracking-[0.12em] text-slate-600"
+              onClick={() => {
+                const nextExpanded = !isExecutionPlanExpanded;
+                console.info("[EXECUTION_PLAN_EXPAND_TOGGLED]");
+                console.info(`expanded=${nextExpanded}`);
+              }}
+              aria-expanded={isExecutionPlanExpanded}
+              data-state={isExecutionPlanExpanded ? "open" : "closed"}
+            >
+              <span>展開詳細條件</span>
+              <ChevronDown className={`h-4 w-4 transition ${isExecutionPlanExpanded ? "rotate-180" : "rotate-0"}`} />
+            </summary>
+            {isExecutionPlanExpanded ? (
+              <div className="mt-3 grid gap-2.5">
+                {executionMode === "BREAKOUT" ? (
+                  <>
+                    {listBlock("為何採用 Breakout", modeReasons)}
+                    {listBlock("突破條件（主要）", executionPlan?.breakoutConfirmationRules)}
+                  </>
+                ) : (
+                  <>
+                    {listBlock("回踩條件（主要）", executionPlan?.retestConfirmationRules)}
+                    {listBlock("動能恢復（主要）", executionPlan?.nextConfirmationRules)}
+                    {listBlock("趨勢確認（輔助）", executionPlan?.breakoutConfirmationRules)}
+                  </>
+                )}
+                {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
+                {listBlock("失效條件", executionPlan?.invalidationRules)}
+              </div>
+            ) : null}
           </details>
         </div>
         <div className="rounded-xl border border-slate-200 p-3">
