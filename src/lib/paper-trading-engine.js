@@ -2833,6 +2833,20 @@ export function simulateDecisionExecution({
   orderMode = "",
   triggeredBy = "DECISION_ENGINE",
 }) {
+  const formatPlanFirstFlatLog = (tag, payload = {}) => {
+    const serializedLines = Object.entries(payload).map(([key, value]) => {
+      if (value === null || value === undefined) return `${key}=`;
+      if (typeof value === "object") {
+        try {
+          return `${key}=${JSON.stringify(value)}`;
+        } catch (error) {
+          return `${key}=[unserializable_object]`;
+        }
+      }
+      return `${key}=${String(value)}`;
+    });
+    console.log([tag, ...serializedLines].join("\n"));
+  };
   const basePerformanceDebug = buildPerformanceDebugState();
   const executionPlan = decision?.executionPlan ?? {};
   const decisionBarTime = normalizeBarTime(signalContext?.candleTime);
@@ -2860,6 +2874,27 @@ export function simulateDecisionExecution({
   const planSnapshot = buildExecutionPlanSnapshot(decision, symbol, timeframe, quantity);
   const selectedSize = Math.max(0, asSafeNumber(quantity, DEFAULT_POSITION_SIZE));
   const hasPlanEntryZone = executionPlan?.entryZoneLow != null && executionPlan?.entryZoneHigh != null;
+  const hasEntryZoneLow = executionPlan?.entryZoneLow != null;
+  const hasEntryZoneHigh = executionPlan?.entryZoneHigh != null;
+  const hasEntryObject = executionPlan?.entry != null;
+  const hasEntryRange = executionPlan?.entryRange != null;
+  formatPlanFirstFlatLog("[PLAN_FIRST_INPUT_DEBUG]", {
+    symbol,
+    side: planSnapshot.side,
+    executionPlan,
+    entryZoneLow: executionPlan?.entryZoneLow,
+    entryZoneHigh: executionPlan?.entryZoneHigh,
+    entry: executionPlan?.entry,
+    entryRange: executionPlan?.entryRange,
+    selectedSize,
+  });
+  formatPlanFirstFlatLog("[PLAN_FIRST_CONDITION_DEBUG]", {
+    hasEntryZoneLow,
+    hasEntryZoneHigh,
+    hasEntryObject,
+    hasEntryRange,
+    willEnterForcePendingBranch: hasPlanEntryZone,
+  });
   const hasActivePending = (targetSymbol, targetSide, targetSetupId) => (
     (state?.pendingOrders || []).find((candidate) => (
       isFormalPendingOrder(candidate) &&
@@ -2912,12 +2947,18 @@ export function simulateDecisionExecution({
           eventType: "PLACE_ORDER",
           sourceFunction: "simulateDecisionExecution.createPendingOrderFromExecutionPlan",
         });
-        console.log("[FORCE_PENDING_FROM_PLAN]", {
+        formatPlanFirstFlatLog("[FORCE_PENDING_FROM_PLAN]", {
           symbol,
           side: planSnapshot.side,
-          entryZoneLow: executionPlan.entryZoneLow,
-          entryZoneHigh: executionPlan.entryZoneHigh,
-          decisionType: decision?.decisionType,
+          setupId: planSnapshot.setupId,
+          selectedSize,
+          entrySource: hasEntryObject
+            ? "executionPlan.entry"
+            : hasEntryRange
+              ? "executionPlan.entryRange"
+              : "executionPlan.entryZoneLow/entryZoneHigh",
+          entryZoneLow: executionPlan?.entryZoneLow,
+          entryZoneHigh: executionPlan?.entryZoneHigh,
         });
         return {
           state: nextState,
@@ -2935,6 +2976,12 @@ export function simulateDecisionExecution({
         };
       }
     }
+    formatPlanFirstFlatLog("[PLAN_FIRST_SKIPPED]", {
+      reason: existingPending
+        ? "duplicate_pending_detected"
+        : "createPendingOrderFromExecutionPlan_returned_null",
+      sourceFunction: "simulateDecisionExecution",
+    });
 
     return {
       state,
@@ -2945,6 +2992,10 @@ export function simulateDecisionExecution({
       ...basePerformanceDebug,
     };
   }
+  formatPlanFirstFlatLog("[PLAN_FIRST_SKIPPED]", {
+    reason: "missing_executionPlan_entryZoneLow_or_entryZoneHigh",
+    sourceFunction: "simulateDecisionExecution",
+  });
   const planLockedPending = createPendingOrderFromExecutionPlan(planSnapshot, quantity);
   const shouldForceCreatePendingFromPlan = Boolean(planSnapshot.complete && planLockedPending);
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
