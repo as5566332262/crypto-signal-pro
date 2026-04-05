@@ -982,6 +982,65 @@ function formatPlanFirstFlatLog(tag, payload = {}) {
   console.log([tag, ...serializedLines].join("\n"));
 }
 
+function evaluatePendingSizeGuard({ state, symbol, selectedSize, requestedOrderSize }) {
+  const normalizedSymbol = String(symbol || "").toUpperCase();
+  const normalizedSelectedSize = Math.max(0, asSafeNumber(selectedSize, DEFAULT_POSITION_SIZE));
+  const normalizedRequestedOrderSize = Math.max(
+    0,
+    asSafeNumber(requestedOrderSize, normalizedSelectedSize)
+  );
+  const activePendingOrders = (state?.pendingOrders || []).filter((order) => (
+    isFormalPendingOrder(order) &&
+    String(order?.symbol || "").toUpperCase() === normalizedSymbol
+  ));
+  const activePositions = (state?.openPositions || []).filter((position) => {
+    const positionStatus = String(position?.status || "").toUpperCase();
+    return (
+      String(position?.symbol || "").toUpperCase() === normalizedSymbol &&
+      ["OPEN", "ACTIVE"].includes(positionStatus)
+    );
+  });
+  const existingPendingCount = activePendingOrders.length;
+  const existingPendingSize = activePendingOrders.reduce(
+    (sum, order) => sum + Math.max(0, asSafeNumber(order?.quantity, 0)),
+    0
+  );
+  const existingPositionSize = activePositions.reduce(
+    (sum, position) => sum + Math.max(0, asSafeNumber(position?.quantity, 0)),
+    0
+  );
+  const totalReservedSize = existingPendingSize + existingPositionSize;
+
+  let blockedReason = null;
+  if (existingPendingCount > 0) {
+    blockedReason = "duplicate_active_pending";
+  } else if (activePositions.length > 0) {
+    blockedReason = "active_position_exists";
+  } else if (totalReservedSize >= normalizedSelectedSize && normalizedSelectedSize > 0) {
+    blockedReason = "total_size_limit_reached";
+  }
+  const allowed = blockedReason == null;
+  formatPlanFirstFlatLog("[PENDING_SIZE_GUARD_DEBUG]", {
+    symbol: normalizedSymbol || null,
+    selectedSize: normalizedSelectedSize,
+    existingPendingCount,
+    existingPendingSize,
+    existingPositionSize,
+    totalReservedSize,
+    requestedOrderSize: normalizedRequestedOrderSize,
+    allowed,
+    blockedReason: blockedReason || "",
+  });
+  return {
+    allowed,
+    blockedReason,
+    existingPendingCount,
+    existingPendingSize,
+    existingPositionSize,
+    totalReservedSize,
+  };
+}
+
 function createPendingOrderFromExecutionPlan(planSnapshot, selectedSize) {
   const normalizedTakeProfit1 = normalizeNumber(
     planSnapshot?.takeProfit1 ??
@@ -3102,6 +3161,34 @@ export function simulateDecisionExecution({
       side: planSnapshot.side,
       setupId: planSnapshot.setupId,
     });
+    const pendingSizeGuard = evaluatePendingSizeGuard({
+      state,
+      symbol,
+      selectedSize,
+      requestedOrderSize: selectedSize,
+    });
+    if (!pendingSizeGuard.allowed) {
+      formatPlanFirstFlatLog("[PLAN_FIRST_SKIPPED]", {
+        reason: pendingSizeGuard.blockedReason || "pending_size_guard_blocked",
+        sourceFunction: "simulateDecisionExecution",
+      });
+      console.log("[FORCE_PENDING_EARLY_RETURN]", {
+        reason: pendingSizeGuard.blockedReason || "pending_size_guard_blocked",
+        symbol,
+        side: planSnapshot.side,
+        entryLow: normalizedPlan.entryLow,
+        entryHigh: normalizedPlan.entryHigh,
+        sourceFunction: "simulateDecisionExecution.forcePending",
+      });
+      return {
+        state,
+        result: "WATCH_ONLY",
+        pendingOrder: null,
+        executionIntent: "PLACE_PENDING",
+        nextAction: "PENDING_BLOCKED_BY_SIZE_GUARD",
+        ...basePerformanceDebug,
+      };
+    }
     const existingPending = hasActivePending(symbol, planSnapshot.side, planSnapshot.setupId);
     formatPlanFirstFlatLog("[FORCE_PENDING_DUPLICATE_RESULT]", {
       hasExistingPending: Boolean(existingPending),
@@ -3237,7 +3324,15 @@ export function simulateDecisionExecution({
     reason: "missing_executionPlan_entryLow_or_entryHigh",
     sourceFunction: "simulateDecisionExecution",
   });
-  const planLockedPending = createPendingOrderFromExecutionPlan(planSnapshot, quantity);
+  const preCreateGuard = evaluatePendingSizeGuard({
+    state,
+    symbol,
+    selectedSize,
+    requestedOrderSize: selectedSize,
+  });
+  const planLockedPending = preCreateGuard.allowed
+    ? createPendingOrderFromExecutionPlan(planSnapshot, selectedSize)
+    : null;
   const shouldForceCreatePendingFromPlan = Boolean(planSnapshot.complete && planLockedPending);
   const confirmationResult = runConfirmationEngine(buildConfirmationPayload(decision, currentPrice, signalContext));
   let executionIntent = mapDecisionTypeToExecutionIntent(confirmationResult.decisionType, confirmationResult);
