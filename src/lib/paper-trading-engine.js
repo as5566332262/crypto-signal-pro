@@ -859,13 +859,36 @@ function resolvePlannedEntryPrice(decision, side) {
   return { entryPrice: normalizeNumber(executionEntry), mode, sourceFunction };
 }
 
+function normalizeExecutionPlanEntry(plan) {
+  const rawEntryLow = normalizeNumber(
+    plan?.entryLow ??
+    plan?.entryZoneLow ??
+    plan?.entry?.low ??
+    plan?.entryRange?.low
+  );
+  const rawEntryHigh = normalizeNumber(
+    plan?.entryHigh ??
+    plan?.entryZoneHigh ??
+    plan?.entry?.high ??
+    plan?.entryRange?.high
+  );
+  const entryLow = Number.isFinite(rawEntryLow) && Number.isFinite(rawEntryHigh)
+    ? Math.min(rawEntryLow, rawEntryHigh)
+    : rawEntryLow;
+  const entryHigh = Number.isFinite(rawEntryLow) && Number.isFinite(rawEntryHigh)
+    ? Math.max(rawEntryLow, rawEntryHigh)
+    : rawEntryHigh;
+  return { entryLow, entryHigh, rawEntryLow, rawEntryHigh };
+}
+
 function buildExecutionPlanSnapshot(decision, symbol, timeframe, selectedSize) {
   const executionPlan = decision?.executionPlan || {};
+  const normalizedEntry = normalizeExecutionPlanEntry(executionPlan);
   const side = resolveSideFromDecision(decision);
   const setupIdRaw = executionPlan?.setupId ?? decision?.setupId ?? decision?.signalId ?? decision?.id;
   const setupId = setupIdRaw != null ? String(setupIdRaw) : null;
-  const entryZoneLow = normalizeNumber(executionPlan?.entryLow ?? executionPlan?.entryZoneLow);
-  const entryZoneHigh = normalizeNumber(executionPlan?.entryHigh ?? executionPlan?.entryZoneHigh);
+  const entryZoneLow = normalizedEntry.entryLow;
+  const entryZoneHigh = normalizedEntry.entryHigh;
   const stopLoss = normalizeNumber(
     executionPlan?.stopLoss ??
     executionPlan?.stop ??
@@ -900,6 +923,8 @@ function buildExecutionPlanSnapshot(decision, symbol, timeframe, selectedSize) {
     timeframe,
     side,
     setupId,
+    entryLow: normalizedLow,
+    entryHigh: normalizedHigh,
     entryZoneLow: normalizedLow,
     entryZoneHigh: normalizedHigh,
     stopLoss,
@@ -913,8 +938,8 @@ function createPendingOrderFromExecutionPlan(planSnapshot, selectedSize) {
   if (!planSnapshot?.complete) return null;
   const side = planSnapshot.side;
   const finalEntry = side === "SHORT"
-    ? normalizeNumber(planSnapshot.entryZoneHigh)
-    : normalizeNumber(planSnapshot.entryZoneLow);
+    ? normalizeNumber(planSnapshot.entryHigh ?? planSnapshot.entryZoneHigh)
+    : normalizeNumber(planSnapshot.entryLow ?? planSnapshot.entryZoneLow);
   const size = Math.max(0, asSafeNumber(selectedSize, planSnapshot.selectedSize));
   if (!Number.isFinite(finalEntry) || size <= 0) return null;
   return {
@@ -2873,24 +2898,25 @@ export function simulateDecisionExecution({
   }
   const planSnapshot = buildExecutionPlanSnapshot(decision, symbol, timeframe, quantity);
   const selectedSize = Math.max(0, asSafeNumber(quantity, DEFAULT_POSITION_SIZE));
-  const hasPlanEntryZone = executionPlan?.entryZoneLow != null && executionPlan?.entryZoneHigh != null;
-  const hasEntryZoneLow = executionPlan?.entryZoneLow != null;
-  const hasEntryZoneHigh = executionPlan?.entryZoneHigh != null;
+  const normalizedExecutionPlanEntry = normalizeExecutionPlanEntry(executionPlan);
+  const hasPlanEntryZone = Number.isFinite(normalizedExecutionPlanEntry.entryLow) && Number.isFinite(normalizedExecutionPlanEntry.entryHigh);
+  const hasEntryLow = Number.isFinite(normalizedExecutionPlanEntry.entryLow);
+  const hasEntryHigh = Number.isFinite(normalizedExecutionPlanEntry.entryHigh);
   const hasEntryObject = executionPlan?.entry != null;
   const hasEntryRange = executionPlan?.entryRange != null;
   formatPlanFirstFlatLog("[PLAN_FIRST_INPUT_DEBUG]", {
     symbol,
     side: planSnapshot.side,
     executionPlan,
-    entryZoneLow: executionPlan?.entryZoneLow,
-    entryZoneHigh: executionPlan?.entryZoneHigh,
+    rawEntryLow: normalizedExecutionPlanEntry.rawEntryLow,
+    rawEntryHigh: normalizedExecutionPlanEntry.rawEntryHigh,
     entry: executionPlan?.entry,
     entryRange: executionPlan?.entryRange,
     selectedSize,
   });
   formatPlanFirstFlatLog("[PLAN_FIRST_CONDITION_DEBUG]", {
-    hasEntryZoneLow,
-    hasEntryZoneHigh,
+    hasEntryLow,
+    hasEntryHigh,
     hasEntryObject,
     hasEntryRange,
     willEnterForcePendingBranch: hasPlanEntryZone,
@@ -2956,9 +2982,10 @@ export function simulateDecisionExecution({
             ? "executionPlan.entry"
             : hasEntryRange
               ? "executionPlan.entryRange"
-              : "executionPlan.entryZoneLow/entryZoneHigh",
-          entryZoneLow: executionPlan?.entryZoneLow,
-          entryZoneHigh: executionPlan?.entryZoneHigh,
+              : "executionPlan.entryLow/entryHigh",
+          entryLow: normalizedExecutionPlanEntry.entryLow,
+          entryHigh: normalizedExecutionPlanEntry.entryHigh,
+          finalEntryUsed: planLockedPending.entryPrice,
         });
         return {
           state: nextState,
@@ -2993,7 +3020,7 @@ export function simulateDecisionExecution({
     };
   }
   formatPlanFirstFlatLog("[PLAN_FIRST_SKIPPED]", {
-    reason: "missing_executionPlan_entryZoneLow_or_entryZoneHigh",
+    reason: "missing_executionPlan_entryLow_or_entryHigh",
     sourceFunction: "simulateDecisionExecution",
   });
   const planLockedPending = createPendingOrderFromExecutionPlan(planSnapshot, quantity);
