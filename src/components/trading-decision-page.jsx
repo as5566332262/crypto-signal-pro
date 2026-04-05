@@ -234,66 +234,54 @@ export function DecisionCard({ analysis, formatNumber }) {
 
 export function TradePlanCard({ analysis, digits, formatNumber }) {
   const executionPlan = analysis?.aiDecisionOutput?.executionPlan || analysis?.executionPlan || {};
-  const executionMode = String(executionPlan?.executionMode || "").toUpperCase();
-  const executionModeLabel = executionMode === "BREAKOUT" ? "Breakout" : executionMode === "PULLBACK" ? "Pullback" : "-";
-  const modeReasons = Array.isArray(executionPlan?.modeSelectionReasons) ? executionPlan.modeSelectionReasons : [];
-  const entryValue = executionMode === "PULLBACK"
-    ? [executionPlan?.entryLow, executionPlan?.entryHigh].every((value) => value != null)
-      ? `${formatNumber(executionPlan?.entryLow, digits)} ~ ${formatNumber(executionPlan?.entryHigh, digits)}`
-      : (executionPlan?.entryMid != null ? formatNumber(executionPlan?.entryMid, digits) : "-")
-    : (executionPlan?.triggerPrice != null ? formatNumber(executionPlan?.triggerPrice, digits) : "-");
-  const isHold = executionPlan?.action === "HOLD" || analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
-  const topChecklist = [
-    { label: "模式（Mode）", shortLabel: "Mode", value: executionModeLabel },
-    { label: "進場（Entry）", shortLabel: "Entry", value: entryValue },
-    { label: "止損（Stop）", shortLabel: "Stop", value: formatNumber(executionPlan?.stopLoss, digits) },
-    { label: "止盈（TP）", shortLabel: "TP", value: [executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3].filter((v) => v != null).map((v) => formatNumber(v, digits)).join(" / ") || "-" },
-  ];
-  const listBlock = (title, rows) => (
-    <div className="rounded-xl border border-slate-200 bg-white p-3">
-      <div className="text-xs font-semibold tracking-[0.12em] text-slate-500">{title}</div>
-      <ul className="mt-2 list-disc space-y-1.5 pl-4 text-sm text-slate-700">
-        {(rows || []).filter(Boolean).map((item) => <li key={item}>{item}</li>)}
-      </ul>
-    </div>
+  const side = String(executionPlan?.side || "").toUpperCase();
+  const setupType = String(executionPlan?.setupType || "").toLowerCase();
+  const strategyLabel = (
+    setupType === "pullback" && side === "LONG" ? "回調做多"
+      : setupType === "pullback" && side === "SHORT" ? "回調做空"
+        : setupType === "breakout" && side === "LONG" ? "突破做多"
+          : setupType === "breakout" && side === "SHORT" ? "突破做空"
+            : "策略未定"
   );
+  const formatPlanValue = (value) => {
+    if (value == null) return "--";
+    const formatted = formatNumber(value, digits);
+    return formatted == null || formatted === "-" ? "--" : formatted;
+  };
+  const entryLowText = formatPlanValue(executionPlan?.entryLow);
+  const entryHighText = formatPlanValue(executionPlan?.entryHigh);
+  const stopLossText = formatPlanValue(executionPlan?.stopLoss);
+  const takeProfit1Text = formatPlanValue(executionPlan?.takeProfit1);
+  const takeProfit2Text = formatPlanValue(executionPlan?.takeProfit2);
+  const entryRangeText = `${entryLowText} ~ ${entryHighText}`;
+  const takeProfitText = `${takeProfit1Text} / ${takeProfit2Text}`;
+  const summaryText = `摘要：${strategyLabel} / 進場 ${entryRangeText} / 止損 ${stopLossText} / 止盈 ${takeProfitText}`;
+  const topChecklist = [
+    { label: "策略", value: strategyLabel },
+    { label: "進場", value: entryRangeText },
+    { label: "止損", value: stopLossText },
+    { label: "止盈", value: takeProfitText },
+  ];
 
   return (
     <Card className="rounded-3xl shadow-sm">
       <CardHeader className="px-5 pt-5 pb-3 sm:px-6"><CardTitle>執行計畫</CardTitle></CardHeader>
       <CardContent className="space-y-4 px-5 pb-5 text-sm sm:px-6">
-        <div className={`rounded-2xl border p-3.5 ${isHold ? "border-amber-200 bg-amber-50/80 text-amber-900" : "border-slate-200 bg-slate-50/70 text-slate-900"}`}>
-          <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
-            <span className="font-semibold">Summary：</span>
-            {topChecklist[0].label} {topChecklist[0].value || "-"} / {topChecklist[1].label} {topChecklist[1].value || "-"} / {topChecklist[2].label} {topChecklist[2].value || "-"}
+        <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3.5 text-slate-900">
+          <div className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-slate-700">
+            {summaryText}
           </div>
-          <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">EXECUTION CHECKLIST</div>
+          <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">執行計畫明細</div>
           <div className="mt-3 grid gap-2.5 sm:grid-cols-4">
             {topChecklist.map((item) => (
               <div key={item.label} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
                 <div className="text-xs font-semibold text-slate-500">{item.label}</div>
-                <div className="text-sm leading-snug text-slate-900">{item.value || "-"}</div>
+                <div className="text-sm leading-snug text-slate-900">{item.value || "--"}</div>
               </div>
             ))}
           </div>
-          <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+          <details className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
             <summary className="cursor-pointer text-xs font-semibold tracking-[0.12em] text-slate-600">展開詳細條件</summary>
-            <div className="mt-3 grid gap-2.5">
-              {executionMode === "BREAKOUT" ? (
-                <>
-                  {listBlock("為何採用 Breakout", modeReasons)}
-                  {listBlock("突破條件（主要）", executionPlan?.breakoutConfirmationRules)}
-                </>
-              ) : (
-                <>
-                  {listBlock("回踩條件（主要）", executionPlan?.retestConfirmationRules)}
-                  {listBlock("動能恢復（主要）", executionPlan?.nextConfirmationRules)}
-                  {listBlock("趨勢確認（輔助）", executionPlan?.breakoutConfirmationRules)}
-                </>
-              )}
-              {listBlock("多週期一致條件", executionPlan?.mtfAlignmentRules)}
-              {listBlock("失效條件", executionPlan?.invalidationRules)}
-            </div>
           </details>
         </div>
         <div className="rounded-xl border border-slate-200 p-3">
