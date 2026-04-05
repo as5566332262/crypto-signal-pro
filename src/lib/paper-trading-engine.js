@@ -2906,6 +2906,7 @@ export function simulateDecisionExecution({
   const selectedSize = Math.max(0, asSafeNumber(quantity, DEFAULT_POSITION_SIZE));
   const normalizedPlan = normalizeExecutionPlanEntry(executionPlan);
   const hasPlanEntryZone = Number.isFinite(normalizedPlan.entryLow) && Number.isFinite(normalizedPlan.entryHigh);
+  const willEnterForcePendingBranch = hasPlanEntryZone;
   const hasEntryLow = Number.isFinite(normalizedPlan.entryLow);
   const hasEntryHigh = Number.isFinite(normalizedPlan.entryHigh);
   const hasEntryObject = executionPlan?.entry != null;
@@ -2925,7 +2926,7 @@ export function simulateDecisionExecution({
     hasEntryHigh,
     hasEntryObject,
     hasEntryRange,
-    willEnterForcePendingBranch: hasPlanEntryZone,
+    willEnterForcePendingBranch,
   });
   const hasActivePending = (targetSymbol, targetSide, targetSetupId) => (
     (state?.pendingOrders || []).find((candidate) => (
@@ -2937,10 +2938,41 @@ export function simulateDecisionExecution({
   );
 
   // 🔴 強制優先：決策中心 plan → 直接掛單
-  if (hasPlanEntryZone) {
+  if (willEnterForcePendingBranch) {
+    formatPlanFirstFlatLog("[FORCE_PENDING_BRANCH_ENTERED]", {
+      symbol,
+      side: planSnapshot.side,
+      entryLow: normalizedPlan.entryLow,
+      entryHigh: normalizedPlan.entryHigh,
+    });
+    formatPlanFirstFlatLog("[FORCE_PENDING_PRE_DUPLICATE_CHECK]", {
+      symbol,
+      side: planSnapshot.side,
+      setupId: planSnapshot.setupId,
+    });
     const existingPending = hasActivePending(symbol, planSnapshot.side, planSnapshot.setupId);
+    formatPlanFirstFlatLog("[FORCE_PENDING_DUPLICATE_RESULT]", {
+      hasExistingPending: Boolean(existingPending),
+      existingPendingId: existingPending?.id || "",
+    });
     if (!existingPending) {
+      formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_CALL]", {
+        symbol,
+        side: planSnapshot.side,
+        entryLow: normalizedPlan.entryLow,
+        entryHigh: normalizedPlan.entryHigh,
+        selectedSize,
+      });
       const planLockedPending = createPendingOrderFromExecutionPlan(planSnapshot, selectedSize);
+      const createResultReason = planLockedPending
+        ? "created_pending_payload"
+        : "createPendingOrderFromExecutionPlan_returned_null";
+      formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_RESULT]", {
+        created: Boolean(planLockedPending),
+        pendingId: "",
+        returnedNull: !planLockedPending,
+        reason: createResultReason,
+      });
       if (planLockedPending) {
         const now = nowIso();
         const pendingOrder = {
@@ -2993,6 +3025,16 @@ export function simulateDecisionExecution({
           entryHigh: normalizedPlan.entryHigh,
           finalEntryUsed: planLockedPending.entryPrice,
         });
+        formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_RESULT]", {
+          created: true,
+          pendingId: pendingOrder.id,
+          returnedNull: false,
+          reason: "pending_order_persisted",
+        });
+        formatPlanFirstFlatLog("[FORCE_PENDING_EARLY_RETURN]", {
+          reason: "pending_created_from_plan",
+          sourceFunction: "simulateDecisionExecution",
+        });
         return {
           state: nextState,
           result: "PLACED_PENDING",
@@ -3010,6 +3052,12 @@ export function simulateDecisionExecution({
       }
     }
     formatPlanFirstFlatLog("[PLAN_FIRST_SKIPPED]", {
+      reason: existingPending
+        ? "duplicate_pending_detected"
+        : "createPendingOrderFromExecutionPlan_returned_null",
+      sourceFunction: "simulateDecisionExecution",
+    });
+    formatPlanFirstFlatLog("[FORCE_PENDING_EARLY_RETURN]", {
       reason: existingPending
         ? "duplicate_pending_detected"
         : "createPendingOrderFromExecutionPlan_returned_null",
