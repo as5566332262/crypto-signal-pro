@@ -689,6 +689,41 @@ export default function PaperTradingSidebar({
     ...DEFAULT_PERFORMANCE_DEBUG_STATE,
     ...(simulationExecutionStatus || {}),
   };
+  const simulationStats = accountSnapshot?.simulationStats || {};
+  const funnel = simulationStats?.funnel || {};
+  const setupQualityRecords = Array.isArray(simulationStats?.setupQualityRecords) ? simulationStats.setupQualityRecords : [];
+  const blockedReasonHierarchy = Array.isArray(simulationStats?.blockedReasonHierarchy) ? simulationStats.blockedReasonHierarchy : [];
+  const funnelByDimension = Array.isArray(simulationStats?.funnelByDimension) ? simulationStats.funnelByDimension : [];
+  const timeEfficiency = simulationStats?.timeEfficiency || {};
+  const distributionBy = (key) => {
+    const bucket = {};
+    setupQualityRecords.forEach((item) => {
+      const label = toPrimitiveText(item?.[key], { fallback: "UNKNOWN" });
+      bucket[label] = (bucket[label] || 0) + 1;
+    });
+    return Object.entries(bucket).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  };
+  const setupTypeDist = distributionBy("setupType");
+  const symbolDist = distributionBy("symbol");
+  const sideDist = distributionBy("side");
+  const regimeDist = distributionBy("marketRegime");
+  const filledRecords = setupQualityRecords.filter((item) => item.wasFilled);
+  const closedRecords = setupQualityRecords.filter((item) => item.tradeResult != null);
+  const closedWins = closedRecords.filter((item) => Number(item.tradeResult) > 0).length;
+  const closedWinRate = closedRecords.length ? (closedWins / closedRecords.length) * 100 : 0;
+  const avgClosedResult = closedRecords.length
+    ? closedRecords.reduce((sum, item) => sum + Number(item.tradeResult || 0), 0) / closedRecords.length
+    : 0;
+  const scoreScatterRows = closedRecords
+    .map((item, index) => ({
+      id: `${item?.symbol || "na"}-${index}`,
+      entryScoreAdjusted: Number(item?.entryScoreAdjusted),
+      tradeResult: Number(item?.tradeResult),
+      setupType: item?.setupType || "-",
+      symbol: item?.symbol || "-",
+    }))
+    .filter((item) => Number.isFinite(item.entryScoreAdjusted) && Number.isFinite(item.tradeResult))
+    .slice(0, 24);
 
   const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[360px]" : "w-full lg:w-[76px]";
 
@@ -818,116 +853,104 @@ export default function PaperTradingSidebar({
           {showAnalysisPanel ? (
             <>
               <Card className="rounded-2xl border-slate-200">
-                <CardHeader className="pb-2"><CardTitle className="text-sm">模擬績效統計</CardTitle></CardHeader>
+                <CardHeader className="pb-2"><CardTitle className="text-sm">1) 執行漏斗</CardTitle></CardHeader>
+                <CardContent className="space-y-3 text-xs">
+                  {[
+                    ["signal", funnel?.signals_total],
+                    ["setup", funnel?.setup_candidate_total],
+                    ["zone", funnel?.entry_zone_hit_total],
+                    ["pending", funnel?.pending_created_total],
+                    ["fill", funnel?.filled_total],
+                    ["close", funnel?.closed_total],
+                  ].map(([label, value], index, rows) => {
+                    const previous = index > 0 ? Number(rows[index - 1][1] || 0) : Number(value || 0);
+                    const ratio = previous > 0 ? (Number(value || 0) / previous) * 100 : 0;
+                    return (
+                      <div key={label} className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-semibold uppercase text-slate-700">{label}</span>
+                          <span className="text-slate-500">{Number(value || 0)}（{formatNumber(ratio, 1)}%）</span>
+                        </div>
+                        <div className="h-2 rounded bg-slate-100">
+                          <div className="h-2 rounded bg-slate-800" style={{ width: `${Math.max(2, Math.min(100, ratio))}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <div>setup 是否太少：{Number(funnel?.setup_candidate_total || 0) < Number(funnel?.signals_total || 0) * 0.3 ? "是（setup gate 偏嚴）" : "否"}</div>
+                    <div>zone hit 但不掛單：{Number(funnel?.pending_blocked_total || 0) > Number(funnel?.pending_created_total || 0) ? "是（pending gate 需檢查）" : "否"}</div>
+                    <div>掛單不成交：{Number(funnel?.filled_total || 0) < Number(funnel?.pending_created_total || 0) * 0.4 ? "是（fill 條件過嚴）" : "否"}</div>
+                    <div>成交後績效差：{closedRecords.length >= 3 && avgClosedResult < 0 ? "是（出場或風控需優化）" : "否"}</div>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border-slate-200">
+                <CardHeader className="pb-2"><CardTitle className="text-sm">2) 阻擋原因（setup / pending / fill）</CardTitle></CardHeader>
+                <CardContent className="space-y-2 text-xs">
+                  {(blockedReasonHierarchy || []).slice(0, 10).map((row) => (
+                    <div key={row.reason} className="rounded-lg border border-slate-200 p-2">
+                      <div className="font-semibold text-slate-700">{row.reason}</div>
+                      <div className="mt-1 grid grid-cols-3 gap-2 text-[11px] text-slate-600">
+                        <div>setup: {row.setup_block_count}</div>
+                        <div>pending: {row.pending_block_count}</div>
+                        <div>fill: {row.fill_block_count}</div>
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border-slate-200">
+                <CardHeader className="pb-2"><CardTitle className="text-sm">3) setup 分布（type / symbol / side / regime）</CardTitle></CardHeader>
                 <CardContent className="space-y-3 text-xs">
                   <div className="grid grid-cols-2 gap-2">
-                    <InfoItem label="總交易數" value={accountSnapshot.simulationStats?.totalTrades} />
-                    <InfoItem label="勝率" value={`${formatNumber(accountSnapshot.simulationStats?.winRate, 1)}%`} />
-                    <InfoItem label="總損益" value={formatNumber(accountSnapshot.simulationStats?.totalPnl, 2)} />
-                    <InfoItem label="已實現損益" value={formatNumber(accountSnapshot.simulationStats?.realizedPnl, 2)} />
-                    <InfoItem label="未實現損益" value={formatNumber(accountSnapshot.simulationStats?.unrealizedPnl, 2)} />
-                    <InfoItem label="平均盈虧比" value={formatNumber(accountSnapshot.simulationStats?.avgRR, 2)} />
-                    <InfoItem label="最大連勝" value={accountSnapshot.simulationStats?.maxWinStreak} />
-                    <InfoItem label="最大連敗" value={accountSnapshot.simulationStats?.maxLossStreak} />
-                    <InfoItem label="最大回撤" value={formatNumber(accountSnapshot.simulationStats?.maxDrawdown, 2)} />
-                    <InfoItem label="多單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.longWinRate, 1)}%`} />
-                    <InfoItem label="空單勝率" value={`${formatNumber(accountSnapshot.simulationStats?.shortWinRate, 1)}%`} />
+                    <InfoItem label="setupType" value={setupTypeDist.map(([k, v]) => `${k}:${v}`).join(" / ")} />
+                    <InfoItem label="symbol" value={symbolDist.map(([k, v]) => `${k}:${v}`).join(" / ")} />
+                    <InfoItem label="side" value={sideDist.map(([k, v]) => `${k}:${v}`).join(" / ")} />
+                    <InfoItem label="regime" value={regimeDist.map(([k, v]) => `${k}:${v}`).join(" / ")} />
                   </div>
                   <div>
-                    <div className="mb-1 text-slate-500">等待效率</div>
-                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                      <li>first valid signal → place order：{formatNumber(accountSnapshot.simulationStats?.avgSignalToPlaceBars, 2)} K</li>
-                      <li>place order → fill：{formatNumber(accountSnapshot.simulationStats?.avgPlaceToFillBars, 2)} K</li>
-                    </ul>
-                  </div>
-                  <div>
-                    <div className="mb-1 text-slate-500">阻擋原因排行</div>
-                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                      {(accountSnapshot.simulationStats?.waitingReasonRanking || []).slice(0, 8).map((item) => (
-                        <li key={item.reason}>{item.reason}: {item.count}</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <div className="mb-1 text-slate-500">各 Symbol 平均等待</div>
-                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                      {Object.entries(accountSnapshot.simulationStats?.averageWaitBySymbol || {}).map(([key, value]) => (
-                        <li key={key}>{key}: {formatNumber(value, 2)} K</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <div className="mb-1 text-slate-500">各 decisionType 勝率</div>
-                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                      {Object.entries(accountSnapshot.simulationStats?.decisionTypeWinRate || {}).map(([key, value]) => (
-                        <li key={key}>{key}: {formatNumber(value, 1)}%</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <div className="mb-1 text-slate-500">各 pendingType 勝率</div>
-                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                      {Object.entries(accountSnapshot.simulationStats?.pendingTypeWinRate || {}).map(([key, value]) => (
-                        <li key={key}>{key}: {formatNumber(value, 1)}%</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <div className="mb-1 text-slate-500">Re-entry 統計</div>
-                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-words">
-                      <li>re-entry 勝率：{formatNumber(accountSnapshot.simulationStats?.reentrySuccessRate, 1)}%</li>
-                      <li>re-entry 平均PnL：{formatNumber(accountSnapshot.simulationStats?.reentryPerformanceComparison?.reentryAvgPnl, 2)}</li>
-                      <li>初始 entry 平均PnL：{formatNumber(accountSnapshot.simulationStats?.reentryPerformanceComparison?.initialAvgPnl, 2)}</li>
-                      <li>re-entry vs 初始樣本：{accountSnapshot.simulationStats?.reentryPerformanceComparison?.reentryCount || 0} / {accountSnapshot.simulationStats?.reentryPerformanceComparison?.initialCount || 0}</li>
-                    </ul>
-                  </div>
-                  <div>
-                    <div className="mb-1 text-slate-500">Full Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
-                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
-                      {(accountSnapshot.simulationStats?.performanceRows || []).slice(0, 8).map((row, index) => (
-                        <li key={row?.setupKey || `full-${index}`}>
-                          {row?.setupKey || "-"}: {row?.totalTrades ?? 0} 筆 / {formatNumber(row?.winRate, 1)}% / {formatNumber(row?.avgPnl, 2)}
+                    <div className="mb-1 text-slate-500">symbol / timeframe 熱度（前 8）</div>
+                    <ul className="list-disc pl-4">
+                      {funnelByDimension.slice(0, 8).map((row, index) => (
+                        <li key={`${row.symbol}-${row.timeframe}-${index}`}>
+                          {row.symbol} {row.timeframe}: signal {row.signals_total} / fill {row.filled_total} / close {row.closed_total}
                         </li>
                       ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <div className="mb-1 text-slate-500">Coarse Setup（All-time）表現（次數 / 勝率 / 平均PnL）</div>
-                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
-                      {(accountSnapshot.simulationStats?.coarsePerformanceRows || []).slice(0, 8).map((row) => (
-                        <li key={`coarse-${row?.setupKey || "unknown"}`}>
-                          {row?.setupKey || "-"}: {row?.totalTrades ?? 0} 筆 / {formatNumber(row?.winRate, 1)}% / {formatNumber(row?.avgPnl, 2)}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <div className="mb-1 text-slate-500">Recent vs All-time（Full Setup）</div>
-                    <ul className="list-disc pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
-                      {Object.entries(accountSnapshot.simulationStats?.performanceRecentMap || {}).slice(0, 8).map(([setupKey, row]) => {
-                        const allTime = accountSnapshot.simulationStats?.performanceMap?.[setupKey];
-                        return (
-                          <li key={`recent-${setupKey}`}>
-                            {setupKey}: recent {row?.totalTrades ?? 0}/{formatNumber(row?.winRate, 1)}%/{formatNumber(row?.avgPnl, 2)}
-                            {" "}vs all {allTime?.totalTrades || 0}/{formatNumber(allTime?.winRate, 1)}%/{formatNumber(allTime?.avgPnl, 2)}
-                          </li>
-                        );
-                      })}
                     </ul>
                   </div>
                 </CardContent>
               </Card>
               <Card className="rounded-2xl border-slate-200">
-                <CardHeader className="pb-2"><CardTitle className="text-sm">Review / Diagnostics</CardTitle></CardHeader>
+                <CardHeader className="pb-2"><CardTitle className="text-sm">4) 成交品質</CardTitle></CardHeader>
                 <CardContent className="space-y-2 text-xs">
-                  <div className="text-slate-500">低勝率 setup</div>
-                  <ul className="list-disc space-y-1 pl-4 [overflow-wrap:anywhere] break-all text-[11px]">
-                    {(accountSnapshot.diagnostics?.reviewLines || []).map((line) => <li key={line}>{line}</li>)}
-                  </ul>
-                  <div className="text-slate-500">Suggested Adjustments</div>
-                  <ul className="list-disc space-y-1 pl-4 [overflow-wrap:anywhere] break-words">
-                    {(accountSnapshot.diagnostics?.suggestions || []).map((line) => <li key={line}>{line}</li>)}
-                  </ul>
+                  <div className="grid grid-cols-2 gap-2">
+                    <InfoItem label="filled setups" value={filledRecords.length} />
+                    <InfoItem label="closed setups" value={closedRecords.length} />
+                    <InfoItem label="closed winRate" value={`${formatNumber(closedWinRate, 1)}%`} />
+                    <InfoItem label="avg tradeResult" value={formatNumber(avgClosedResult, 2)} />
+                    <InfoItem label="signal→zone avg" value={formatNumber(timeEfficiency?.signal_to_zone_hit_avg, 2)} />
+                    <InfoItem label="pending→fill avg" value={formatNumber(timeEfficiency?.pending_to_fill_avg, 2)} />
+                    <InfoItem label="fill→close avg(min)" value={formatNumber(timeEfficiency?.fill_to_close_avg, 2)} />
+                    <InfoItem label="blocked setup lifetime(min)" value={formatNumber(timeEfficiency?.blocked_setup_lifetime_avg, 2)} />
+                  </div>
+                  <div>
+                    <div className="mb-1 text-slate-500">score vs result（scatter sample）</div>
+                    <ul className="max-h-36 list-disc overflow-auto pl-4 text-[11px]">
+                      {scoreScatterRows.length ? scoreScatterRows.map((row) => (
+                        <li key={row.id}>{row.symbol} {row.setupType}: score {formatNumber(row.entryScoreAdjusted, 2)} → result {formatNumber(row.tradeResult, 2)}</li>
+                      )) : <li>樣本不足</li>}
+                    </ul>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border-slate-200">
+                <CardHeader className="pb-2"><CardTitle className="text-sm">5) 實驗觀察摘要</CardTitle></CardHeader>
+                <CardContent className="space-y-1 text-xs text-slate-700">
+                  <div>・signals: {funnel?.signals_total || 0}，setup: {funnel?.setup_candidate_total || 0}，fill: {funnel?.filled_total || 0}，close: {funnel?.closed_total || 0}</div>
+                  <div>・最常 setup block：{blockedReasonHierarchy?.[0]?.reason || "-"}</div>
+                  <div>・最常 pending/fill block：{(blockedReasonHierarchy || []).find((item) => item.pending_block_count > 0 || item.fill_block_count > 0)?.reason || "-"}</div>
+                  <div>・最值得優化 setup 維度：{funnelByDimension?.[0] ? `${funnelByDimension[0].symbol}/${funnelByDimension[0].timeframe}/${funnelByDimension[0].setupType}` : "-"}</div>
                 </CardContent>
               </Card>
             </>

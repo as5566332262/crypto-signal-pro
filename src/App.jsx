@@ -799,6 +799,233 @@ function calculateSimulationStats(accountSnapshot, symbol) {
     initialAvgPnl: initialTrades.length ? sumPnl(initialTrades) / initialTrades.length : 0,
   };
   const accountSummary = calculateAccountSummary(accountSnapshot);
+  const scopedPendingOrders = symbol
+    ? (accountSnapshot.pendingOrders || []).filter((order) => order.symbol === symbol)
+    : (accountSnapshot.pendingOrders || []);
+  const scopedCancelledOrders = symbol
+    ? (accountSnapshot.cancelledOrders || []).filter((order) => order.symbol === symbol)
+    : (accountSnapshot.cancelledOrders || []);
+  const scopedPendingFillChecks = symbol
+    ? (accountSnapshot.pendingFillChecks || []).filter((item) => item?.symbol === symbol)
+    : (accountSnapshot.pendingFillChecks || []);
+  const diagnosticsRecentEvents = (waitingDiagnostics.recentEvents || []);
+  const scopedDiagnosticEvents = symbol
+    ? diagnosticsRecentEvents.filter((item) => !item?.symbol || item.symbol === symbol)
+    : diagnosticsRecentEvents;
+  const normalizeSetupType = (value) => {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) return "unknown";
+    if (text.includes("pullback")) return "pullback";
+    if (text.includes("breakout")) return "breakout";
+    if (text.includes("range")) return "range";
+    if (text.includes("reversal")) return "reversal";
+    return text;
+  };
+  const normalizeRegime = (value) => {
+    const text = String(value || "").trim();
+    return text || "unknown";
+  };
+  const normalizeSide = (value) => {
+    const text = String(value || "").toUpperCase();
+    if (text === "LONG" || text === "BUY") return "LONG";
+    if (text === "SHORT" || text === "SELL") return "SHORT";
+    return "UNKNOWN";
+  };
+  const toFiniteNumber = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const buildSetupQualityRecord = (base = {}) => ({
+    symbol: base.symbol || "UNKNOWN",
+    timeframe: base.timeframe || "UNKNOWN",
+    side: normalizeSide(base.side),
+    setupType: normalizeSetupType(base.setupType),
+    marketRegime: normalizeRegime(base.marketRegime),
+    entryScoreAdjusted: toFiniteNumber(base.entryScoreAdjusted),
+    trendScore: toFiniteNumber(base.trendScore),
+    momentumScore: toFiniteNumber(base.momentumScore),
+    mtfScore: toFiniteNumber(base.mtfScore),
+    rrScore: toFiniteNumber(base.rrScore),
+    blockedReason: base.blockedReason || null,
+    wasPendingCreated: Boolean(base.wasPendingCreated),
+    wasFilled: Boolean(base.wasFilled),
+    tradeResult: toFiniteNumber(base.tradeResult),
+  });
+
+  const setupQualityRecords = [
+    ...scopedPendingOrders.map((order) => {
+      const snapshot = order?.decisionSnapshot || {};
+      return buildSetupQualityRecord({
+        symbol: order?.symbol,
+        timeframe: order?.timeframe,
+        side: order?.side,
+        setupType: snapshot?.setupType ?? snapshot?.executionPlan?.setupType ?? order?.entryMode,
+        marketRegime: snapshot?.marketRegimeLabel ?? snapshot?.regime ?? snapshot?.marketRegime,
+        entryScoreAdjusted: snapshot?.entryScore,
+        trendScore: snapshot?.trendScore ?? snapshot?.multiTimeframe?.score,
+        momentumScore: snapshot?.momentumScore,
+        mtfScore: snapshot?.mtfAlignedRatio,
+        rrScore: snapshot?.executionPlan?.rr,
+        blockedReason: null,
+        wasPendingCreated: true,
+        wasFilled: false,
+      });
+    }),
+    ...scopedOpenPositions.map((position) => {
+      const snapshot = position?.decisionSnapshot || {};
+      return buildSetupQualityRecord({
+        symbol: position?.symbol,
+        timeframe: position?.timeframe,
+        side: position?.side,
+        setupType: snapshot?.setupType ?? snapshot?.executionPlan?.setupType ?? position?.entryMode ?? position?.pendingType,
+        marketRegime: snapshot?.marketRegimeLabel ?? snapshot?.regime ?? position?.regime,
+        entryScoreAdjusted: snapshot?.entryScore,
+        trendScore: snapshot?.trendScore ?? snapshot?.multiTimeframe?.score,
+        momentumScore: snapshot?.momentumScore,
+        mtfScore: snapshot?.mtfAlignedRatio,
+        rrScore: snapshot?.executionPlan?.rr,
+        blockedReason: null,
+        wasPendingCreated: true,
+        wasFilled: true,
+      });
+    }),
+    ...scopedClosedTrades.map((trade) => {
+      const snapshot = trade?.decisionSnapshot || {};
+      return buildSetupQualityRecord({
+        symbol: trade?.symbol,
+        timeframe: trade?.timeframe,
+        side: trade?.side,
+        setupType: snapshot?.setupType ?? snapshot?.executionPlan?.setupType ?? trade?.pendingType,
+        marketRegime: snapshot?.marketRegimeLabel ?? snapshot?.regime ?? trade?.regime,
+        entryScoreAdjusted: snapshot?.entryScore,
+        trendScore: snapshot?.trendScore ?? snapshot?.multiTimeframe?.score,
+        momentumScore: snapshot?.momentumScore,
+        mtfScore: snapshot?.mtfAlignedRatio,
+        rrScore: snapshot?.executionPlan?.rr,
+        blockedReason: null,
+        wasPendingCreated: true,
+        wasFilled: true,
+        tradeResult: trade?.realizedPnl,
+      });
+    }),
+    ...scopedDiagnosticEvents
+      .filter((event) => event?.type === "reason")
+      .map((event) => buildSetupQualityRecord({
+        symbol: event?.symbol,
+        timeframe: event?.timeframe,
+        side: event?.side,
+        setupType: "unknown",
+        marketRegime: "unknown",
+        blockedReason: event?.reasonKey,
+      })),
+  ];
+
+  const blockedReasonHierarchyMap = {};
+  const incrementBlockedReason = (reason, layer) => {
+    if (!reason) return;
+    if (!blockedReasonHierarchyMap[reason]) {
+      blockedReasonHierarchyMap[reason] = {
+        reason,
+        setup_block_count: 0,
+        pending_block_count: 0,
+        fill_block_count: 0,
+      };
+    }
+    blockedReasonHierarchyMap[reason][layer] += 1;
+  };
+  Object.entries(waitingDiagnostics.reasonCounts || {}).forEach(([reason, count]) => {
+    for (let i = 0; i < Number(count || 0); i += 1) incrementBlockedReason(reason, "setup_block_count");
+  });
+  scopedCancelledOrders.forEach((order) => incrementBlockedReason(order?.cancelReason || "PENDING_CANCELLED", "pending_block_count"));
+  scopedPendingFillChecks
+    .filter((item) => !item?.shouldFill && item?.fillReason && item.fillReason !== "TRIGGER_NOT_REACHED")
+    .forEach((item) => incrementBlockedReason(item.fillReason, "fill_block_count"));
+  const blockedReasonHierarchy = Object.values(blockedReasonHierarchyMap)
+    .sort((a, b) => (b.setup_block_count + b.pending_block_count + b.fill_block_count) - (a.setup_block_count + a.pending_block_count + a.fill_block_count));
+
+  const setupBlockedTotal = Object.values(waitingDiagnostics.reasonCounts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+  const pendingCreatedTotal = scopedPendingOrders.length + scopedOpenPositions.length + scopedClosedTrades.length;
+  const pendingBlockedTotal = scopedCancelledOrders.length;
+  const filledTotal = scopedOpenPositions.length + scopedClosedTrades.length;
+  const closedTotal = scopedClosedTrades.length;
+  const entryZoneHitTotal = pendingCreatedTotal + pendingBlockedTotal;
+  const setupCandidateTotal = entryZoneHitTotal + setupBlockedTotal;
+  const signalsTotal = setupCandidateTotal;
+
+  const funnelByDimensionMap = {};
+  const dimensionKey = (item) => [item.symbol, item.timeframe, item.side, item.setupType, item.marketRegime].join("|");
+  const ensureDimensionRow = (item) => {
+    const key = dimensionKey(item);
+    if (!funnelByDimensionMap[key]) {
+      funnelByDimensionMap[key] = {
+        symbol: item.symbol,
+        timeframe: item.timeframe,
+        side: item.side,
+        setupType: item.setupType,
+        marketRegime: item.marketRegime,
+        signals_total: 0,
+        setup_candidate_total: 0,
+        entry_zone_hit_total: 0,
+        pending_created_total: 0,
+        pending_blocked_total: 0,
+        filled_total: 0,
+        closed_total: 0,
+      };
+    }
+    return funnelByDimensionMap[key];
+  };
+  setupQualityRecords.forEach((item) => {
+    const row = ensureDimensionRow(item);
+    row.signals_total += 1;
+    row.setup_candidate_total += 1;
+    if (item.blockedReason) return;
+    row.entry_zone_hit_total += 1;
+    if (item.wasPendingCreated) row.pending_created_total += 1;
+    if (item.wasFilled) row.filled_total += 1;
+    if (item.tradeResult != null) row.closed_total += 1;
+  });
+  scopedCancelledOrders.forEach((order) => {
+    const row = ensureDimensionRow(buildSetupQualityRecord({
+      symbol: order?.symbol,
+      timeframe: order?.timeframe,
+      side: order?.side,
+      setupType: order?.decisionSnapshot?.setupType ?? order?.decisionSnapshot?.executionPlan?.setupType ?? order?.entryMode,
+      marketRegime: order?.decisionSnapshot?.marketRegimeLabel ?? order?.decisionSnapshot?.regime,
+    }));
+    row.signals_total += 1;
+    row.setup_candidate_total += 1;
+    row.entry_zone_hit_total += 1;
+    row.pending_blocked_total += 1;
+  });
+  const funnelByDimension = Object.values(funnelByDimensionMap)
+    .sort((a, b) => b.signals_total - a.signals_total);
+
+  const avgFromMs = (values = []) => {
+    const rows = values.filter((value) => Number.isFinite(Number(value))).map(Number);
+    if (!rows.length) return 0;
+    return rows.reduce((sum, value) => sum + value, 0) / rows.length;
+  };
+  const fillToCloseMinutes = scopedClosedTrades
+    .map((trade) => {
+      const openTs = new Date(trade?.openedAt || trade?.enteredAt || trade?.createdAt).getTime();
+      const closeTs = new Date(trade?.closedAt).getTime();
+      if (!Number.isFinite(openTs) || !Number.isFinite(closeTs) || closeTs < openTs) return null;
+      return (closeTs - openTs) / 60000;
+    })
+    .filter((value) => Number.isFinite(value));
+  const blockedSetupLifetimes = scopedCancelledOrders
+    .map((order) => {
+      const createdTs = new Date(order?.createdAt).getTime();
+      const cancelledTs = new Date(order?.cancelledAt).getTime();
+      if (!Number.isFinite(createdTs) || !Number.isFinite(cancelledTs) || cancelledTs < createdTs) return null;
+      return (cancelledTs - createdTs) / 60000;
+    })
+    .filter((value) => Number.isFinite(value));
+  const signalToZoneHitAvg = avgSignalToPlaceBars;
+  const zoneHitToPendingAvg = 0;
+  const pendingToFillAvg = avgPlaceToFillBars;
+  const fillToCloseAvg = avgFromMs(fillToCloseMinutes);
+  const blockedSetupLifetimeAvg = avgFromMs(blockedSetupLifetimes);
 
   return {
     totalTrades,
@@ -826,6 +1053,25 @@ function calculateSimulationStats(accountSnapshot, symbol) {
     averageWaitBySymbol,
     reentrySuccessRate: reentryPerformanceComparison.reentryWinRate,
     reentryPerformanceComparison,
+    funnel: {
+      signals_total: signalsTotal,
+      setup_candidate_total: setupCandidateTotal,
+      entry_zone_hit_total: entryZoneHitTotal,
+      pending_created_total: pendingCreatedTotal,
+      pending_blocked_total: pendingBlockedTotal,
+      filled_total: filledTotal,
+      closed_total: closedTotal,
+    },
+    funnelByDimension,
+    blockedReasonHierarchy,
+    setupQualityRecords,
+    timeEfficiency: {
+      signal_to_zone_hit_avg: signalToZoneHitAvg,
+      zone_hit_to_pending_avg: zoneHitToPendingAvg,
+      pending_to_fill_avg: pendingToFillAvg,
+      fill_to_close_avg: fillToCloseAvg,
+      blocked_setup_lifetime_avg: blockedSetupLifetimeAvg,
+    },
     cash: accountSummary.cash,
     equity: accountSummary.equity,
     marginUsed: accountSummary.marginUsed,
