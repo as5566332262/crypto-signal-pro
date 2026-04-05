@@ -941,13 +941,55 @@ function buildExecutionPlanSnapshot(decision, symbol, timeframe, selectedSize) {
 }
 
 function createPendingOrderFromExecutionPlan(planSnapshot, selectedSize) {
-  if (!planSnapshot?.complete) return null;
+  if (!planSnapshot?.complete) {
+    formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_GUARD_BLOCKED]", {
+      reason: "invalid_plan_snapshot",
+      symbol: planSnapshot?.symbol || null,
+      side: planSnapshot?.side || null,
+      entryLow: planSnapshot?.entryLow ?? null,
+      entryHigh: planSnapshot?.entryHigh ?? null,
+      sourceFunction: "simulateDecisionExecution.forcePending.createPendingOrderFromExecutionPlan",
+    });
+    return null;
+  }
   const side = planSnapshot.side;
+  if (side !== "LONG" && side !== "SHORT") {
+    formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_GUARD_BLOCKED]", {
+      reason: "side_mismatch",
+      symbol: planSnapshot?.symbol || null,
+      side,
+      entryLow: planSnapshot?.entryLow ?? null,
+      entryHigh: planSnapshot?.entryHigh ?? null,
+      sourceFunction: "simulateDecisionExecution.forcePending.createPendingOrderFromExecutionPlan",
+    });
+    return null;
+  }
   const finalEntry = side === "SHORT"
     ? normalizeNumber(planSnapshot.entryHigh ?? planSnapshot.entryZoneHigh)
     : normalizeNumber(planSnapshot.entryLow ?? planSnapshot.entryZoneLow);
   const size = Math.max(0, asSafeNumber(selectedSize, planSnapshot.selectedSize));
-  if (!Number.isFinite(finalEntry) || size <= 0) return null;
+  if (!Number.isFinite(finalEntry)) {
+    formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_GUARD_BLOCKED]", {
+      reason: "entry_distance_constraint",
+      symbol: planSnapshot?.symbol || null,
+      side,
+      entryLow: planSnapshot?.entryLow ?? null,
+      entryHigh: planSnapshot?.entryHigh ?? null,
+      sourceFunction: "simulateDecisionExecution.forcePending.createPendingOrderFromExecutionPlan",
+    });
+    return null;
+  }
+  if (size <= 0) {
+    formatPlanFirstFlatLog("[FORCE_PENDING_CREATE_GUARD_BLOCKED]", {
+      reason: "size_validation_failed",
+      symbol: planSnapshot?.symbol || null,
+      side,
+      entryLow: planSnapshot?.entryLow ?? null,
+      entryHigh: planSnapshot?.entryHigh ?? null,
+      sourceFunction: "simulateDecisionExecution.forcePending.createPendingOrderFromExecutionPlan",
+    });
+    return null;
+  }
   return {
     entryPrice: finalEntry,
     stopLoss: normalizeNumber(planSnapshot.stopLoss),
@@ -2945,6 +2987,17 @@ export function simulateDecisionExecution({
       entryLow: normalizedPlan.entryLow,
       entryHigh: normalizedPlan.entryHigh,
     });
+    formatPlanFirstFlatLog("[FORCE_PENDING_GUARD_STATUS]", {
+      symbol,
+      side: planSnapshot.side,
+      entryLow: normalizedPlan.entryLow,
+      entryHigh: normalizedPlan.entryHigh,
+      setupActive: true,
+      executionMode: decision?.executionPlan?.executionMode ?? decision?.executionMode ?? null,
+      planSnapshotComplete: Boolean(planSnapshot?.complete),
+      selectedSize,
+      sourceFunction: "simulateDecisionExecution.forcePending",
+    });
     formatPlanFirstFlatLog("[FORCE_PENDING_PRE_DUPLICATE_CHECK]", {
       symbol,
       side: planSnapshot.side,
@@ -3031,9 +3084,13 @@ export function simulateDecisionExecution({
           returnedNull: false,
           reason: "pending_order_persisted",
         });
-        formatPlanFirstFlatLog("[FORCE_PENDING_EARLY_RETURN]", {
+        console.log("[FORCE_PENDING_EARLY_RETURN]", {
           reason: "pending_created_from_plan",
-          sourceFunction: "simulateDecisionExecution",
+          symbol,
+          side: planSnapshot.side,
+          entryLow: normalizedPlan.entryLow,
+          entryHigh: normalizedPlan.entryHigh,
+          sourceFunction: "simulateDecisionExecution.forcePending",
         });
         return {
           state: nextState,
@@ -3057,11 +3114,15 @@ export function simulateDecisionExecution({
         : "createPendingOrderFromExecutionPlan_returned_null",
       sourceFunction: "simulateDecisionExecution",
     });
-    formatPlanFirstFlatLog("[FORCE_PENDING_EARLY_RETURN]", {
+    console.log("[FORCE_PENDING_EARLY_RETURN]", {
       reason: existingPending
         ? "duplicate_pending_detected"
         : "createPendingOrderFromExecutionPlan_returned_null",
-      sourceFunction: "simulateDecisionExecution",
+      symbol,
+      side: planSnapshot.side,
+      entryLow: normalizedPlan.entryLow,
+      entryHigh: normalizedPlan.entryHigh,
+      sourceFunction: "simulateDecisionExecution.forcePending",
     });
 
     return {
