@@ -891,8 +891,6 @@ function buildExecutionPlanSnapshot(decision, symbol, timeframe, selectedSize) {
   const executionPlan = decision?.executionPlan || {};
   const normalizedEntry = normalizeExecutionPlanEntry(executionPlan);
   const side = resolveSideFromDecision(decision);
-  const setupIdRaw = executionPlan?.setupId ?? decision?.setupId ?? decision?.signalId ?? decision?.id;
-  const setupId = setupIdRaw != null ? String(setupIdRaw) : null;
   const entryZoneLow = normalizedEntry.entryLow;
   const entryZoneHigh = normalizedEntry.entryHigh;
   const stopLoss = normalizeNumber(
@@ -912,6 +910,35 @@ function buildExecutionPlanSnapshot(decision, symbol, timeframe, selectedSize) {
   const normalizedHigh = Number.isFinite(entryZoneLow) && Number.isFinite(entryZoneHigh)
     ? Math.max(entryZoneLow, entryZoneHigh)
     : entryZoneHigh;
+  const rawDecisionSetupId = decision?.setupId;
+  const rawExecutionPlanSetupId = decision?.executionPlan?.setupId;
+  const rawSignalId = decision?.signalId;
+  const rawDecisionId = decision?.id;
+  const setupIdCandidates = [
+    { source: "decision.setupId", value: rawDecisionSetupId },
+    { source: "decision.executionPlan.setupId", value: rawExecutionPlanSetupId },
+    { source: "decision.signalId", value: rawSignalId },
+    { source: "decision.id", value: rawDecisionId },
+  ];
+  const resolvedSetupIdCandidate = setupIdCandidates.find((candidate) => {
+    if (candidate?.value == null) return false;
+    return String(candidate.value).trim().length > 0;
+  });
+  const syntheticSetupId = `${symbol ?? ""}_${side ?? ""}_${normalizedLow ?? ""}_${normalizedHigh ?? ""}_${stopLoss ?? ""}`;
+  const setupId = resolvedSetupIdCandidate
+    ? String(resolvedSetupIdCandidate.value).trim()
+    : syntheticSetupId;
+  const setupIdSource = resolvedSetupIdCandidate ? resolvedSetupIdCandidate.source : "synthetic";
+  formatPlanFirstFlatLog("[SETUP_ID_RESOLUTION_DEBUG]", {
+    symbol: symbol || null,
+    side: side || null,
+    rawDecisionSetupId: rawDecisionSetupId ?? null,
+    rawExecutionPlanSetupId: rawExecutionPlanSetupId ?? null,
+    rawSignalId: rawSignalId ?? null,
+    rawDecisionId: rawDecisionId ?? null,
+    finalSetupId: setupId || null,
+    source: setupIdSource,
+  });
   const size = asSafeNumber(selectedSize, DEFAULT_POSITION_SIZE);
   const complete = Boolean(
     symbol &&
