@@ -235,7 +235,12 @@ export function DecisionCard({ analysis, formatNumber }) {
 export function TradePlanCard({ analysis, digits, formatNumber }) {
   const executionPlan = analysis?.aiDecisionOutput?.executionPlan || analysis?.executionPlan || {};
   const executionMode = String(executionPlan?.executionMode || "").toUpperCase();
-  const executionModeLabel = executionMode === "BREAKOUT" ? "Breakout" : executionMode === "PULLBACK" ? "Pullback" : "-";
+  const side = String(executionPlan?.action || "").toUpperCase();
+  const executionModeLabel = executionMode === "BREAKOUT"
+    ? (side === "LONG" ? "突破做多" : side === "SHORT" ? "突破做空" : "突破")
+    : executionMode === "PULLBACK"
+      ? (side === "LONG" ? "回調做多" : side === "SHORT" ? "回調做空" : "回調")
+      : "-";
   const modeReasons = Array.isArray(executionPlan?.modeSelectionReasons) ? executionPlan.modeSelectionReasons : [];
   const entryValue = executionMode === "PULLBACK"
     ? [executionPlan?.entryLow, executionPlan?.entryHigh].every((value) => value != null)
@@ -243,11 +248,12 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
       : (executionPlan?.entryMid != null ? formatNumber(executionPlan?.entryMid, digits) : "-")
     : (executionPlan?.triggerPrice != null ? formatNumber(executionPlan?.triggerPrice, digits) : "-");
   const isHold = executionPlan?.action === "HOLD" || analysis?.finalDecision === "WAIT" || analysis?.finalDecision === "NO_TRADE";
+  const takeProfitValue = [executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3].filter((v) => v != null).map((v) => formatNumber(v, digits)).join(" / ") || "-";
   const topChecklist = [
-    { label: "模式（Mode）", shortLabel: "Mode", value: executionModeLabel },
-    { label: "進場（Entry）", shortLabel: "Entry", value: entryValue },
-    { label: "止損（Stop）", shortLabel: "Stop", value: formatNumber(executionPlan?.stopLoss, digits) },
-    { label: "止盈（TP）", shortLabel: "TP", value: [executionPlan?.takeProfit1, executionPlan?.takeProfit2, executionPlan?.takeProfit3].filter((v) => v != null).map((v) => formatNumber(v, digits)).join(" / ") || "-" },
+    { label: "策略", shortLabel: "策略", value: executionModeLabel },
+    { label: "進場", shortLabel: "進場", value: entryValue },
+    { label: "止損", shortLabel: "止損", value: formatNumber(executionPlan?.stopLoss, digits) },
+    { label: "止盈", shortLabel: "止盈", value: takeProfitValue },
   ];
   const listBlock = (title, rows) => (
     <div className="rounded-xl border border-slate-200 bg-white p-3">
@@ -264,10 +270,10 @@ export function TradePlanCard({ analysis, digits, formatNumber }) {
       <CardContent className="space-y-4 px-5 pb-5 text-sm sm:px-6">
         <div className={`rounded-2xl border p-3.5 ${isHold ? "border-amber-200 bg-amber-50/80 text-amber-900" : "border-slate-200 bg-slate-50/70 text-slate-900"}`}>
           <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
-            <span className="font-semibold">Summary：</span>
-            {topChecklist[0].label} {topChecklist[0].value || "-"} / {topChecklist[1].label} {topChecklist[1].value || "-"} / {topChecklist[2].label} {topChecklist[2].value || "-"}
+            <span className="font-semibold">摘要：</span>
+            {topChecklist[0].value || "-"} / {topChecklist[1].label} {topChecklist[1].value || "-"} / {topChecklist[2].label} {topChecklist[2].value || "-"}{takeProfitValue !== "-" ? ` / ${topChecklist[3].label} ${topChecklist[3].value || "-"}` : ""}
           </div>
-          <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">EXECUTION CHECKLIST</div>
+          <div className="text-xs font-semibold tracking-[0.16em] text-slate-600">執行計畫明細</div>
           <div className="mt-3 grid gap-2.5 sm:grid-cols-4">
             {topChecklist.map((item) => (
               <div key={item.label} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2">
