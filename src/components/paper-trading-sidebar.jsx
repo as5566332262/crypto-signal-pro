@@ -75,6 +75,13 @@ function formatCompactNumber(value, maximumFractionDigits = 1) {
   }).format(parsed);
 }
 
+function toPctText(numerator, denominator, formatNumber, digits = 1) {
+  const num = Number(numerator || 0);
+  const den = Number(denominator || 0);
+  const ratio = den > 0 ? (num / den) * 100 : 0;
+  return `${formatNumber(ratio, digits)}%`;
+}
+
 function waitingReasonLabel(reason) {
   const reasonMap = {
     blockedByKlineConfirmation: "K線未確認",
@@ -692,9 +699,12 @@ export default function PaperTradingSidebar({
   const simulationStats = accountSnapshot?.simulationStats || {};
   const funnel = simulationStats?.funnel || {};
   const setupQualityRecords = Array.isArray(simulationStats?.setupQualityRecords) ? simulationStats.setupQualityRecords : [];
-  const blockedReasonHierarchy = Array.isArray(simulationStats?.blockedReasonHierarchy) ? simulationStats.blockedReasonHierarchy : [];
+  const blockedReasonTopK = Array.isArray(simulationStats?.blockedReasonTopK) ? simulationStats.blockedReasonTopK : [];
   const funnelByDimension = Array.isArray(simulationStats?.funnelByDimension) ? simulationStats.funnelByDimension : [];
   const timeEfficiency = simulationStats?.timeEfficiency || {};
+  const orderQuality = simulationStats?.orderQuality || {};
+  const decisionOutcomeDistribution = Array.isArray(simulationStats?.decisionOutcomeDistribution) ? simulationStats.decisionOutcomeDistribution : [];
+  const setupTypePerformance = Array.isArray(simulationStats?.setupTypePerformance) ? simulationStats.setupTypePerformance : [];
   const distributionBy = (key) => {
     const bucket = {};
     setupQualityRecords.forEach((item) => {
@@ -707,23 +717,11 @@ export default function PaperTradingSidebar({
   const symbolDist = distributionBy("symbol");
   const sideDist = distributionBy("side");
   const regimeDist = distributionBy("marketRegime");
-  const filledRecords = setupQualityRecords.filter((item) => item.wasFilled);
   const closedRecords = setupQualityRecords.filter((item) => item.tradeResult != null);
-  const closedWins = closedRecords.filter((item) => Number(item.tradeResult) > 0).length;
-  const closedWinRate = closedRecords.length ? (closedWins / closedRecords.length) * 100 : 0;
   const avgClosedResult = closedRecords.length
     ? closedRecords.reduce((sum, item) => sum + Number(item.tradeResult || 0), 0) / closedRecords.length
     : 0;
-  const scoreScatterRows = closedRecords
-    .map((item, index) => ({
-      id: `${item?.symbol || "na"}-${index}`,
-      entryScoreAdjusted: Number(item?.entryScoreAdjusted),
-      tradeResult: Number(item?.tradeResult),
-      setupType: item?.setupType || "-",
-      symbol: item?.symbol || "-",
-    }))
-    .filter((item) => Number.isFinite(item.entryScoreAdjusted) && Number.isFinite(item.tradeResult))
-    .slice(0, 24);
+  const blockedReasonSampleTotal = blockedReasonTopK.reduce((sum, item) => sum + Number(item?.total_block_count || 0), 0);
 
   const sidebarWidthClass = sidebarOpen ? "w-full lg:w-[360px]" : "w-full lg:w-[76px]";
 
@@ -857,11 +855,13 @@ export default function PaperTradingSidebar({
                 <CardContent className="space-y-3 text-xs">
                   {[
                     ["signal", funnel?.signals_total],
-                    ["setup", funnel?.setup_candidate_total],
-                    ["zone", funnel?.entry_zone_hit_total],
-                    ["pending", funnel?.pending_created_total],
-                    ["fill", funnel?.filled_total],
-                    ["close", funnel?.closed_total],
+                    ["setup_created", funnel?.setup_created_total ?? funnel?.setup_candidate_total],
+                    ["entry_zone_hit", funnel?.entry_zone_hit_total],
+                    ["pending_created", funnel?.pending_created_total],
+                    ["pending_price_reached", funnel?.pending_price_reached_total],
+                    ["fill_confirmed", funnel?.fill_confirmed_total ?? funnel?.filled_total],
+                    ["position_opened", funnel?.position_opened_total ?? funnel?.filled_total],
+                    ["tp/sl", funnel?.tp_sl_total ?? funnel?.closed_total],
                   ].map(([label, value], index, rows) => {
                     const previous = index > 0 ? Number(rows[index - 1][1] || 0) : Number(value || 0);
                     const ratio = previous > 0 ? (Number(value || 0) / previous) * 100 : 0;
@@ -878,26 +878,33 @@ export default function PaperTradingSidebar({
                     );
                   })}
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
-                    <div>setup 是否太少：{Number(funnel?.setup_candidate_total || 0) < Number(funnel?.signals_total || 0) * 0.3 ? "是（setup gate 偏嚴）" : "否"}</div>
+                    <div>setup 是否太少：{Number((funnel?.setup_created_total ?? funnel?.setup_candidate_total) || 0) < Number(funnel?.signals_total || 0) * 0.3 ? "是（setup gate 偏嚴）" : "否"}</div>
                     <div>zone hit 但不掛單：{Number(funnel?.pending_blocked_total || 0) > Number(funnel?.pending_created_total || 0) ? "是（pending gate 需檢查）" : "否"}</div>
-                    <div>掛單不成交：{Number(funnel?.filled_total || 0) < Number(funnel?.pending_created_total || 0) * 0.4 ? "是（fill 條件過嚴）" : "否"}</div>
+                    <div>掛單到價但不成交：{Number(funnel?.fill_confirmed_total || 0) < Number(funnel?.pending_price_reached_total || 0) * 0.4 ? "是（fill confirmation 過嚴）" : "否"}</div>
                     <div>成交後績效差：{closedRecords.length >= 3 && avgClosedResult < 0 ? "是（出場或風控需優化）" : "否"}</div>
                   </div>
                 </CardContent>
               </Card>
               <Card className="rounded-2xl border-slate-200">
-                <CardHeader className="pb-2"><CardTitle className="text-sm">2) 阻擋原因（setup / pending / fill）</CardTitle></CardHeader>
+                <CardHeader className="pb-2"><CardTitle className="text-sm">2) 阻擋原因排名（Top K）</CardTitle></CardHeader>
                 <CardContent className="space-y-2 text-xs">
-                  {(blockedReasonHierarchy || []).slice(0, 10).map((row) => (
+                  {(blockedReasonTopK || []).slice(0, 10).map((row) => (
                     <div key={row.reason} className="rounded-lg border border-slate-200 p-2">
-                      <div className="font-semibold text-slate-700">{row.reason}</div>
-                      <div className="mt-1 grid grid-cols-3 gap-2 text-[11px] text-slate-600">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-semibold text-slate-700">#{row.rank} {row.reason}</div>
+                        <div className="text-[11px] text-slate-600">{formatNumber(row.ratio_pct, 1)}%</div>
+                      </div>
+                      <div className="mt-1 grid grid-cols-4 gap-2 text-[11px] text-slate-600">
+                        <div>total: {row.total_block_count}</div>
                         <div>setup: {row.setup_block_count}</div>
                         <div>pending: {row.pending_block_count}</div>
                         <div>fill: {row.fill_block_count}</div>
                       </div>
                     </div>
                   ))}
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600">
+                    sample: {blockedReasonSampleTotal}（百分比以 blocked sample 為分母）
+                  </div>
                 </CardContent>
               </Card>
               <Card className="rounded-2xl border-slate-200">
@@ -922,34 +929,64 @@ export default function PaperTradingSidebar({
                 </CardContent>
               </Card>
               <Card className="rounded-2xl border-slate-200">
-                <CardHeader className="pb-2"><CardTitle className="text-sm">4) 成交品質</CardTitle></CardHeader>
+                <CardHeader className="pb-2"><CardTitle className="text-sm">4) 掛單品質</CardTitle></CardHeader>
                 <CardContent className="space-y-2 text-xs">
                   <div className="grid grid-cols-2 gap-2">
-                    <InfoItem label="filled setups" value={filledRecords.length} />
-                    <InfoItem label="closed setups" value={closedRecords.length} />
-                    <InfoItem label="closed winRate" value={`${formatNumber(closedWinRate, 1)}%`} />
-                    <InfoItem label="avg tradeResult" value={formatNumber(avgClosedResult, 2)} />
-                    <InfoItem label="signal→zone avg" value={formatNumber(timeEfficiency?.signal_to_zone_hit_avg, 2)} />
-                    <InfoItem label="pending→fill avg" value={formatNumber(timeEfficiency?.pending_to_fill_avg, 2)} />
-                    <InfoItem label="fill→close avg(min)" value={formatNumber(timeEfficiency?.fill_to_close_avg, 2)} />
-                    <InfoItem label="blocked setup lifetime(min)" value={formatNumber(timeEfficiency?.blocked_setup_lifetime_avg, 2)} />
-                  </div>
-                  <div>
-                    <div className="mb-1 text-slate-500">score vs result（scatter sample）</div>
-                    <ul className="max-h-36 list-disc overflow-auto pl-4 text-[11px]">
-                      {scoreScatterRows.length ? scoreScatterRows.map((row) => (
-                        <li key={row.id}>{row.symbol} {row.setupType}: score {formatNumber(row.entryScoreAdjusted, 2)} → result {formatNumber(row.tradeResult, 2)}</li>
-                      )) : <li>樣本不足</li>}
-                    </ul>
+                    <InfoItem label="avg_distance_to_entry (%)" value={`${formatNumber(orderQuality?.avg_distance_to_entry_pct, 2)}%`} />
+                    <InfoItem label="avg_fill_efficiency (%)" value={`${formatNumber(orderQuality?.avg_fill_efficiency_pct, 2)}%`} />
+                    <InfoItem label="missed_fill_count" value={orderQuality?.missed_fill_count ?? 0} />
+                    <InfoItem label="missed_fill_ratio" value={toPctText(orderQuality?.missed_fill_count, funnel?.pending_created_total, formatNumber)} />
                   </div>
                 </CardContent>
               </Card>
               <Card className="rounded-2xl border-slate-200">
-                <CardHeader className="pb-2"><CardTitle className="text-sm">5) 實驗觀察摘要</CardTitle></CardHeader>
+                <CardHeader className="pb-2"><CardTitle className="text-sm">5) 決策 vs 結果（LONG / SHORT / NO_TRADE）</CardTitle></CardHeader>
+                <CardContent className="space-y-2 text-xs">
+                  {decisionOutcomeDistribution.map((row) => (
+                    <div key={row.decision} className="rounded-lg border border-slate-200 p-2">
+                      <div className="mb-1 font-semibold text-slate-700">{row.decision}（sample: {row.sampleCount}）</div>
+                      <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-600">
+                        {Object.entries(row.outcomes || {}).map(([label, count]) => (
+                          <div key={label}>
+                            {label}: {count}（{formatNumber(row?.outcomeRatios?.[label] || 0, 1)}%）
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border-slate-200">
+                <CardHeader className="pb-2"><CardTitle className="text-sm">6) setup 類型績效</CardTitle></CardHeader>
+                <CardContent className="space-y-2 text-xs">
+                  {(setupTypePerformance || []).slice(0, 10).map((row) => (
+                    <div key={row.setupType} className="rounded-lg border border-slate-200 p-2 text-[11px]">
+                      <div className="font-semibold text-slate-700">{row.setupType}</div>
+                      <div className="mt-1 grid grid-cols-3 gap-2 text-slate-600">
+                        <div>count: {row.count}</div>
+                        <div>winRate: {formatNumber(row.winRate, 1)}%</div>
+                        <div>avgRR: {formatNumber(row.avgRR, 2)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border-slate-200">
+                <CardHeader className="pb-2"><CardTitle className="text-sm">7) 時間維度</CardTitle></CardHeader>
+                <CardContent className="space-y-2 text-xs">
+                  <div className="grid grid-cols-1 gap-2">
+                    <InfoItem label="signal→zone" value={`${formatNumber(timeEfficiency?.signal_to_zone_hit_avg, 2)} bars（sample ${timeEfficiency?.signal_to_zone_sample_count || 0}）`} />
+                    <InfoItem label="pending→fill" value={`${formatNumber(timeEfficiency?.pending_to_fill_avg, 2)} bars（sample ${timeEfficiency?.pending_to_fill_sample_count || 0}）`} />
+                    <InfoItem label="fill→tp/sl" value={`${formatNumber(timeEfficiency?.fill_to_close_avg, 2)} min（sample ${timeEfficiency?.fill_to_close_sample_count || 0}）`} />
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border-slate-200">
+                <CardHeader className="pb-2"><CardTitle className="text-sm">8) 實驗觀察摘要</CardTitle></CardHeader>
                 <CardContent className="space-y-1 text-xs text-slate-700">
-                  <div>・signals: {funnel?.signals_total || 0}，setup: {funnel?.setup_candidate_total || 0}，fill: {funnel?.filled_total || 0}，close: {funnel?.closed_total || 0}</div>
-                  <div>・最常 setup block：{blockedReasonHierarchy?.[0]?.reason || "-"}</div>
-                  <div>・最常 pending/fill block：{(blockedReasonHierarchy || []).find((item) => item.pending_block_count > 0 || item.fill_block_count > 0)?.reason || "-"}</div>
+                  <div>・signals: {funnel?.signals_total || 0}，setup: {(funnel?.setup_created_total ?? funnel?.setup_candidate_total) || 0}，pending_price_reached: {funnel?.pending_price_reached_total || 0}，tp/sl: {(funnel?.tp_sl_total ?? funnel?.closed_total) || 0}</div>
+                  <div>・最常 setup block：{blockedReasonTopK?.[0]?.reason || "-"}</div>
+                  <div>・最常 pending/fill block：{(blockedReasonTopK || []).find((item) => item.pending_block_count > 0 || item.fill_block_count > 0)?.reason || "-"}</div>
                   <div>・最值得優化 setup 維度：{funnelByDimension?.[0] ? `${funnelByDimension[0].symbol}/${funnelByDimension[0].timeframe}/${funnelByDimension[0].setupType}` : "-"}</div>
                 </CardContent>
               </Card>
